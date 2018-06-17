@@ -1,0 +1,6 @@
+Makefile
+out
+.settings
+*.so
+*_m.h
+*_m.cc
