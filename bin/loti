@@ -1,0 +1,83 @@
+#!/bin/sh
+#
+# This script is intended to run LOTI simulations both in debug and release mode.
+# It can be used only after the 'setenv' script has been run from both the OMNeT++
+# and the LOTI top level directory using the '. setenv' command. To run a simulation,
+# simply go into its directory and run 'loti' possibly passing additional command
+# line arguments. Please note that LOTI must be compiled either in debug and/or
+# release mode using 'make MODE=debug' and/or 'make MODE=release' before.
+#
+# This script takes a few additional command line arguments compared to the ones
+# already allowed by OMNeT++. The command line argument '--release' starts the
+# LOTI release version and '--debug' starts the debug version. If no such argument
+# is provided, then the script automatically selects one prefering the release
+# version over the debug version. The script can run LOTI independently of how
+# its compiled, as executable or shared lib.
+#
+
+DIR=`dirname $0`
+OUT=$DIR/../out
+
+TOOL=""
+MODE=""
+
+if [ "$1" = "--release" ]; then
+   MODE="release"
+   shift;
+fi
+
+if [ "$1" = "--debug" ]; then
+   MODE="debug"
+   shift;
+fi
+
+if [ "$1" = "--printcmd" ] || [ "$1" = "-p" ]; then
+   TOOL="echo"
+   shift;
+fi
+
+OPP_RUN_DBG=`which opp_run_dbg || echo opp_run_dbg`
+OPP_RUN_RELEASE=`which opp_run_release || echo opp_run_release`
+
+if [ "$MODE" = "" ]; then
+  if [ -f $OUT/loti ]; then
+    $TOOL $OUT/loti $LOTI_OMNETPP_OPTIONS
+  elif [ -f $OUT/loti_dbg ]; then
+    $TOOL $OUT/loti_dbg $LOTI_OMNETPP_OPTIONS
+  elif [ -f $OUT/loti.exe ]; then
+    $TOOL $OUT/loti.exe $LOTI_OMNETPP_OPTIONS
+  elif [ -f $OUT/loti_dbg.exe ]; then
+    $TOOL $OUT/loti_dbg.exe $LOTI_OMNETPP_OPTIONS
+  elif [ -f $OUT/libloti.so ] || [ -f $OUT/loti.dll ]; then
+    $TOOL $OPP_RUN_RELEASE -l $OUT/loti $LOTI_OMNETPP_OPTIONS $@
+  elif [ -f $OUT/libloti_dbg.so ] || [ -f $OUT/loti_dbg.dll ]; then
+    $TOOL $OPP_RUN_DBG -l $OUT/loti $LOTI_OMNETPP_OPTIONS $@
+  else
+    echo "LOTI executable or shared library not found"
+  fi
+fi
+
+if [ "$MODE" = "release" ]; then
+  if [ -f $OUT/loti ]; then
+    $TOOL $OUT/loti $LOTI_OMNETPP_OPTIONS
+  elif [ -f $OUT/loti.exe ]; then
+    $TOOL $OUT/loti.exe $LOTI_OMNETPP_OPTIONS
+  elif [ -f $OUT/libloti.so ] || [ -f $OUT/loti.dll ]; then
+    $TOOL $OPP_RUN_RELEASE -l $OUT/loti $LOTI_OMNETPP_OPTIONS $@
+  else
+    echo "LOTI release executable or shared library not found"
+  fi
+fi
+
+if [ "$MODE" = "debug" ]; then
+  if [ -f $OUT/loti_dbg ]; then
+    $TOOL $OUT/loti_dbg $LOTI_OMNETPP_OPTIONS
+  elif [ -f $OUT/loti_dbg.exe ]; then
+    $TOOL $OUT/loti_dbg.exe $LOTI_OMNETPP_OPTIONS
+  elif [ -f $OUT/libloti_dbg.so ] || [ -f $OUT/loti_dbg.dll ]; then
+    $TOOL $OPP_RUN_DBG -l $OUT/../src/loti $LOTI_OMNETPP_OPTIONS $@
+  else
+    echo "LOTI debug executable or shared library not found"
+  fi
+fi
+

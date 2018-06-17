@@ -1,0 +1,12 @@
+#!/bin/sh
+#
+# This script is intended to run LOTI simulations in release mode. It can be used
+# only after the 'setenv' script has been run from both the OMNeT++ and the LOTI
+# top level directory using the '. setenv' command. To run a simulation, simply
+# go into its directory and run 'loti_release' possibly passing additional command
+# line arguments. Please note that both OMNeT++ and LOTI must be compiled in release
+# mode using 'make MODE=release' before.
+#
+
+loti --release $@
+
