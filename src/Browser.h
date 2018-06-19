@@ -19,13 +19,17 @@
 #define _LOTI_BROWSER_H_
 
 #include <omnetpp.h>
-#include "Data.h"
+#include "Daemon.h"
+#include "NetworkConfigurator.h"
 
 namespace loti {
 
-class Browser : public cSimpleModule
+class Browser : public cSimpleModule, public IEventChainDiscoveryCallback, public IEventBoundsDiscoveryCallback, public IEventOrderDiscoveryCallback
 {
   private:
+    Daemon *daemon = nullptr;
+    NetworkConfigurator *configurator = nullptr;
+
     cMessage discoverEventChainTimer;
     cMessage discoverEventBoundsTimer;
     cMessage discoverEventOrderTimer;
@@ -49,6 +53,15 @@ class Browser : public cSimpleModule
 
   public:
     virtual ~Browser();
+
+    virtual void processEventChainDiscoveryAborted(const Event& event) override;
+    virtual void processEventChainDiscoveryCompleted(const Event& event, const EventChain& eventChain) override;
+
+    virtual void processEventBoundsDiscoveryAborted(const Event& event) override;
+    virtual void processEventBoundsDiscoveryCompleted(const Event& event, simtime_t lowerBound, simtime_t upperBound) override;
+
+    virtual void processEventOrderDiscoveryAborted(const Event& event1, const Event& event2) override;
+    virtual void processEventOrderDiscoveryCompleted(const Event& event1, const Event& event2, int order) override;
 };
 
 }

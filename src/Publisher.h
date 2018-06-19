@@ -20,16 +20,16 @@
 
 #include <vector>
 #include <omnetpp.h>
-#include "Data.h"
+#include "Daemon.h"
 
 namespace loti {
 
 class Publisher : public cSimpleModule
 {
   private:
-    cMessage createEventTimer;
+    Daemon *daemon = nullptr;
 
-    vector<Event> events;
+    cMessage createEventTimer;
 
   protected:
     virtual int numInitStages() const override { return NUM_INIT_STAGES; }

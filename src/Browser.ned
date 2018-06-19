@@ -22,6 +22,8 @@ import inet.applications.contract.IApp;
 simple Browser like IApp
 {
     parameters:
+        string daemonModule;
+        string configuratorModule;
         volatile double discoverEventChainInterval @unit(s);
         volatile double discoverEventBoundsInterval @unit(s);
         volatile double discoverEventOrderInterval @unit(s);
