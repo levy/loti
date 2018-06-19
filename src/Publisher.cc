@@ -30,9 +30,9 @@ Publisher::~Publisher()
 void Publisher::initialize(int stage)
 {
     if (stage == INITSTAGE_LOCAL) {
+        daemon = getModuleFromPar<Daemon>(par("daemonModule"), this);
         createEventTimer.setName("CreateEventTimer");
         scheduleCreateEventTimer();
-        WATCH_VECTOR(events);
     }
 }
 
@@ -51,8 +51,7 @@ void Publisher::scheduleCreateEventTimer()
 
 void Publisher::processCreateEventTimer()
 {
-    auto& event = createEvent();
-    events.push_back(event);
+    createEvent();
     scheduleCreateEventTimer();
 }
 
@@ -62,7 +61,7 @@ const Event& Publisher::createEvent()
     int contentLength = par("contentLength");
     for (int i = 0; i < contentLength; i++)
         data.push_back(intrand(256));
-    // TODO:
+    return daemon->publishEvent(data);
 }
 
 }

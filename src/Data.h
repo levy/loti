@@ -19,7 +19,9 @@
 #define _LOTI_DATA_H_
 
 #include <omnetpp.h>
+#include "picosha.h"
 #include "Data_m.h"
+#include "Packet_m.h"
 
 namespace loti {
 
@@ -29,6 +31,20 @@ using namespace inet;
 std::ostream& operator<<(ostream& out, const vector<uint8_t>& object);
 std::ostream& operator<<(ostream& out, const Event& event);
 std::ostream& operator<<(ostream& out, const ClockEvent& clockEvent);
+std::ostream& operator<<(ostream& out, const LocalClockEvent& clockEvent);
+std::ostream& operator<<(ostream& out, const Neighbor& neighbor);
+std::ostream& operator<<(ostream& out, const EventChain& eventChain);
+std::ostream& operator<<(ostream& out, const EventChainDiscovery& eventChainDiscovery);
+std::ostream& operator<<(ostream& out, const EventBoundsDiscovery& eventBoundsDiscovery);
+std::ostream& operator<<(ostream& out, const EventOrderDiscovery& eventOrderDiscovery);
+
+B calculateLotiHeaderSize(const Ptr<const LotiHeader>& header);
+B calculateClockEventNotificationSize(const Ptr<const ClockEventNotification>& notification);
+B calculateEventChainDiscoveryRequestSize(const Ptr<const EventChainDiscoveryRequest>& request);
+B calculateEventChainDiscoveryResponseSize(const Ptr<const EventChainDiscoveryResponse>& response);
+B calculateEventChainSize(const EventChain& eventChain);
+B calculateClockEventSize(const ClockEvent& clockEvent);
+B calculateEventSize(const Event& event);
 
 }
 

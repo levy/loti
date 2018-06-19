@@ -22,6 +22,7 @@ import inet.applications.contract.IApp;
 simple Publisher like IApp
 {
     parameters:
+        string daemonModule;
         volatile double createEventInterval @unit(s);
         volatile int contentLength @unit(B);
         @display("i=block/app");
