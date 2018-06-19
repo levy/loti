@@ -1,0 +1,52 @@
+//
+// This file is part of the LOTI distribution (https://github.com/levy/loti/).
+// Copyright (c) 2018 Levente Mészáros.
+//
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU General Public License as published by
+// the Free Software Foundation, version 3.
+//
+// This program is distributed in the hope that it will be useful, but
+// WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU
+// General Public License for more details.
+//
+// You should have received a copy of the GNU General Public License
+// along with this program. If not, see <http://www.gnu.org/licenses/>.
+//
+
+import inet.common.packet.chunk.Chunk;
+import Data;
+
+namespace loti;
+
+enum LotiType
+{
+    LT_CLOCK_EVENT_NOTIFICATION = 0;
+    LT_EVENT_CHAIN_DISCOVERY_REQUEST = 1;
+    LT_EVENT_CHAIN_DISCOVERY_RESPONSE = 2;
+}
+
+class LotiHeader extends inet::FieldsChunk
+{
+    LotiType type;
+    NodeId neighbor;
+}
+
+class ClockEventNotification extends inet::FieldsChunk
+{
+    EventHash lastClockEventHash;
+    EventHash neighborLastClockEventHash;
+}
+
+class EventChainDiscoveryRequest extends inet::FieldsChunk
+{
+    NodeId originator;
+    EventReference event;
+}
+
+class EventChainDiscoveryResponse extends inet::FieldsChunk
+{
+    NodeId originator;
+    EventChain chain;
+}
