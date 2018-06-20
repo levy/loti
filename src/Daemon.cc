@@ -93,18 +93,20 @@ void Daemon::socketDataArrived(UdpSocket *socket, Packet *packet)
     const auto& header = packet->popAtFront<LotiHeader>();
     auto it = neighbors.find(header->getNeighbor());
     if (it != neighbors.end()) {
-        auto& neighbor = it->second;
         if (header->getType() == LT_CLOCK_EVENT_NOTIFICATION) {
+            auto& neighbor = it->second;
             const auto& notification = packet->popAtFront<ClockEventNotification>();
-            processClockEventNotification(neighbor, *notification.get());
+            processClockEventNotification(neighbor, notification->getLastClockEventHash(), notification->getNeighborLastClockEventHash());
         }
         else if (header->getType() == LT_EVENT_CHAIN_DISCOVERY_REQUEST) {
+            const auto& neighbor = it->second;
             const auto& request = packet->popAtFront<EventChainDiscoveryRequest>();
-            auto& eventReference = request->getEvent();
+            const auto& eventReference = request->getEvent();
             auto originator = request->getOriginator();
             processEventChainDiscoveryRequest(originator, neighbor, eventReference);
         }
         else if (header->getType() == LT_EVENT_CHAIN_DISCOVERY_RESPONSE) {
+            const auto& neighbor = it->second;
             const auto& response = packet->popAtFront<EventChainDiscoveryResponse>();
             auto originator = response->getOriginator();
             processEventChainDiscoveryResponse(originator, neighbor, response->getChain());
@@ -122,7 +124,7 @@ void Daemon::processEventChainDiscoveryAborted(const Event& event)
     auto it = eventBoundsDiscoveries.find(event.getHash());
     if (it != eventBoundsDiscoveries.end())
         abortEventBoundsDiscovery(event.getHash());
-    for (auto& it : eventOrderDiscoveries)
+    for (const auto& it : eventOrderDiscoveries)
         if (it.first.first == event.getHash() || it.first.second == event.getHash())
             abortEventOrderDiscovery(it.first.first, it.first.second);
 }
@@ -174,11 +176,12 @@ void Daemon::processCreateClockEventTimer()
     auto index = allClockEvents.size();
     const auto& clockEvent = insertClockEvent();
     eventHashToClockEventIndex[clockEvent.getHash()] = index;
-    for (auto& referencedEvent : clockEvent.getReferencedEvents())
+    for (const auto& referencedEvent : clockEvent.getReferencedEvents())
         eventHashToReferencingEventIndex.insert({referencedEvent.getHash(), index});
     unreferencedEvents.clear();
     emit(clockEventCreatedSignal, &clockEvent);
-    sendClockEventNotification(clockEvent);
+    for (const auto& it : neighbors)
+        sendClockEventNotification(it.second, clockEvent);
 }
 
 void Daemon::schedulePurgeDiscoveriesTimer()
@@ -191,7 +194,7 @@ void Daemon::processPurgeDiscoveriesTimer()
 {
     simtime_t startTimeLimit = simTime() - par("discoveryExpiryTime");
     for (auto it = eventChainDiscoveries.begin(); it != eventChainDiscoveries.end();) {
-        auto& eventChainDiscovery = it->second.first;
+        const auto& eventChainDiscovery = it->second.first;
         if (eventChainDiscovery.getStartTime() < startTimeLimit) {
             if (eventChainDiscovery.getOriginator() == nodeId && eventChainDiscovery.getState() == DS_DISCOVERY_INPROGRESS)
                 abortEventChainDiscovery(eventChainDiscovery.getEvent().getHash());
@@ -201,7 +204,7 @@ void Daemon::processPurgeDiscoveriesTimer()
             it++;
     }
     for (auto it = eventBoundsDiscoveries.begin(); it != eventBoundsDiscoveries.end();) {
-        auto& eventBoundsDiscovery = it->second.first;
+        const auto& eventBoundsDiscovery = it->second.first;
         if (eventBoundsDiscovery.getStartTime() < startTimeLimit) {
             if (eventBoundsDiscovery.getState() == DS_DISCOVERY_INPROGRESS)
                 abortEventBoundsDiscovery(eventBoundsDiscovery.getEvent().getHash());
@@ -211,7 +214,7 @@ void Daemon::processPurgeDiscoveriesTimer()
             it++;
     }
     for (auto it = eventOrderDiscoveries.begin(); it != eventOrderDiscoveries.end();) {
-        auto& eventOrderDiscovery = it->second.first;
+        const auto& eventOrderDiscovery = it->second.first;
         if (eventOrderDiscovery.getStartTime() < startTimeLimit) {
             const auto& hash1 = eventOrderDiscovery.getEvent1().getHash();
             const auto& hash2 = eventOrderDiscovery.getEvent2().getHash();
@@ -224,40 +227,32 @@ void Daemon::processPurgeDiscoveriesTimer()
     }
 }
 
-void Daemon::sendClockEventNotification(const ClockEvent& clockEvent)
+void Daemon::sendClockEventNotification(const Neighbor& neighbor, const ClockEvent& clockEvent)
 {
-    for (auto& it : neighbors) {
-        auto& neighbor = it.second;
-        Packet *packet = new Packet("ClockEventNotification");
-        const auto& header = makeShared<LotiHeader>();
-        header->setType(LT_CLOCK_EVENT_NOTIFICATION);
-        header->setNeighbor(nodeId);
-        header->setChunkLength(calculateLotiHeaderSize(header));
-        packet->insertAtBack(header);
-        const auto& notification = makeShared<ClockEventNotification>();
-        notification->setLastClockEventHash(clockEvent.getHash());
-        notification->setNeighborLastClockEventHash(neighbor.getLastClockEventHash());
-        notification->setChunkLength(calculateClockEventNotificationSize(notification));
-        packet->insertAtBack(notification);
-        sendToNeighbor(neighbor, packet);
-    }
+    Packet *packet = new Packet("ClockEventNotification");
+    const auto& header = makeShared<LotiHeader>();
+    header->setType(LT_CLOCK_EVENT_NOTIFICATION);
+    header->setNeighbor(nodeId);
+    header->setChunkLength(calculateLotiHeaderSize(header));
+    packet->insertAtBack(header);
+    const auto& notification = makeShared<ClockEventNotification>();
+    notification->setLastClockEventHash(clockEvent.getHash());
+    notification->setNeighborLastClockEventHash(neighbor.getLastClockEventHash());
+    notification->setChunkLength(calculateClockEventNotificationSize(notification));
+    packet->insertAtBack(notification);
+    sendToNeighbor(neighbor, packet);
 }
 
-void Daemon::processClockEventNotification(Neighbor& neighbor, const ClockEventNotification& notification)
+void Daemon::processClockEventNotification(Neighbor& neighbor, const EventHash& lastClockEventHash, const EventHash& neighborLastClockEventHash)
 {
-    neighbor.setLastClockEventHash(notification.getLastClockEventHash());
-    auto index = findClockEventIndex(notification.getNeighborLastClockEventHash());
+    neighbor.setLastClockEventHash(lastClockEventHash);
+    auto index = findClockEventIndex(neighborLastClockEventHash);
     if (index != -1) {
         auto& clockEvent = allClockEvents[index];
-        for (auto& referencingEvent : clockEvent.getReferencingEvents())
-            if (referencingEvent.getCreator() == neighbor.getNodeId() && referencingEvent.getHash() == notification.getNeighborLastClockEventHash())
-                return;
-        if (notification.getNeighborLastClockEventHash().size() != 0) {
-            EventReference eventReference;
-            eventReference.setCreator(neighbor.getNodeId());
-            eventReference.setHash(notification.getNeighborLastClockEventHash());
-            clockEvent.getReferencingEventsForUpdate().push_back(eventReference);
-        }
+        EventReference eventReference;
+        eventReference.setCreator(neighbor.getNodeId());
+        eventReference.setHash(lastClockEventHash);
+        clockEvent.getReferencingEventsForUpdate().push_back(eventReference);
     }
 }
 
@@ -283,17 +278,17 @@ void Daemon::processEventChainDiscoveryRequest(NodeId originator, const Neighbor
         EV_INFO << "Received event chain discovery request for event created by this node" << endl;
         int eventIndex = findEventIndex(eventReference.getHash());
         if (eventIndex != -1) {
-            auto& event = allEvents[eventIndex];
+            const auto& event = allEvents[eventIndex];
             EventChain eventChain;
             eventChain.setEvent(event);
             if (!addLocalLowerBound(eventChain))
-                EV_WARN << "Cannot add local lower bound" << endl;
+                EV_WARN << "Cannot add local lower bound while processing event chain discovery request" << endl;
             else if (!addLocalUpperBound(eventChain))
-                EV_WARN << "Cannot add local upper bound" << endl;
+                EV_WARN << "Cannot add local upper bound while processing event chain discovery request" << endl;
             else if (!extendLowerBoundForNeighbor(neighbor, eventChain))
-                EV_WARN << "Cannot extend lower bound for neighbor" << endl;
+                EV_WARN << "Cannot extend lower bound for neighbor while processing event chain discovery request" << endl;
             else if (!extendUpperBoundForNeighbor(neighbor, eventChain))
-                EV_WARN << "Cannot extend upper bound for neighbor" << endl;
+                EV_WARN << "Cannot extend upper bound for neighbor while processing event chain discovery request" << endl;
             else
                 sendEventChainDiscoveryResponse(originator, neighbor, eventChain);
         }
@@ -336,13 +331,13 @@ void Daemon::processEventChainDiscoveryResponse(NodeId originator, const Neighbo
             switch (eventChainDiscovery.getState()) {
                 case DS_DISCOVERY_INPROGRESS: {
                     eventChainDiscovery.setChain(eventChain);
-                    auto& eventChain = eventChainDiscovery.getChainForUpdate();
-                    if (!addLocalLowerBound(eventChain)) {
-                        EV_WARN << "Cannot add local lower bound" << endl;
+                    auto& updatedEventChain = eventChainDiscovery.getChainForUpdate();
+                    if (!addLocalLowerBound(updatedEventChain)) {
+                        EV_WARN << "Cannot add local lower bound while processing event chain discovery response" << endl;
                         abortEventChainDiscovery(hash);
                     }
-                    else if (!addLocalUpperBound(eventChain)) {
-                        EV_WARN << "Cannot add local upper bound" << endl;
+                    else if (!addLocalUpperBound(updatedEventChain)) {
+                        EV_WARN << "Cannot add local upper bound while processing event chain discovery response" << endl;
                         abortEventChainDiscovery(hash);
                     }
                     else
@@ -367,13 +362,13 @@ void Daemon::processEventChainDiscoveryResponse(NodeId originator, const Neighbo
         if (nextHopNeighbor != nullptr) {
             EventChain updatedEventChain = eventChain;
             if (!addLocalLowerBound(updatedEventChain))
-                EV_WARN << "Cannot add local lower bound" << endl;
+                EV_WARN << "Cannot add local lower bound while processing event chain discovery response" << endl;
             else if (!addLocalUpperBound(updatedEventChain))
-                EV_WARN << "Cannot add local upper bound" << endl;
+                EV_WARN << "Cannot add local upper bound while processing event chain discovery response" << endl;
             else if (!extendLowerBoundForNeighbor(neighbor, updatedEventChain))
-                EV_WARN << "Cannot extend lower bound for neighbor" << endl;
+                EV_WARN << "Cannot extend lower bound for neighbor while processing event chain discovery response" << endl;
             else if (!extendUpperBoundForNeighbor(neighbor, updatedEventChain))
-                EV_WARN << "Cannot extend upper bound for neighbor" << endl;
+                EV_WARN << "Cannot extend upper bound for neighbor while processing event chain discovery response" << endl;
             else
                 sendEventChainDiscoveryResponse(originator, *nextHopNeighbor, updatedEventChain);
         }
@@ -398,7 +393,7 @@ void Daemon::discoverEventChain(const Event& event, IEventChainDiscoveryCallback
     Enter_Method_Silent();
     auto it = eventChainDiscoveries.find(event.getHash());
     if (it != eventChainDiscoveries.end()) {
-        auto& eventChainDiscovery = it->second.first;
+        const auto& eventChainDiscovery = it->second.first;
         switch (eventChainDiscovery.getState()) {
             case DS_DISCOVERY_INPROGRESS:
                 it->second.second.push_back(&callback);
@@ -419,11 +414,11 @@ void Daemon::discoverEventChain(const Event& event, IEventChainDiscoveryCallback
         if (event.getCreator() == nodeId) {
             auto& eventChain = eventChainDiscovery.getChainForUpdate();
             if (!addLocalLowerBound(eventChain)) {
-                EV_WARN << "Cannot add local lower bound" << endl;
+                EV_WARN << "Cannot add local lower bound while starting event chain discovery" << endl;
                 abortEventChainDiscovery(event.getHash());
             }
             else if (!addLocalUpperBound(eventChain)) {
-                EV_WARN << "Cannot add local upper bound" << endl;
+                EV_WARN << "Cannot add local upper bound while starting event chain discovery" << endl;
                 abortEventChainDiscovery(event.getHash());
             }
             else
@@ -432,7 +427,7 @@ void Daemon::discoverEventChain(const Event& event, IEventChainDiscoveryCallback
         else {
             auto nextHopNeighbor = findNextHopNeighbor(event.getCreator());
             if (nextHopNeighbor != nullptr) {
-                auto& event = eventChainDiscovery.getEvent();
+                const auto& event = eventChainDiscovery.getEvent();
                 EventReference eventReference;
                 eventReference.setCreator(event.getCreator());
                 eventReference.setHash(event.getHash());
@@ -449,7 +444,7 @@ void Daemon::discoverEventBounds(const Event& event, IEventBoundsDiscoveryCallba
     Enter_Method_Silent();
     auto it = eventBoundsDiscoveries.find(event.getHash());
     if (it != eventBoundsDiscoveries.end()) {
-        auto& eventBoundsDiscovery = it->second.first;
+        const auto& eventBoundsDiscovery = it->second.first;
         switch (eventBoundsDiscovery.getState()) {
             case DS_DISCOVERY_INPROGRESS:
                 it->second.second.push_back(&callback);
@@ -465,7 +460,7 @@ void Daemon::discoverEventBounds(const Event& event, IEventBoundsDiscoveryCallba
         }
     }
     else {
-        auto& eventBoundsDiscovery = insertEventBoundsDiscovery(event, callback);
+        const auto& eventBoundsDiscovery = insertEventBoundsDiscovery(event, callback);
         emit(eventBoundsDiscoveryStartedSignal, &eventBoundsDiscovery);
         discoverEventChain(event, *this);
     }
@@ -476,7 +471,7 @@ void Daemon::discoverEventOrder(const Event& event1, const Event& event2, IEvent
     Enter_Method_Silent();
     auto it = eventOrderDiscoveries.find({event1.getHash(), event2.getHash()});
     if (it != eventOrderDiscoveries.end()) {
-        auto& eventOrderDiscovery = it->second.first;
+        const auto& eventOrderDiscovery = it->second.first;
         switch (eventOrderDiscovery.getState()) {
             case DS_DISCOVERY_INPROGRESS:
                 it->second.second.push_back(&callback);
@@ -492,7 +487,7 @@ void Daemon::discoverEventOrder(const Event& event1, const Event& event2, IEvent
         }
     }
     else {
-        auto& eventOrderDiscovery = insertEventOrderDiscovery(event1, event2, callback);
+        const auto& eventOrderDiscovery = insertEventOrderDiscovery(event1, event2, callback);
         emit(eventOrderDiscoveryStartedSignal, &eventOrderDiscovery);
         discoverEventChain(event1, *this);
         discoverEventChain(event2, *this);
@@ -521,7 +516,7 @@ void Daemon::abortEventChainDiscovery(const EventHash& hash)
     ASSERT(eventChainDiscovery.getState() == DS_DISCOVERY_INPROGRESS);
     eventChainDiscovery.setEndTime(simTime());
     eventChainDiscovery.setState(DS_DISCOVERY_ABORTED);
-    for (auto& callback : it->second.second)
+    for (const auto& callback : it->second.second)
         callback->processEventChainDiscoveryAborted(eventChainDiscovery.getEvent());
     emit(eventChainDiscoveryAbortedSignal, &eventChainDiscovery);
 }
@@ -535,7 +530,7 @@ void Daemon::completeEventChainDiscovery(const EventHash& hash)
     eventChainDiscovery.setEndTime(simTime());
     eventChainDiscovery.setState(DS_DISCOVERY_COMPLETED);
     validateEventChainDiscoveryResult(eventChainDiscovery);
-    for (auto& callback : it->second.second)
+    for (const auto& callback : it->second.second)
         callback->processEventChainDiscoveryCompleted(eventChainDiscovery.getEvent(), eventChainDiscovery.getChain());
     emit(eventChainDiscoveryCompletedSignal, &eventChainDiscovery);
 }
@@ -558,7 +553,7 @@ void Daemon::abortEventBoundsDiscovery(const EventHash& hash)
     ASSERT(eventBoundsDiscovery.getState() == DS_DISCOVERY_INPROGRESS);
     eventBoundsDiscovery.setEndTime(simTime());
     eventBoundsDiscovery.setState(DS_DISCOVERY_ABORTED);
-    for (auto& callback : it->second.second)
+    for (const auto& callback : it->second.second)
         callback->processEventBoundsDiscoveryAborted(eventBoundsDiscovery.getEvent());
     emit(eventBoundsDiscoveryAbortedSignal, &eventBoundsDiscovery);
 }
@@ -571,7 +566,7 @@ void Daemon::completeEventBoundsDiscovery(const EventHash& hash)
     ASSERT(eventBoundsDiscovery.getState() == DS_DISCOVERY_INPROGRESS);
     eventBoundsDiscovery.setEndTime(simTime());
     eventBoundsDiscovery.setState(DS_DISCOVERY_COMPLETED);
-    for (auto& callback : it->second.second)
+    for (const auto& callback : it->second.second)
         callback->processEventBoundsDiscoveryCompleted(eventBoundsDiscovery.getEvent(), eventBoundsDiscovery.getLowerBound(), eventBoundsDiscovery.getUpperBound());
     emit(eventBoundsDiscoveryCompletedSignal, &eventBoundsDiscovery);
 }
@@ -595,7 +590,7 @@ void Daemon::abortEventOrderDiscovery(const EventHash& hash1, const EventHash& h
     ASSERT(eventOrderDiscovery.getState() == DS_DISCOVERY_INPROGRESS);
     eventOrderDiscovery.setEndTime(simTime());
     eventOrderDiscovery.setState(DS_DISCOVERY_ABORTED);
-    for (auto& callback : it->second.second)
+    for (const auto& callback : it->second.second)
         callback->processEventOrderDiscoveryAborted(eventOrderDiscovery.getEvent1(), eventOrderDiscovery.getEvent2());
     emit(eventOrderDiscoveryAbortedSignal, &eventOrderDiscovery);
 }
@@ -608,7 +603,7 @@ void Daemon::completeEventOrderDiscovery(const EventHash& hash1, const EventHash
     ASSERT(eventOrderDiscovery.getState() == DS_DISCOVERY_INPROGRESS);
     eventOrderDiscovery.setEndTime(simTime());
     eventOrderDiscovery.setState(DS_DISCOVERY_COMPLETED);
-    for (auto& callback : it->second.second)
+    for (const auto& callback : it->second.second)
         callback->processEventOrderDiscoveryCompleted(eventOrderDiscovery.getEvent1(), eventOrderDiscovery.getEvent2(), eventOrderDiscovery.getOrder());
     emit(eventOrderDiscoveryCompletedSignal, &eventOrderDiscovery);
 }
@@ -618,16 +613,16 @@ void Daemon::sendToNeighbor(const Neighbor& neighbor, Packet *packet)
     socket.sendTo(packet, neighbor.getAddress(), 666);
 }
 
-void Daemon::validateEventChain(const EventChain& eventChain)
+void Daemon::validateEventChain(const EventChain& eventChain) const
 {
     EventReference previousEventReference;
     // validate lower bound chain
     for (auto it = eventChain.getLowerBound().begin(); it != eventChain.getLowerBound().end(); it++) {
-        auto& clockEvent = *it;
+        const auto& clockEvent = *it;
         if (calculateClockEventHash(clockEvent) != clockEvent.getHash())
             throw cRuntimeError("Invalid event hash");
         if (it != eventChain.getLowerBound().begin()) {
-            for (auto& eventReference : clockEvent.getReferencedEvents()) {
+            for (const auto& eventReference : clockEvent.getReferencedEvents()) {
                 if (eventReference.getCreator() == previousEventReference.getCreator() && eventReference.getHash() == previousEventReference.getHash())
                     goto lowerFound;
             }
@@ -638,7 +633,7 @@ void Daemon::validateEventChain(const EventChain& eventChain)
         previousEventReference.setHash(clockEvent.getHash());
     }
     // validate event
-    for (auto& eventReference : eventChain.getEvent().getReferencedEvents()) {
+    for (const auto& eventReference : eventChain.getEvent().getReferencedEvents()) {
         if (eventReference.getCreator() == previousEventReference.getCreator() && eventReference.getHash() == previousEventReference.getHash())
             goto eventFound;
     }
@@ -649,11 +644,11 @@ void Daemon::validateEventChain(const EventChain& eventChain)
     previousEventReference.setHash(eventChain.getEvent().getHash());
     // validate upper bound chain
     for (auto it = eventChain.getUpperBound().begin(); it != eventChain.getUpperBound().end(); it++) {
-        auto& clockEvent = *it;
+        const auto& clockEvent = *it;
         if (calculateClockEventHash(clockEvent) != clockEvent.getHash())
             throw cRuntimeError("Invalid event hash");
         if (it != eventChain.getUpperBound().begin()) {
-            for (auto& eventReference : clockEvent.getReferencedEvents()) {
+            for (const auto& eventReference : clockEvent.getReferencedEvents()) {
                 if (eventReference.getCreator() == previousEventReference.getCreator() && eventReference.getHash() == previousEventReference.getHash())
                     goto upperFound;
             }
@@ -665,9 +660,9 @@ void Daemon::validateEventChain(const EventChain& eventChain)
     }
 }
 
-void Daemon::validateEventChainDiscoveryResult(const EventChainDiscovery& eventChainDiscovery)
+void Daemon::validateEventChainDiscoveryResult(const EventChainDiscovery& eventChainDiscovery) const
 {
-    auto& eventChain = eventChainDiscovery.getChain();
+    const auto& eventChain = eventChainDiscovery.getChain();
     if (eventChain.getLowerBound().front().getCreator() != nodeId)
         throw cRuntimeError("Invalid first clock event");
     if (eventChain.getUpperBound().back().getCreator() != nodeId)
@@ -675,14 +670,14 @@ void Daemon::validateEventChainDiscoveryResult(const EventChainDiscovery& eventC
     validateEventChain(eventChain);
 }
 
-bool Daemon::addLocalLowerBound(EventChain& eventChain)
+bool Daemon::addLocalLowerBound(EventChain& eventChain) const
 {
-    auto& referencedEvents = eventChain.getLowerBound().size() != 0 ? eventChain.getLowerBound().front().getReferencedEvents() : eventChain.getEvent().getReferencedEvents();
-    for (auto& referencedEvent : referencedEvents) {
+    const auto& referencedEvents = eventChain.getLowerBound().size() != 0 ? eventChain.getLowerBound().front().getReferencedEvents() : eventChain.getEvent().getReferencedEvents();
+    for (const auto& referencedEvent : referencedEvents) {
         if (referencedEvent.getCreator() == nodeId) {
             auto index = findClockEventIndex(referencedEvent.getHash());
             if (index != -1) {
-                auto& clockEvent = allClockEvents[index];
+                const auto& clockEvent = allClockEvents[index];
                 eventChain.getLowerBoundForUpdate().push_front(clockEvent);
                 ASSERT_VALID_EVENT_CHAIN(eventChain);
                 return true;
@@ -692,14 +687,14 @@ bool Daemon::addLocalLowerBound(EventChain& eventChain)
     return false;
 }
 
-bool Daemon::addLocalUpperBound(EventChain& eventChain)
+bool Daemon::addLocalUpperBound(EventChain& eventChain) const
 {
     auto referencedEventHash = eventChain.getUpperBound().size() != 0 ? eventChain.getUpperBound().back().getHash() : eventChain.getEvent().getHash();
-    auto it = eventHashToReferencingEventIndex.lower_bound(referencedEventHash);
-    auto jt = eventHashToReferencingEventIndex.upper_bound(referencedEventHash);
-    for (; it != jt; it++) {
-        auto index = it->second;
-        auto& localClockEvent = allClockEvents[index];
+    auto lt = eventHashToReferencingEventIndex.lower_bound(referencedEventHash);
+    auto ut = eventHashToReferencingEventIndex.upper_bound(referencedEventHash);
+    for (; lt != ut; lt++) {
+        auto index = lt->second;
+        const auto& localClockEvent = allClockEvents[index];
         eventChain.getUpperBoundForUpdate().push_back(localClockEvent);
         ASSERT_VALID_EVENT_CHAIN(eventChain);
         return true;
@@ -707,48 +702,49 @@ bool Daemon::addLocalUpperBound(EventChain& eventChain)
     return false;
 }
 
-bool Daemon::extendLowerBoundForNeighbor(const Neighbor& neighbor, EventChain& eventChain)
+bool Daemon::extendLowerBoundForNeighbor(const Neighbor& neighbor, EventChain& eventChain) const
 {
-    auto& clockEvent = eventChain.getLowerBoundForUpdate().front();
+    const auto& clockEvent = eventChain.getLowerBoundForUpdate().front();
     ASSERT(clockEvent.getCreator() == nodeId);
     unsigned int index = getClockEventIndex(clockEvent.getHash());
     while (true) {
-        for (auto& referencedClockEvent : clockEvent.getReferencedEvents())
+        const auto& currentClockEvent = allClockEvents[index];
+        for (const auto& referencedClockEvent : currentClockEvent.getReferencedEvents())
             if (referencedClockEvent.getCreator() == neighbor.getNodeId())
                 return true;
         if (index == 0)
             return false;
         else {
             index--;
-            auto& clockEvent = allClockEvents[index];
-            eventChain.getLowerBoundForUpdate().push_front(clockEvent);
+            const auto& previousClockEvent = allClockEvents[index];
+            eventChain.getLowerBoundForUpdate().push_front(previousClockEvent);
             ASSERT_VALID_EVENT_CHAIN(eventChain);
         }
     }
 }
 
-bool Daemon::extendUpperBoundForNeighbor(const Neighbor& neighbor, EventChain& eventChain)
+bool Daemon::extendUpperBoundForNeighbor(const Neighbor& neighbor, EventChain& eventChain) const
 {
-    auto& clockEvent = eventChain.getUpperBoundForUpdate().back();
+    const auto& clockEvent = eventChain.getUpperBoundForUpdate().back();
     ASSERT(clockEvent.getCreator() == nodeId);
     unsigned int index = getClockEventIndex(clockEvent.getHash());
-    auto& localClockEvent = allClockEvents[index];
     while (true) {
-        for (auto& referencingClockEvent : localClockEvent.getReferencingEvents())
+        const auto& currentClockEvent = allClockEvents[index];
+        for (const auto& referencingClockEvent : currentClockEvent.getReferencingEvents())
             if (referencingClockEvent.getCreator() == neighbor.getNodeId())
                 return true;
         if (index == allClockEvents.size() - 1)
             return false;
         else {
             index++;
-            auto& clockEvent = allClockEvents[index];
-            eventChain.getUpperBoundForUpdate().push_back(clockEvent);
+            const auto& nextClockEvent = allClockEvents[index];
+            eventChain.getUpperBoundForUpdate().push_back(nextClockEvent);
             ASSERT_VALID_EVENT_CHAIN(eventChain);
         }
     }
 }
 
-int Daemon::compareEventChains(const EventChain& eventChain1, const EventChain& eventChain2)
+int Daemon::compareEventChains(const EventChain& eventChain1, const EventChain& eventChain2) const
 {
     if (eventChain1.getUpperBound().back().getTimestamp() < eventChain2.getLowerBound().front().getTimestamp())
         return -1;
@@ -762,7 +758,7 @@ const Event& Daemon::insertEvent(const vector<uint8_t>& data)
 {
     vector<EventReference> referencedEvents;
     if (allClockEvents.size() != 0) {
-        auto& lastClockEvent = allClockEvents.back();
+        const auto& lastClockEvent = allClockEvents.back();
         EventReference eventReference;
         eventReference.setCreator(lastClockEvent.getCreator());
         eventReference.setHash(lastClockEvent.getHash());
@@ -782,14 +778,14 @@ const LocalClockEvent& Daemon::insertClockEvent()
 {
     vector<EventReference> referencedEvents;
     if (allClockEvents.size() != 0) {
-        auto& lastClockEvent = allClockEvents.back();
+        const auto& lastClockEvent = allClockEvents.back();
         EventReference eventReference;
         eventReference.setCreator(lastClockEvent.getCreator());
         eventReference.setHash(lastClockEvent.getHash());
         referencedEvents.push_back(eventReference);
     }
     for (auto& it : neighbors) {
-        auto& neighbor = it.second;
+        const auto& neighbor = it.second;
         if (neighbor.getLastClockEventHash().size() != 0) {
             EventReference eventReference;
             eventReference.setCreator(neighbor.getNodeId());
@@ -797,7 +793,7 @@ const LocalClockEvent& Daemon::insertClockEvent()
             referencedEvents.push_back(eventReference);
         }
     }
-    for (auto& event : unreferencedEvents) {
+    for (const auto& event : unreferencedEvents) {
         EventReference eventReference;
         eventReference.setCreator(event.getCreator());
         eventReference.setHash(event.getHash());
@@ -813,13 +809,13 @@ const LocalClockEvent& Daemon::insertClockEvent()
     return allClockEvents.back();
 }
 
-int Daemon::findClockEventIndex(const EventHash eventHash)
+int Daemon::findClockEventIndex(const EventHash& eventHash) const
 {
     auto it = eventHashToClockEventIndex.find(eventHash);
     return it != eventHashToClockEventIndex.end() ? it->second : -1;
 }
 
-unsigned int Daemon::getClockEventIndex(const EventHash eventHash)
+unsigned int Daemon::getClockEventIndex(const EventHash& eventHash) const
 {
     auto index = findClockEventIndex(eventHash);
     if (index == -1)
@@ -828,13 +824,13 @@ unsigned int Daemon::getClockEventIndex(const EventHash eventHash)
         return index;
 }
 
-int Daemon::findEventIndex(const EventHash& eventHash)
+int Daemon::findEventIndex(const EventHash& eventHash) const
 {
     auto it = eventHashToEventIndex.find(eventHash);
     return it != eventHashToEventIndex.end() ? it->second : -1;
 }
 
-unsigned int Daemon::getEventIndex(const EventHash& eventHash)
+unsigned int Daemon::getEventIndex(const EventHash& eventHash) const
 {
     auto index = findEventIndex(eventHash);
     if (index == -1)
@@ -843,7 +839,7 @@ unsigned int Daemon::getEventIndex(const EventHash& eventHash)
         return index;
 }
 
-const Neighbor *Daemon::findNextHopNeighbor(NodeId nodeId)
+const Neighbor *Daemon::findNextHopNeighbor(NodeId nodeId) const
 {
     auto it = destinationToNextHop.find(nodeId);
     if (it == destinationToNextHop.end())
@@ -857,7 +853,7 @@ const Neighbor *Daemon::findNextHopNeighbor(NodeId nodeId)
     }
 }
 
-Salt Daemon::generateSalt()
+Salt Daemon::generateSalt() const
 {
     Salt salt = intuniform(0, 0xFFFFFFFF);
     salt <<= 32;
@@ -865,12 +861,12 @@ Salt Daemon::generateSalt()
     return salt;
 }
 
-EventHash Daemon::calculateEventHash(const Event& event)
+EventHash Daemon::calculateEventHash(const Event& event) const
 {
     MemoryOutputStream stream;
     stream.writeBytes(event.getData());
     stream.writeUint64Be(event.getSalt());
-    for (auto& referencedEvent : event.getReferencedEvents()) {
+    for (const auto& referencedEvent : event.getReferencedEvents()) {
         stream.writeUint64Be(referencedEvent.getCreator());
         stream.writeBytes(referencedEvent.getHash());
     }
@@ -879,12 +875,12 @@ EventHash Daemon::calculateEventHash(const Event& event)
     return hash;
 }
 
-EventHash Daemon::calculateClockEventHash(const ClockEvent& clockEvent)
+EventHash Daemon::calculateClockEventHash(const ClockEvent& clockEvent) const
 {
     MemoryOutputStream stream;
     stream.writeUint64Be(clockEvent.getTimestamp().raw());
     stream.writeUint64Be(clockEvent.getSalt());
-    for (auto& referencedEvent : clockEvent.getReferencedEvents()) {
+    for (const auto& referencedEvent : clockEvent.getReferencedEvents()) {
         stream.writeUint64Be(referencedEvent.getCreator());
         stream.writeBytes(referencedEvent.getHash());
     }
