@@ -31,10 +31,11 @@ All completed event chain discoveries end with validating the event chain by the
 In OMNeT++, statistics can be collected in three forms: scalar, histogram and vector data.
 
 Each daemon collects several statistics during the simulation:
+ - Size of local event database
  - Size of local clock event database
- - Number of started event chain discoveries (
- - Number of failed event chain discoveries
- - Number of completed event chain discoveries
+ - Number of started/aborted/completed event chain discoveries
+ - Number of started/aborted/completed event bounds discoveries
+ - Number of started/aborted/completed event order discoveries
 
 Additionally, for completed event chain discoveries each daemon collects the following:
  - Total simulation time to complete the discovery. This includes all packet exchanges and processing.
@@ -46,19 +47,78 @@ Finally, INET collects several other statistics by default. For example, UDP col
 
 # What's in the Example Simulation?
 
-The included simple example uses a handcrafted homogenous network where each node runs all three applications. The network is automatically configured properly so that each network interface in each node has an assigned static IPv4 address and all routing tables contain static IPv4 routes using the shortest path towards all destinations.
+The included simple example uses a handcrafted homogenous network where each node runs all three applications. The network contains 57 nodes connected with 1Gbps Ethernet links with 1us delay. The network topology is the following:
 
-Moreover, since the peer to peer network is an overlay network, all daemons are configured to know their neighbors and the next hop neighbor towards all destinations. This overlay would be useful for more realistic simulations where neighbors are not directly connected, that is they are not on the same LAN.
+![](/doc/Network.png)
 
-Clock events are generated as…
-Events are generated as…
-Event chain discoveries are started as….
+The network is automatically configured statically. Each network interface in each node has an assigned static IPv4 address, and all routing tables contain static IPv4 routes using the shortest path towards all destinations. This configuration is provided upon request by INET.
 
-The network contains 666 nodes, 666 interfaces, 666 links.
+Moreover, since the peer to peer network is an overlay network, all daemons are configured to know their neighbors and the next hop neighbor towards all destinations. This overlay would be useful for more realistic simulations where neighbors are not directly connected, that is they are not on the same LAN. This second layer configuration is provided by LOTI.
+
+All daemons generate clock events approximately every 1s, all publishers generate events every 10s on average, and all browsers start a new discovery every 10s on average. The rest of the parameters are as follows:
+
+![](/doc/Configuration.png)
+
+The network is simulated for 1 hour and on my computer the simulation completes under 1 minute.
 
 # What are the Results?
 
-The average time to complete an event chain discovery is … the average length of the resulting event chain is…. The average local time interval of the event chain is….
-The relative event chain discoveries completed to the number of started is….
+The following charts summerize the statistical results collected during running the above simulation.
 
-Include some diagrams
+The first chart shows how the per node clock event file grows over time. In 1 hour it grows to 800,000B, so one event is roughly 220B, and thus one day would require ~20MB storage space.
+
+![](/doc/ClockEventsFileLength.png)
+
+The next chart shows how the per node event file grows over time. This chart doesn't include the actual content of the events, which in this simulation was set to be short anyway to avoid unnecessary computations during hashing. Each publisher generates ~360 events, so the event overhead (excluding data) is ~100B per event.
+
+![](/doc/EventsFileLength.png)
+
+This chart shows various total counters for the whole network:
+
+![](/doc/VariousCounts.png)
+
+The total number of total generated events is ~20,000, and the total number of generated clock events is ~200,000:
+
+![](/doc/EventCreatedCount.png)
+
+It's also worth showing the number of started, aborted and completed event bounds discoveries separately:
+
+![](/doc/StartedCompletedAbortedCount.png)
+
+Approximately 83% of all event bounds discoveries were completed successfully, which also means that the corresponding event chain is valid at the discovery originator. Discoveries may fail due to expiry, for example. But there are more subtle reasons: the first and last few events often can't be tracked back to the clock event chain of the discovery originator because there was not enough time for the links to be formed.
+
+The next chart shows the total histogram of the simulation time needed to complete the event bounds discoveries for all nodes:
+
+![](/doc/EventBoundsDiscoveryTime.png)
+
+The following chart shows the time difference between the resulting local upper and local lower bounds of each event discovery that were carried out by a selected node:
+
+![](/doc/EventBoundsDiscoveryIntervalVector.png)
+
+This chart shows the total histogram of the difference between the resulting local upper and loca lower bounds of each event bounds discovery in the network:
+
+![](/doc/EventBoundsDiscoveryInterval.png)
+
+The underlying event chain discoveries may also be interesting. This chart shows the total histogram of the length of the resulting event chains of each event chain discoveries in the network:
+
+![](/doc/EventChainDiscoveryLength.png)
+
+The histogram of the simulation time needed to complete the event order discoveries for all nodes is somewhat similar to the event bounds discoveries. The main difference comes from the fact, that each event order discovery requires two distinct event chain discoveries to be carried out:
+
+![](/doc/EventOrderDiscoveryTime.png)
+
+It's also important to verify that the actual order of two randonly chosen events are as balanced as expected. This chart shows the balance is correct the relation goes as often in one way (-1 values) as it goes in the other (+1 values). The relatively small number of cases where the relationship is undefined (0 values) is caused by the two discovered event chains being overlapping, thus not giving a definite answer.
+
+![](/doc/EventOrderDiscoveryOrder.png)
+
+The next chart shows the number of UDP packets sent by each node separately. There are quite big differences between the nodes, because the network topology is asymmetric:
+
+![](/doc/PacketSentCount.png)
+
+The histogram of all UDP packet lengths may also be of interest. Unfortunately, this chart is barely useful, becuase the packet length is dominated by the clock event notifications (many small packets):
+
+![](/doc/UdpPacketLength1.png)
+
+But zooming in to the actual discovery packets region reveals the true distribution of the event chain discovery responses. This are the packets which carry the useful data back to the discovery originator:
+
+![](/doc/UdpPacketLength2.png)
