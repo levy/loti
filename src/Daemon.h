@@ -121,8 +121,8 @@ class Daemon : public cSimpleModule, public UdpSocket::ICallback, public IEventC
     void schedulePurgeDiscoveriesTimer();
     void processPurgeDiscoveriesTimer();
 
-    void sendClockEventNotification(const ClockEvent& clockEvent);
-    void processClockEventNotification(Neighbor& neighbor, const ClockEventNotification& notification);
+    void sendClockEventNotification(const Neighbor& neighbor, const ClockEvent& clockEvent);
+    void processClockEventNotification(Neighbor& neighbor, const EventHash& lastClockEventHash, const EventHash& neighborLastClockEventHash);
 
     void sendEventChainDiscoveryRequest(NodeId originator, const Neighbor& neighbor, const EventReference& eventReference);
     void processEventChainDiscoveryRequest(NodeId originator, const Neighbor& neighbor, const EventReference& eventReference);
@@ -144,32 +144,32 @@ class Daemon : public cSimpleModule, public UdpSocket::ICallback, public IEventC
 
     void sendToNeighbor(const Neighbor& neighbor, Packet *packet);
 
-    void validateEventChain(const EventChain& eventChain);
-    void validateEventChainDiscoveryResult(const EventChainDiscovery& eventChainDiscovery);
+    void validateEventChain(const EventChain& eventChain) const;
+    void validateEventChainDiscoveryResult(const EventChainDiscovery& eventChainDiscovery) const;
 
-    bool addLocalLowerBound(EventChain& eventChain);
-    bool addLocalUpperBound(EventChain& eventChain);
+    bool addLocalLowerBound(EventChain& eventChain) const;
+    bool addLocalUpperBound(EventChain& eventChain) const;
 
-    bool extendLowerBoundForNeighbor(const Neighbor& neighbor, EventChain& eventChain);
-    bool extendUpperBoundForNeighbor(const Neighbor& neighbor, EventChain& eventChain);
+    bool extendLowerBoundForNeighbor(const Neighbor& neighbor, EventChain& eventChain) const;
+    bool extendUpperBoundForNeighbor(const Neighbor& neighbor, EventChain& eventChain) const;
 
-    int compareEventChains(const EventChain& eventChain1, const EventChain& eventChain2);
+    int compareEventChains(const EventChain& eventChain1, const EventChain& eventChain2) const;
 
     const Event& insertEvent(const vector<uint8_t>& data);
     const LocalClockEvent& insertClockEvent();
 
-    int findClockEventIndex(const EventHash eventHash);
-    unsigned int getClockEventIndex(const EventHash eventHash);
+    int findClockEventIndex(const EventHash& eventHash) const;
+    unsigned int getClockEventIndex(const EventHash& eventHash) const;
 
-    int findEventIndex(const EventHash& eventHash);
-    unsigned int getEventIndex(const EventHash& eventHash);
+    int findEventIndex(const EventHash& eventHash) const;
+    unsigned int getEventIndex(const EventHash& eventHash) const;
 
-    const Neighbor *findNextHopNeighbor(NodeId nodeId);
+    const Neighbor *findNextHopNeighbor(NodeId nodeId) const;
 
-    Salt generateSalt();
+    Salt generateSalt() const;
 
-    EventHash calculateEventHash(const Event& event);
-    EventHash calculateClockEventHash(const ClockEvent& clockEvent);
+    EventHash calculateEventHash(const Event& event) const;
+    EventHash calculateClockEventHash(const ClockEvent& clockEvent) const;
 };
 
 }
