@@ -1,6 +1,9 @@
 Makefile
 out
+sim/results
+sim/.*
 .settings
+loti*
 *.so
 *_m.h
 *_m.cc

@@ -16,7 +16,7 @@
 #
 
 DIR=`dirname $0`
-OUT=$DIR/../out
+OUT=$DIR/..
 
 TOOL=""
 MODE=""
@@ -75,7 +75,7 @@ if [ "$MODE" = "debug" ]; then
   elif [ -f $OUT/loti_dbg.exe ]; then
     $TOOL $OUT/loti_dbg.exe $LOTI_OMNETPP_OPTIONS
   elif [ -f $OUT/libloti_dbg.so ] || [ -f $OUT/loti_dbg.dll ]; then
-    $TOOL $OPP_RUN_DBG -l $OUT/../src/loti $LOTI_OMNETPP_OPTIONS $@
+    $TOOL $OPP_RUN_DBG -l $OUT/loti $LOTI_OMNETPP_OPTIONS $@
   else
     echo "LOTI debug executable or shared library not found"
   fi
