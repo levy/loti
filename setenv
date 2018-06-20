@@ -11,7 +11,7 @@ esac
 LOTI_ROOT=`pwd`
 echo $LOTI_ROOT
 export PATH=$LOTI_ROOT/bin:$PATH
-export LOTI_OMNETPP_OPTIONS="-n $LOTI_ROOT/src:$LOTI_ROOT/sim:$INET_ROOT/src --image-path=$LOTI_ROOT/images"
+export LOTI_OMNETPP_OPTIONS="-n $LOTI_ROOT/src:$LOTI_ROOT/sim:$INET_ROOT/src --image-path=$LOTI_ROOT/images -l $INET_ROOT/src/INET"
 export LOTI_GDB_OPTIONS="-quiet -ex run --args"
 export LOTI_VALGRIND_OPTIONS="-v --tool=memcheck --leak-check=yes --show-reachable=no --leak-resolution=high --num-callers=40 --freelist-vol=4000000"
 
