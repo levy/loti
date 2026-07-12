@@ -1,0 +1,834 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>LOTI — Prove when it happened</title>
+<meta name="description" content="A peer-to-peer network for provable time. Prove that any document, photo, message, or measurement existed within a narrow window — and which came first — with no central authority, no blockchain, and no fees.">
+<meta property="og:title" content="LOTI — Prove when it happened">
+<meta property="og:description" content="Provable time, without a middleman. Get a portable proof anyone can verify offline.">
+<meta property="og:type" content="website">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ccircle cx='16' cy='16' r='14' fill='%23e0a63a'/%3E%3Cpath d='M9 16.5l4.5 4.5L23 11' fill='none' stroke='%230b1322' stroke-width='3' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Newsreader:ital,opsz,wght@0,6..72,400;0,6..72,500;0,6..72,600;1,6..72,400;1,6..72,500&family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+<script>
+  // Set theme before paint to avoid a flash.
+  (function () {
+    document.documentElement.classList.add('js');
+    try {
+      var saved = localStorage.getItem('loti-theme');
+      var t = saved || (matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark');
+      document.documentElement.setAttribute('data-theme', t);
+    } catch (e) {}
+  })();
+</script>
+<style>
+  :root {
+    --bg:        #0b1322;
+    --bg-2:      #0e1a2e;
+    --surface:   #12213b;
+    --surface-2: #16294a;
+    --ink:       #eaf0fb;
+    --ink-soft:  #a6b4cd;
+    --ink-faint: #78889f;
+    --line:      rgba(166, 184, 214, 0.14);
+    --line-2:    rgba(166, 184, 214, 0.28);
+    --accent:    #e0a63a;
+    --accent-2:  #f2bd54;
+    --accent-ink:#0b1322;
+    --verified:  #52c79c;
+    --shadow:    0 24px 60px -28px rgba(0,0,0,0.65);
+    --maxw: 1140px;
+
+    --f-display: "Newsreader", Georgia, "Times New Roman", serif;
+    --f-body: "IBM Plex Sans", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    --f-mono: "IBM Plex Mono", ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+  }
+  @media (prefers-color-scheme: light) {
+    :root {
+      --bg:        #eaeff7;
+      --bg-2:      #f3f6fb;
+      --surface:   #ffffff;
+      --surface-2: #f6f8fc;
+      --ink:       #0f1a2c;
+      --ink-soft:  #43526c;
+      --ink-faint: #74839b;
+      --line:      rgba(24, 46, 86, 0.12);
+      --line-2:    rgba(24, 46, 86, 0.22);
+      --accent:    #b17a17;
+      --accent-2:  #d6971f;
+      --accent-ink:#1a1204;
+      --verified:  #16855e;
+      --shadow:    0 22px 50px -30px rgba(20,40,80,0.45);
+    }
+  }
+  :root[data-theme="light"] {
+    --bg:        #eaeff7;
+    --bg-2:      #f3f6fb;
+    --surface:   #ffffff;
+    --surface-2: #f6f8fc;
+    --ink:       #0f1a2c;
+    --ink-soft:  #43526c;
+    --ink-faint: #74839b;
+    --line:      rgba(24, 46, 86, 0.12);
+    --line-2:    rgba(24, 46, 86, 0.22);
+    --accent:    #b17a17;
+    --accent-2:  #d6971f;
+    --accent-ink:#1a1204;
+    --verified:  #16855e;
+    --shadow:    0 22px 50px -30px rgba(20,40,80,0.45);
+  }
+  :root[data-theme="dark"] {
+    --bg:        #0b1322;
+    --bg-2:      #0e1a2e;
+    --surface:   #12213b;
+    --surface-2: #16294a;
+    --ink:       #eaf0fb;
+    --ink-soft:  #a6b4cd;
+    --ink-faint: #78889f;
+    --line:      rgba(166, 184, 214, 0.14);
+    --line-2:    rgba(166, 184, 214, 0.28);
+    --accent:    #e0a63a;
+    --accent-2:  #f2bd54;
+    --accent-ink:#0b1322;
+    --verified:  #52c79c;
+    --shadow:    0 24px 60px -28px rgba(0,0,0,0.65);
+  }
+
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  @media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--ink);
+    font-family: var(--f-body);
+    font-size: 1.0625rem;
+    line-height: 1.65;
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+    overflow-x: hidden;
+  }
+  h1, h2, h3 { font-family: var(--f-display); font-weight: 500; line-height: 1.08; text-wrap: balance; margin: 0; letter-spacing: -0.012em; }
+  p { margin: 0; }
+  a { color: inherit; }
+  ::selection { background: var(--accent); color: var(--accent-ink); }
+
+  .wrap { width: 100%; max-width: var(--maxw); margin-inline: auto; padding-inline: clamp(1.15rem, 4vw, 2.5rem); }
+
+  .eyebrow {
+    font-family: var(--f-mono);
+    font-size: 0.72rem;
+    letter-spacing: 0.2em;
+    text-transform: uppercase;
+    color: var(--accent);
+    margin: 0 0 1rem;
+    display: flex; align-items: center; gap: 0.7rem;
+  }
+  .eyebrow::before { content: ""; width: 26px; height: 1px; background: var(--accent); opacity: 0.7; }
+
+  /* ---------- buttons ---------- */
+  .btn {
+    display: inline-flex; align-items: center; gap: 0.55rem;
+    font-family: var(--f-body); font-weight: 600; font-size: 0.98rem;
+    padding: 0.8rem 1.35rem; border-radius: 2px;
+    border: 1px solid transparent; cursor: pointer; text-decoration: none;
+    transition: transform .16s ease, background .16s ease, border-color .16s ease, color .16s ease;
+    white-space: nowrap;
+  }
+  .btn svg { width: 18px; height: 18px; }
+  .btn-primary { background: var(--accent); color: var(--accent-ink); }
+  .btn-primary:hover { background: var(--accent-2); transform: translateY(-2px); }
+  .btn-ghost { border-color: var(--line-2); color: var(--ink); background: transparent; }
+  .btn-ghost:hover { border-color: var(--accent); color: var(--accent); transform: translateY(-2px); }
+  a:focus-visible, button:focus-visible, summary:focus-visible {
+    outline: 2px solid var(--accent); outline-offset: 3px; border-radius: 2px;
+  }
+
+  /* ---------- header ---------- */
+  header {
+    position: sticky; top: 0; z-index: 40;
+    background: color-mix(in srgb, var(--bg) 82%, transparent);
+    backdrop-filter: blur(12px);
+    border-bottom: 1px solid var(--line);
+  }
+  .nav { display: flex; align-items: center; justify-content: space-between; height: 66px; }
+  .brand { display: flex; align-items: center; gap: 0.6rem; font-family: var(--f-mono); font-weight: 500; letter-spacing: 0.16em; text-transform: uppercase; font-size: 0.92rem; text-decoration: none; color: var(--ink); }
+  .brand .seal { width: 22px; height: 22px; flex: none; }
+  .nav-links { display: flex; align-items: center; gap: 1.9rem; }
+  .nav-links a { font-size: 0.92rem; text-decoration: none; color: var(--ink-soft); transition: color .15s ease; }
+  .nav-links a:hover { color: var(--ink); }
+  .nav-right { display: flex; align-items: center; gap: 1rem; }
+  .theme-toggle {
+    display: inline-grid; place-items: center; width: 38px; height: 38px;
+    border: 1px solid var(--line-2); border-radius: 2px; background: transparent; color: var(--ink-soft); cursor: pointer;
+    transition: color .15s ease, border-color .15s ease;
+  }
+  .theme-toggle:hover { color: var(--accent); border-color: var(--accent); }
+  .theme-toggle svg { width: 18px; height: 18px; }
+  :root[data-theme="dark"] .icon-sun { display: block; }
+  :root[data-theme="dark"] .icon-moon { display: none; }
+  :root[data-theme="light"] .icon-sun { display: none; }
+  :root[data-theme="light"] .icon-moon { display: block; }
+  @media (max-width: 860px) { .nav-links { display: none; } }
+
+  /* ---------- hero ---------- */
+  .hero { position: relative; overflow: hidden; border-bottom: 1px solid var(--line); }
+  #lattice { position: absolute; inset: 0; width: 100%; height: 100%; z-index: 0; display: block; }
+  .hero-veil {
+    position: absolute; inset: 0; z-index: 1; pointer-events: none;
+    background:
+      radial-gradient(120% 90% at 78% 15%, transparent 40%, var(--bg) 100%),
+      linear-gradient(180deg, transparent 55%, var(--bg) 100%);
+  }
+  .hero-inner { position: relative; z-index: 2; display: grid; grid-template-columns: 1.15fr 0.85fr; gap: clamp(2rem, 5vw, 4rem); align-items: center; padding-block: clamp(4rem, 10vw, 7.5rem); }
+  .hero h1 { font-size: clamp(2.7rem, 6.2vw, 4.7rem); font-weight: 500; }
+  .hero h1 em { font-style: italic; color: var(--accent); }
+  .hero .lead { color: var(--ink-soft); font-size: clamp(1.1rem, 1.55vw, 1.32rem); line-height: 1.6; margin-top: 1.5rem; max-width: 40ch; }
+  .hero-cta { display: flex; flex-wrap: wrap; gap: 0.8rem; margin-top: 2.2rem; }
+  .trust-strip { display: flex; flex-wrap: wrap; gap: 0.5rem 1.4rem; margin-top: 2.2rem; font-family: var(--f-mono); font-size: 0.76rem; letter-spacing: 0.06em; color: var(--ink-faint); text-transform: uppercase; }
+  .trust-strip span { display: inline-flex; align-items: center; gap: 0.5rem; }
+  .trust-strip span::before { content: ""; width: 5px; height: 5px; background: var(--accent); border-radius: 50%; }
+
+  /* proof card device */
+  .proof {
+    background: color-mix(in srgb, var(--surface) 88%, transparent);
+    border: 1px solid var(--line-2);
+    border-radius: 6px; padding: 1.35rem 1.4rem 1.25rem;
+    box-shadow: var(--shadow);
+    font-family: var(--f-mono); font-size: 0.86rem;
+    backdrop-filter: blur(6px);
+  }
+  .proof-head { display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid var(--line); padding-bottom: 0.75rem; margin-bottom: 0.9rem; }
+  .proof-head .tag { letter-spacing: 0.18em; text-transform: uppercase; font-size: 0.7rem; color: var(--ink-faint); }
+  .proof-row { display: flex; justify-content: space-between; gap: 1rem; padding: 0.28rem 0; color: var(--ink-soft); }
+  .proof-row b { color: var(--ink); font-weight: 500; }
+  .proof-win { color: var(--accent); font-variant-numeric: tabular-nums; }
+  .proof-valid {
+    display: inline-flex; align-items: center; gap: 0.5rem; margin-top: 1rem;
+    color: var(--verified); border: 1px solid color-mix(in srgb, var(--verified) 45%, transparent);
+    background: color-mix(in srgb, var(--verified) 12%, transparent);
+    border-radius: 3px; padding: 0.4rem 0.7rem; font-size: 0.76rem; letter-spacing: 0.08em; text-transform: uppercase;
+  }
+  .proof-valid svg { width: 15px; height: 15px; }
+
+  @media (max-width: 900px) {
+    .hero-inner { grid-template-columns: 1fr; }
+    .proof { max-width: 420px; }
+  }
+
+  /* ---------- sections ---------- */
+  section { padding-block: clamp(4rem, 9vw, 7rem); }
+  .section-alt { background: var(--bg-2); border-block: 1px solid var(--line); }
+  .section-head { max-width: 62ch; margin-bottom: 3rem; }
+  .section-head h2 { font-size: clamp(1.95rem, 3.6vw, 2.9rem); }
+  .section-head p { color: var(--ink-soft); font-size: 1.12rem; margin-top: 1.1rem; }
+
+  .lede { max-width: 60ch; }
+  .lede p + p { margin-top: 1.2rem; }
+  .lede .drop { color: var(--ink); font-family: var(--f-display); font-size: clamp(1.35rem, 2.3vw, 1.7rem); line-height: 1.5; }
+  .lede .drop b { color: var(--accent); font-weight: 500; font-style: italic; }
+
+  /* grids */
+  .grid { display: grid; gap: 1.15rem; }
+  .g-3 { grid-template-columns: repeat(3, 1fr); }
+  .g-2 { grid-template-columns: repeat(2, 1fr); }
+  @media (max-width: 900px) { .g-3 { grid-template-columns: 1fr 1fr; } }
+  @media (max-width: 620px) { .g-3, .g-2 { grid-template-columns: 1fr; } }
+
+  .card {
+    background: var(--surface); border: 1px solid var(--line);
+    border-radius: 8px; padding: 1.6rem 1.55rem;
+    transition: transform .18s ease, border-color .18s ease, background .18s ease;
+  }
+  .card:hover { transform: translateY(-3px); border-color: var(--line-2); }
+  .card .ico { width: 40px; height: 40px; display: grid; place-items: center; border: 1px solid var(--line-2); border-radius: 8px; color: var(--accent); margin-bottom: 1.15rem; }
+  .card .ico svg { width: 22px; height: 22px; }
+  .card h3 { font-size: 1.28rem; margin-bottom: 0.55rem; }
+  .card p { color: var(--ink-soft); font-size: 0.99rem; }
+
+  .fail .ico { color: var(--ink-soft); }
+
+  /* steps */
+  .steps { display: grid; grid-template-columns: repeat(4, 1fr); gap: 1.1rem; counter-reset: step; }
+  @media (max-width: 900px) { .steps { grid-template-columns: 1fr 1fr; } }
+  @media (max-width: 560px) { .steps { grid-template-columns: 1fr; } }
+  .step { position: relative; padding: 1.6rem 1.4rem; background: var(--surface); border: 1px solid var(--line); border-radius: 8px; }
+  .step .num { font-family: var(--f-mono); font-size: 0.8rem; color: var(--accent); letter-spacing: 0.1em; margin-bottom: 0.9rem; }
+  .step h3 { font-size: 1.18rem; margin-bottom: 0.5rem; }
+  .step p { color: var(--ink-soft); font-size: 0.96rem; }
+
+  /* benefits */
+  .benefits { display: grid; grid-template-columns: repeat(3, 1fr); gap: 0.4rem 2.4rem; }
+  @media (max-width: 820px) { .benefits { grid-template-columns: 1fr 1fr; } }
+  @media (max-width: 520px) { .benefits { grid-template-columns: 1fr; } }
+  .benefit { display: flex; gap: 0.9rem; padding: 1.1rem 0; border-top: 1px solid var(--line); }
+  .benefit svg { width: 20px; height: 20px; color: var(--accent); flex: none; margin-top: 0.2rem; }
+  .benefit h3 { font-family: var(--f-body); font-weight: 600; font-size: 1.02rem; letter-spacing: 0; }
+  .benefit p { color: var(--ink-soft); font-size: 0.94rem; margin-top: 0.15rem; }
+
+  /* comparison table */
+  .table-scroll { overflow-x: auto; border: 1px solid var(--line); border-radius: 8px; }
+  table { border-collapse: collapse; width: 100%; min-width: 620px; font-size: 0.98rem; }
+  th, td { text-align: left; padding: 1rem 1.15rem; border-bottom: 1px solid var(--line); }
+  thead th { font-family: var(--f-mono); font-size: 0.74rem; letter-spacing: 0.12em; text-transform: uppercase; color: var(--ink-faint); font-weight: 500; }
+  tbody th { font-weight: 600; color: var(--ink); }
+  td { color: var(--ink-soft); }
+  .col-loti { background: color-mix(in srgb, var(--accent) 9%, transparent); color: var(--ink); font-weight: 500; }
+  thead .col-loti { color: var(--accent); }
+  tr:last-child td, tr:last-child th { border-bottom: none; }
+
+  /* costs / benefits two-up */
+  .ledger { display: grid; grid-template-columns: 1fr 1fr; gap: 1.15rem; }
+  @media (max-width: 720px) { .ledger { grid-template-columns: 1fr; } }
+  .ledger .panel { border: 1px solid var(--line); border-radius: 8px; padding: 1.7rem 1.6rem; background: var(--surface); }
+  .ledger h3 { font-family: var(--f-mono); font-weight: 500; text-transform: uppercase; letter-spacing: 0.14em; font-size: 0.78rem; margin-bottom: 1.2rem; color: var(--ink-faint); }
+  .ledger ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 0.85rem; }
+  .ledger li { display: flex; gap: 0.75rem; color: var(--ink-soft); font-size: 0.99rem; }
+  .ledger li svg { width: 18px; height: 18px; flex: none; margin-top: 0.25rem; }
+  .ledger .cost li svg { color: var(--ink-faint); }
+  .ledger .gain li svg { color: var(--accent); }
+  .ledger .gain { border-color: var(--line-2); }
+
+  /* CTA band */
+  .cta-band { text-align: center; }
+  .cta-band h2 { font-size: clamp(2rem, 4vw, 3rem); }
+  .cta-band p { color: var(--ink-soft); font-size: 1.14rem; margin: 1.1rem auto 2.2rem; max-width: 48ch; }
+  .cta-band .hero-cta { justify-content: center; }
+
+  /* FAQ */
+  .faq { max-width: 820px; }
+  details { border-bottom: 1px solid var(--line); }
+  summary { cursor: pointer; list-style: none; padding: 1.35rem 0; display: flex; justify-content: space-between; align-items: center; gap: 1.5rem; font-family: var(--f-display); font-size: 1.22rem; font-weight: 500; }
+  summary::-webkit-details-marker { display: none; }
+  summary .plus { flex: none; width: 22px; height: 22px; position: relative; transition: transform .22s ease; color: var(--accent); }
+  summary .plus::before, summary .plus::after { content: ""; position: absolute; background: currentColor; }
+  summary .plus::before { left: 0; right: 0; top: 10px; height: 2px; }
+  summary .plus::after { top: 0; bottom: 0; left: 10px; width: 2px; transition: transform .22s ease; }
+  details[open] summary .plus::after { transform: scaleY(0); }
+  details p { color: var(--ink-soft); padding: 0 0 1.4rem; max-width: 68ch; }
+
+  /* footer */
+  footer { border-top: 1px solid var(--line); background: var(--bg-2); padding-block: 3.5rem 2.5rem; }
+  .foot-top { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 2rem; }
+  .foot-brand { max-width: 34ch; }
+  .foot-brand .brand { margin-bottom: 0.9rem; }
+  .foot-brand p { color: var(--ink-soft); font-size: 0.96rem; }
+  .foot-links { display: flex; gap: 3.5rem; flex-wrap: wrap; }
+  .foot-col h4 { font-family: var(--f-mono); font-size: 0.72rem; letter-spacing: 0.14em; text-transform: uppercase; color: var(--ink-faint); font-weight: 500; margin: 0 0 0.9rem; }
+  .foot-col a { display: block; color: var(--ink-soft); text-decoration: none; font-size: 0.95rem; padding: 0.3rem 0; transition: color .15s ease; }
+  .foot-col a:hover { color: var(--accent); }
+  .foot-bottom { margin-top: 2.6rem; padding-top: 1.6rem; border-top: 1px solid var(--line); display: flex; flex-wrap: wrap; justify-content: space-between; gap: 1rem; color: var(--ink-faint); font-family: var(--f-mono); font-size: 0.78rem; }
+
+  /* reveal */
+  .js .reveal { opacity: 0; transform: translateY(18px); transition: opacity .7s ease, transform .7s ease; }
+  .js .reveal.is-visible { opacity: 1; transform: none; }
+  @media (prefers-reduced-motion: reduce) {
+    .js .reveal { opacity: 1; transform: none; transition: none; }
+    .btn:hover, .card:hover { transform: none; }
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="wrap nav">
+    <a class="brand" href="#top">
+      <svg class="seal" viewBox="0 0 32 32" aria-hidden="true"><circle cx="16" cy="16" r="13.5" fill="none" stroke="var(--accent)" stroke-width="2"/><path d="M9.5 16.5l4.4 4.4L22.7 12" fill="none" stroke="var(--accent)" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      LOTI
+    </a>
+    <nav class="nav-links" aria-label="Primary">
+      <a href="#problem">The problem</a>
+      <a href="#idea">The idea</a>
+      <a href="#uses">Use cases</a>
+      <a href="#compare">Compare</a>
+      <a href="#faq">FAQ</a>
+    </nav>
+    <div class="nav-right">
+      <button class="theme-toggle" id="themeToggle" type="button" aria-label="Toggle light and dark theme">
+        <svg class="icon-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="4.2"/><path d="M12 2.5v2.4M12 19.1v2.4M4.6 4.6l1.7 1.7M17.7 17.7l1.7 1.7M2.5 12h2.4M19.1 12h2.4M4.6 19.4l1.7-1.7M17.7 6.3l1.7-1.7"/></svg>
+        <svg class="icon-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20.5 14.2A8.2 8.2 0 1 1 10.4 3.9a6.6 6.6 0 0 0 10.1 10.3z"/></svg>
+      </button>
+      <a class="btn btn-ghost" href="https://github.com/levy/loti" target="_blank" rel="noopener">
+        <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 1.7A10.3 10.3 0 0 0 8.7 21.8c.5.1.7-.2.7-.5v-1.8c-2.9.6-3.5-1.2-3.5-1.2-.5-1.2-1.1-1.5-1.1-1.5-.9-.6.1-.6.1-.6 1 .1 1.6 1 1.6 1 .9 1.6 2.4 1.1 3 .9.1-.7.4-1.1.6-1.4-2.3-.3-4.7-1.1-4.7-5 0-1.1.4-2 1-2.7-.1-.3-.5-1.3.1-2.7 0 0 .8-.3 2.7 1a9.4 9.4 0 0 1 5 0c1.9-1.3 2.7-1 2.7-1 .6 1.4.2 2.4.1 2.7.6.7 1 1.6 1 2.7 0 3.9-2.4 4.7-4.7 5 .4.3.7 1 .7 2v3c0 .3.2.6.7.5A10.3 10.3 0 0 0 12 1.7z"/></svg>
+        GitHub
+      </a>
+    </div>
+  </div>
+</header>
+
+<main id="top">
+
+  <!-- HERO -->
+  <section class="hero">
+    <canvas id="lattice" aria-hidden="true"></canvas>
+    <div class="hero-veil" aria-hidden="true"></div>
+    <div class="wrap hero-inner">
+      <div>
+        <p class="eyebrow">Proof of when · peer&#8209;to&#8209;peer · no middleman</p>
+        <h1>Prove <em>when</em> it happened.<br>To anyone. Without<br>trusting anyone.</h1>
+        <p class="lead">LOTI weaves every digital event into a shared fabric of time — so you can prove, mathematically, that a document, photo, message, or measurement existed within a narrow window, and which of two events came first.</p>
+        <div class="hero-cta">
+          <a class="btn btn-primary" href="https://docs.google.com/document/d/1KmdknFYkGlxhLoKOQb9g14LW4Jg7zIReaa_GsB5aJio" target="_blank" rel="noopener">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 5.5A2.5 2.5 0 0 1 6.5 3H18a2 2 0 0 1 2 2v13.5"/><path d="M6.5 21A2.5 2.5 0 0 1 4 18.5v-13"/><path d="M6.5 21H20V5"/><path d="M8 8h8M8 12h6"/></svg>
+            Read the whitepaper
+          </a>
+          <a class="btn btn-ghost" href="https://github.com/levy/loti" target="_blank" rel="noopener">
+            <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 1.7A10.3 10.3 0 0 0 8.7 21.8c.5.1.7-.2.7-.5v-1.8c-2.9.6-3.5-1.2-3.5-1.2-.5-1.2-1.1-1.5-1.1-1.5-.9-.6.1-.6.1-.6 1 .1 1.6 1 1.6 1 .9 1.6 2.4 1.1 3 .9.1-.7.4-1.1.6-1.4-2.3-.3-4.7-1.1-4.7-5 0-1.1.4-2 1-2.7-.1-.3-.5-1.3.1-2.7 0 0 .8-.3 2.7 1a9.4 9.4 0 0 1 5 0c1.9-1.3 2.7-1 2.7-1 .6 1.4.2 2.4.1 2.7.6.7 1 1.6 1 2.7 0 3.9-2.4 4.7-4.7 5 .4.3.7 1 .7 2v3c0 .3.2.6.7.5A10.3 10.3 0 0 0 12 1.7z"/></svg>
+            View the code
+          </a>
+        </div>
+        <div class="trust-strip">
+          <span>Permissionless</span><span>Trustless</span><span>Private</span><span>Practically free</span>
+        </div>
+      </div>
+
+      <div class="proof" role="img" aria-label="Example proof: event created between 10:31:02 and 10:31:39, verified valid.">
+        <div class="proof-head">
+          <span class="tag">Portable proof · time bounds</span>
+          <span style="color:var(--accent)">◷</span>
+        </div>
+        <div class="proof-row"><span>event</span><b>manuscript.pdf</b></div>
+        <div class="proof-row"><span>existed after</span><b class="proof-win">2026‑07‑17 10:31:02</b></div>
+        <div class="proof-row"><span>existed before</span><b class="proof-win">2026‑07‑17 10:31:39</b></div>
+        <div class="proof-row"><span>window</span><b>37 seconds</b></div>
+        <div class="proof-row"><span>reference clock</span><b>a notary you trust</b></div>
+        <div class="proof-valid">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 12.5l5 5L20 6.5"/></svg>
+          Valid · signature ok · verified offline
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- PROBLEM -->
+  <section id="problem" class="section-alt">
+    <div class="wrap">
+      <div class="section-head reveal">
+        <p class="eyebrow">The problem</p>
+        <h2>A digital timestamp is just a number. And numbers can be changed.</h2>
+        <p>When the timing truly matters — who invented it first, whether the contract was signed by the deadline, when the footage was really shot — we fall back on trusting <em>someone</em>: a platform, a server, a notary, a screenshot. Every one of those is a single point of trust, failure, and dispute.</p>
+      </div>
+      <div class="grid g-3">
+        <div class="card fail reveal">
+          <div class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 20l4-1L19.5 7.5a2.1 2.1 0 0 0-3-3L5 16l-1 4z"/><path d="M13.5 6.5l3 3"/></svg></div>
+          <h3>Timestamps are editable</h3>
+          <p>The "date created" on a file, an email header, a post — all of them can be set to anything. Proof needs more than a claim.</p>
+        </div>
+        <div class="card fail reveal">
+          <div class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3l7 3v5c0 4.4-3 7.6-7 9-4-1.4-7-4.6-7-9V6l7-3z"/><path d="M9.5 12.5l-1.5 3 4-2"/></svg></div>
+          <h3>Authorities can fail</h3>
+          <p>A central timestamping service can go dark, be hacked, be pressured, or simply be disbelieved by the other side. Trust is a liability.</p>
+        </div>
+        <div class="card fail reveal">
+          <div class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c2.5 2.6 2.5 15.4 0 18M12 3c-2.5 2.6-2.5 15.4 0 18"/></svg></div>
+          <h3>Blockchains overshoot</h3>
+          <p>They can timestamp — but they're public, slow, and cost a fee every time. Overkill for something that should be quiet and free.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- IDEA -->
+  <section id="idea">
+    <div class="wrap">
+      <div class="section-head reveal">
+        <p class="eyebrow">The idea</p>
+        <h2>A clock nobody owns.</h2>
+      </div>
+      <div class="lede reveal">
+        <p class="drop">Instead of one clock everyone must trust, LOTI lets everyone keep time <b>together</b>. Nodes across the network keep a steady heartbeat and constantly nod to their neighbors — weaving a tamper-evident fabric of "this came before that."</p>
+        <p>To prove when your event happened, LOTI finds the two heartbeats that bracket it. To fake it, you'd have to unravel the whole fabric — and the mathematics simply won't allow it. You can't forge the past, and you can't pre-compute the future.</p>
+        <p>There's no global vote and no winner. Everyone is free to form their own view of the timeline — but nobody can ever prove a <em>contradiction</em>. It's agreement where it counts, freedom everywhere else.</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- HOW -->
+  <section id="how" class="section-alt">
+    <div class="wrap">
+      <div class="section-head reveal">
+        <p class="eyebrow">How you use it</p>
+        <h2>Four steps, and no leap of faith at the end.</h2>
+      </div>
+      <div class="steps">
+        <div class="step reveal">
+          <div class="num">STEP 01</div>
+          <h3>Join the network</h3>
+          <p>Run a node, or rely on one run by someone you trust — your company, a lab, a city, a law firm, a public notary.</p>
+        </div>
+        <div class="step reveal">
+          <div class="num">STEP 02</div>
+          <h3>Stamp your moment</h3>
+          <p>Point LOTI at any file or sensor reading. It's woven into the fabric of time instantly — and for free.</p>
+        </div>
+        <div class="step reveal">
+          <div class="num">STEP 03</div>
+          <h3>Ask for proof</h3>
+          <p>Request "when did this happen?" or "which came first?" LOTI hands you a small, portable proof file.</p>
+        </div>
+        <div class="step reveal">
+          <div class="num">STEP 04</div>
+          <h3>Anyone verifies</h3>
+          <p>They check the proof themselves — offline, in seconds. No account, no network, no trusting you. It holds up, or it doesn't.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- USE CASES -->
+  <section id="uses">
+    <div class="wrap">
+      <div class="section-head reveal">
+        <p class="eyebrow">Use cases</p>
+        <h2>Wherever "when" and "who was first" carry consequences.</h2>
+      </div>
+      <div class="grid g-3">
+        <div class="card reveal">
+          <div class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v18M7 21h10M5 7h14M12 3l-7 4 2.5 5a3.5 3.5 0 0 1-5 0L12 3zm0 0l7 4-2.5 5a3.5 3.5 0 0 0 5 0L12 3z"/></svg></div>
+          <h3>Legal disputes</h3>
+          <p>Settle "when" and "who was first" with mathematics, not memory. Prove a notice, filing, or agreement existed before a deadline.</p>
+        </div>
+        <div class="card reveal">
+          <div class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 3h8l4 4v14H6z"/><path d="M14 3v4h4"/><path d="M9 13h6M9 16.5h6"/></svg></div>
+          <h3>Document timestamping</h3>
+          <p>Notarize any file — a manuscript, a design, a will — so its existence by a date is provable forever, without a notary's fee.</p>
+        </div>
+        <div class="card reveal">
+          <div class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M14.5 9.6a3.2 3.2 0 1 0 0 4.8"/></svg></div>
+          <h3>Copyright &amp; priority</h3>
+          <p>Establish that you made a song, photo, dataset, or invention first. Portable prior-art you can show any court or client.</p>
+        </div>
+        <div class="card reveal">
+          <div class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 13a8 8 0 0 1 8 8M3 17a4 4 0 0 1 4 4"/><circle cx="5" cy="19" r="1.4"/><path d="M14 4l6 6-4 4-6-6z"/><path d="M13 11l-3 3"/></svg></div>
+          <h3>Oracle for physical reality</h3>
+          <p>Sensors stamp their readings; independent sensors corroborate each other. A trustless bridge between what happened in the world and what you can prove — noise, seismic, or camera data lining up with a real event.</p>
+        </div>
+        <div class="card reveal">
+          <div class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="5" width="18" height="14" rx="1.5"/><path d="M3 9h18M7 5v14M17 5v14"/><path d="M11 11l3 1.8-3 1.8z" fill="currentColor" stroke="none"/></svg></div>
+          <h3>Provenance vs. deepfakes</h3>
+          <p>Prove footage existed before — or couldn't have existed before — the event it claims to show. Time becomes part of authenticity.</p>
+        </div>
+        <div class="card reveal">
+          <div class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 3h6M10 3v6l-4.5 8.5A2 2 0 0 0 7.3 21h9.4a2 2 0 0 0 1.8-3.5L14 9V3"/><path d="M8 14h8"/></svg></div>
+          <h3>Research integrity</h3>
+          <p>Prove when data was collected or a result reached. No backdating, no quiet revisions — a defensible record of scientific priority.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- BENEFITS -->
+  <section id="benefits" class="section-alt">
+    <div class="wrap">
+      <div class="section-head reveal">
+        <p class="eyebrow">Why it's different</p>
+        <h2>The strengths come from what LOTI refuses to do.</h2>
+      </div>
+      <div class="benefits reveal">
+        <div class="benefit"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 12.5l5 5L20 6.5"/></svg><div><h3>Trustless</h3><p>Proofs are checked with math, not middlemen.</p></div></div>
+        <div class="benefit"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="8" cy="8" r="4"/><path d="M11 11l8 8M16 19l3-3M14 16l3-3"/></svg><div><h3>Permissionless</h3><p>Anyone can join. No gatekeeper, no application.</p></div></div>
+        <div class="benefit"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="5" y="10" width="14" height="10" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></svg><div><h3>Private by default</h3><p>Only fingerprints travel the network — your content stays with you.</p></div></div>
+        <div class="benefit"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M9.5 9.5a2.5 2.5 0 0 1 4.5 1.2c0 1.8-2.5 1.8-2.5 3.3M12 17h.01"/></svg><div><h3>Practically free</h3><p>No coins, no mining, no gas. Publishing costs nothing.</p></div></div>
+        <div class="benefit"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 3h8l4 4v14H5V3z"/><path d="M9 13.5l2 2 4-4"/></svg><div><h3>Portable proofs</h3><p>A single file, verifiable offline, for as long as it matters.</p></div></div>
+        <div class="benefit"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="6" cy="6" r="2.4"/><circle cx="18" cy="6" r="2.4"/><circle cx="12" cy="18" r="2.4"/><path d="M7.7 7.7L11 15M16.3 7.7L13 15M8 6h8"/></svg><div><h3>No single point of failure</h3><p>Decentralized and censorship-resistant by construction.</p></div></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- COMPARE -->
+  <section id="compare">
+    <div class="wrap">
+      <div class="section-head reveal">
+        <p class="eyebrow">Compare</p>
+        <h2>Between a notary and a blockchain — the sweet spot.</h2>
+      </div>
+      <div class="table-scroll reveal">
+        <table>
+          <thead>
+            <tr>
+              <th scope="col"></th>
+              <th scope="col" class="col-loti">LOTI</th>
+              <th scope="col">Timestamp authority</th>
+              <th scope="col">Blockchain</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr><th scope="row">Who you trust</th><td class="col-loti">A reference you choose — or the math</td><td>The authority</td><td>The chain &amp; its validators</td></tr>
+            <tr><th scope="row">Cost per proof</th><td class="col-loti">Effectively free</td><td>Per-stamp fees</td><td>Transaction / gas fees</td></tr>
+            <tr><th scope="row">Your content</th><td class="col-loti">Stays private</td><td>Shared with the authority</td><td>Public forever</td></tr>
+            <tr><th scope="row">Resilience</th><td class="col-loti">No single point of failure</td><td>Central</td><td>Robust, but heavy</td></tr>
+            <tr><th scope="row">Permission</th><td class="col-loti">Open to anyone</td><td>Gatekept</td><td>Open</td></tr>
+            <tr><th scope="row">Footprint</th><td class="col-loti">A light background service</td><td>—</td><td>Energy / capital intensive</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+
+  <!-- COSTS -->
+  <section id="costs" class="section-alt">
+    <div class="wrap">
+      <div class="section-head reveal">
+        <p class="eyebrow">The honest ledger</p>
+        <h2>What it costs, and what you get.</h2>
+        <p>LOTI is a network — it grows stronger with every participant. Here's the trade, without the sales gloss.</p>
+      </div>
+      <div class="ledger reveal">
+        <div class="panel cost">
+          <h3>What it takes</h3>
+          <ul>
+            <li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><path d="M5 12h14"/></svg><span>A node needs a little storage that grows over time, and a bit of bandwidth — like a modest background service.</span></li>
+            <li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><path d="M5 12h14"/></svg><span>Proofs pin an event to a <em>window</em> — think under a minute — not an exact instant.</span></li>
+            <li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><path d="M5 12h14"/></svg><span>It proves <em>time and order</em>. Pair it with a signature when you also need to prove <em>who</em>.</span></li>
+            <li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><path d="M5 12h14"/></svg><span>Like any network, its reach depends on participation — the more nodes, the tighter and more trusted the proofs.</span></li>
+          </ul>
+        </div>
+        <div class="panel gain">
+          <h3>What you gain</h3>
+          <ul>
+            <li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 12.5l5 5L20 6.5"/></svg><span>Mathematical proof of when an event happened, and which of two came first.</span></li>
+            <li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 12.5l5 5L20 6.5"/></svg><span>Proofs a third party can verify offline — no account, no platform, no trust in you.</span></li>
+            <li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 12.5l5 5L20 6.5"/></svg><span>Freedom from fees, gatekeepers, and single points of failure.</span></li>
+            <li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 12.5l5 5L20 6.5"/></svg><span>Privacy — publish as much as you like; only fingerprints ever leave your machine.</span></li>
+          </ul>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- CTA -->
+  <section id="start">
+    <div class="wrap cta-band reveal">
+      <p class="eyebrow" style="justify-content:center">Get started</p>
+      <h2>Run a node. Stamp a moment.<br>Prove it to the world.</h2>
+      <p>LOTI is open research and open source. Read the whitepaper for the whole idea, or dive into the code and documentation.</p>
+      <div class="hero-cta">
+        <a class="btn btn-primary" href="https://docs.google.com/document/d/1KmdknFYkGlxhLoKOQb9g14LW4Jg7zIReaa_GsB5aJio" target="_blank" rel="noopener">Read the whitepaper</a>
+        <a class="btn btn-ghost" href="https://github.com/levy/loti" target="_blank" rel="noopener">Explore on GitHub</a>
+      </div>
+    </div>
+  </section>
+
+  <!-- FAQ -->
+  <section id="faq" class="section-alt">
+    <div class="wrap">
+      <div class="section-head reveal">
+        <p class="eyebrow">Questions</p>
+        <h2>The things people ask first.</h2>
+      </div>
+      <div class="faq reveal">
+        <details>
+          <summary>Is this a blockchain?<span class="plus"></span></summary>
+          <p>No. There's no global ledger, no coin, and no mining. Everyone keeps their own local timeline and cross-checks their neighbors, which makes LOTI far lighter, private, and free compared with a blockchain.</p>
+        </details>
+        <details>
+          <summary>Does it cost money?<span class="plus"></span></summary>
+          <p>Publishing an event is effectively free. Running a node costs a little storage — which grows gradually over time — and a bit of bandwidth. There are no per-proof fees.</p>
+        </details>
+        <details>
+          <summary>How precise is a proof?<span class="plus"></span></summary>
+          <p>A proof brackets your event within a short window — on the order of under a minute — measured against the clock you choose to prove it against. It's a rigorous bound, not a claim of an exact instant.</p>
+        </details>
+        <details>
+          <summary>Is my content made public?<span class="plus"></span></summary>
+          <p>No. By default only fingerprints — not your actual files — travel across the network. Your documents, photos, and measurements stay on your own machine.</p>
+        </details>
+        <details>
+          <summary>Do I have to trust the other nodes?<span class="plus"></span></summary>
+          <p>No. A proof is checked with mathematics, so a dishonest node can't fabricate a valid one. The only thing you choose is <em>whose clock</em> the time is measured against — your own, or a reputable reference like a notary or a court.</p>
+        </details>
+        <details>
+          <summary>Who runs the network?<span class="plus"></span></summary>
+          <p>Anyone. People, companies, cities, courts, laboratories, even sensors and IoT devices. The more participants there are, the tighter and more widely trusted the proofs become.</p>
+        </details>
+      </div>
+    </div>
+  </section>
+
+</main>
+
+<footer>
+  <div class="wrap">
+    <div class="foot-top">
+      <div class="foot-brand">
+        <a class="brand" href="#top">
+          <svg class="seal" viewBox="0 0 32 32" aria-hidden="true"><circle cx="16" cy="16" r="13.5" fill="none" stroke="var(--accent)" stroke-width="2"/><path d="M9.5 16.5l4.4 4.4L22.7 12" fill="none" stroke="var(--accent)" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          LOTI
+        </a>
+        <p>A peer-to-peer network for provable time — the trustless middle ground between a notary and a blockchain.</p>
+      </div>
+      <div class="foot-links">
+        <div class="foot-col">
+          <h4>Learn</h4>
+          <a href="https://docs.google.com/document/d/1KmdknFYkGlxhLoKOQb9g14LW4Jg7zIReaa_GsB5aJio" target="_blank" rel="noopener">Whitepaper</a>
+          <a href="doc/Peer-to-peer%20Non-Consensus%20Partial%20Event%20Ordering%20Network.pdf">Paper (PDF)</a>
+          <a href="https://github.com/levy/loti/tree/master/doc" target="_blank" rel="noopener">Documentation</a>
+        </div>
+        <div class="foot-col">
+          <h4>Build</h4>
+          <a href="https://github.com/levy/loti" target="_blank" rel="noopener">Source code</a>
+          <a href="https://github.com/levy/loti/tree/master/doc/cli.md" target="_blank" rel="noopener">The CLI</a>
+          <a href="https://github.com/levy/loti/tree/master/doc/architecture.md" target="_blank" rel="noopener">Architecture</a>
+        </div>
+      </div>
+    </div>
+    <div class="foot-bottom">
+      <span>Based on the paper by Levente Mészáros.</span>
+      <span>Free software · GPLv3</span>
+    </div>
+  </div>
+</footer>
+
+<script>
+  // Theme toggle
+  (function () {
+    var btn = document.getElementById('themeToggle');
+    btn.addEventListener('click', function () {
+      var next = document.documentElement.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
+      document.documentElement.setAttribute('data-theme', next);
+      try { localStorage.setItem('loti-theme', next); } catch (e) {}
+    });
+  })();
+
+  // Scroll reveal
+  (function () {
+    var els = document.querySelectorAll('.reveal');
+    if (!('IntersectionObserver' in window) || matchMedia('(prefers-reduced-motion: reduce)').matches) {
+      els.forEach(function (el) { el.classList.add('is-visible'); });
+      return;
+    }
+    var io = new IntersectionObserver(function (entries) {
+      entries.forEach(function (e) {
+        if (e.isIntersecting) { e.target.classList.add('is-visible'); io.unobserve(e.target); }
+      });
+    }, { threshold: 0.12, rootMargin: '0px 0px -8% 0px' });
+    els.forEach(function (el) { io.observe(el); });
+  })();
+
+  // Hero lattice — parallel timelines cross-linked into a fabric of before/after,
+  // with one event bracketed between two ticks. The subject's core image, rendered live.
+  (function () {
+    var canvas = document.getElementById('lattice');
+    if (!canvas) return;
+    var ctx = canvas.getContext('2d');
+    var reduce = matchMedia('(prefers-reduced-motion: reduce)').matches;
+    var W = 0, H = 0, dpr = Math.min(window.devicePixelRatio || 1, 2);
+    var lines = [], links = [], event = null;
+
+    function accent() {
+      return getComputedStyle(document.documentElement).getPropertyValue('--accent').trim() || '#e0a63a';
+    }
+    function inkFaint() {
+      return document.documentElement.getAttribute('data-theme') === 'light'
+        ? 'rgba(24,46,86,0.30)' : 'rgba(166,184,214,0.28)';
+    }
+
+    function build() {
+      var host = canvas.parentElement;
+      W = host.clientWidth; H = host.clientHeight;
+      canvas.width = W * dpr; canvas.height = H * dpr;
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+
+      lines = []; links = [];
+      var rows = Math.max(4, Math.min(6, Math.round(H / 120)));
+      var top = H * 0.14, bottom = H * 0.9;
+      for (var r = 0; r < rows; r++) {
+        var y = top + (bottom - top) * (r / (rows - 1));
+        var nodes = [], x = 40 + Math.random() * 40;
+        while (x < W - 20) {
+          nodes.push({ x: x, y: y });
+          x += 70 + Math.random() * 70;
+        }
+        lines.push({ y: y, nodes: nodes });
+      }
+      // cross-links to the neighbouring row
+      for (var i = 0; i < lines.length - 1; i++) {
+        lines[i].nodes.forEach(function (n) {
+          if (Math.random() < 0.55) {
+            var below = lines[i + 1].nodes;
+            var m = below[Math.floor(Math.random() * below.length)];
+            if (m) links.push({ a: n, b: m });
+          }
+        });
+      }
+      // the highlighted event: a marker just above a mid row, bracketed by two ticks below
+      var row = lines[Math.max(1, Math.floor(lines.length / 2) - 1)];
+      if (row && row.nodes.length > 3) {
+        var idx = Math.floor(row.nodes.length * 0.5);
+        var lo = row.nodes[idx - 1], hi = row.nodes[idx + 1];
+        event = { lo: lo, hi: hi, x: (lo.x + hi.x) / 2, y: row.y - 34 };
+      } else { event = null; }
+    }
+
+    function frame(t) {
+      ctx.clearRect(0, 0, W, H);
+      var A = accent(), F = inkFaint();
+      var pulse = reduce ? 0.6 : (Math.sin(t / 1600) * 0.5 + 0.5);
+      var sweep = reduce ? W * 0.55 : ((t / 12) % (W + 300)) - 150;
+
+      // links
+      ctx.lineWidth = 1;
+      links.forEach(function (l) {
+        ctx.strokeStyle = F;
+        ctx.globalAlpha = 0.5;
+        ctx.beginPath(); ctx.moveTo(l.a.x, l.a.y); ctx.lineTo(l.b.x, l.b.y); ctx.stroke();
+      });
+      ctx.globalAlpha = 1;
+
+      // timelines + nodes
+      lines.forEach(function (ln) {
+        ctx.strokeStyle = F; ctx.globalAlpha = 0.7;
+        ctx.beginPath(); ctx.moveTo(20, ln.y); ctx.lineTo(W - 20, ln.y); ctx.stroke();
+        ln.nodes.forEach(function (n) {
+          var d = Math.abs(n.x - sweep);
+          var glow = d < 90 ? (1 - d / 90) : 0;
+          ctx.globalAlpha = 0.55 + glow * 0.45;
+          ctx.fillStyle = glow > 0.15 ? A : F;
+          ctx.beginPath(); ctx.arc(n.x, n.y, 2 + glow * 2.2, 0, Math.PI * 2); ctx.fill();
+        });
+      });
+      ctx.globalAlpha = 1;
+
+      // the bracketed event
+      if (event) {
+        ctx.strokeStyle = A; ctx.fillStyle = A;
+        ctx.globalAlpha = 0.35 + pulse * 0.4;
+        ctx.lineWidth = 1.4;
+        ctx.beginPath();
+        ctx.moveTo(event.lo.x, event.lo.y); ctx.lineTo(event.x, event.y); ctx.lineTo(event.hi.x, event.hi.y);
+        ctx.stroke();
+        // bracket ticks
+        [event.lo, event.hi].forEach(function (p) {
+          ctx.globalAlpha = 0.8;
+          ctx.beginPath(); ctx.arc(p.x, p.y, 3.2, 0, Math.PI * 2); ctx.fill();
+        });
+        // event marker (diamond)
+        ctx.globalAlpha = 0.55 + pulse * 0.45;
+        ctx.save(); ctx.translate(event.x, event.y); ctx.rotate(Math.PI / 4);
+        ctx.fillRect(-4, -4, 8, 8);
+        ctx.restore();
+        ctx.globalAlpha = 0.25 + pulse * 0.25;
+        ctx.beginPath(); ctx.arc(event.x, event.y, 12 + pulse * 5, 0, Math.PI * 2); ctx.stroke();
+      }
+      ctx.globalAlpha = 1;
+
+      if (!reduce) raf = requestAnimationFrame(frame);
+    }
+
+    var raf;
+    function start() { cancelAnimationFrame(raf); build(); if (reduce) frame(0); else raf = requestAnimationFrame(frame); }
+
+    var rt;
+    window.addEventListener('resize', function () { clearTimeout(rt); rt = setTimeout(start, 180); });
+    // redraw once on theme change so colors track the tokens
+    document.getElementById('themeToggle').addEventListener('click', function () {
+      if (reduce) requestAnimationFrame(frame);
+    });
+    start();
+  })();
+</script>
+
+</body>
+</html>
