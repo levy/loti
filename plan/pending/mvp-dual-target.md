@@ -201,19 +201,33 @@ unchanged (the snapshot methods are unused there).
 incremental/DB-backed storage (the current `FileStore` writes a full snapshot, fine at MVP scale
 but not for the paper's GB/year — a Stage-7 concern).
 
-## Stage 4 — Identity & signing
+## Stage 4 — Identity & signing  ✅ **DONE (2026-07-17)**
 
 **Goal:** attributable identity so proofs mean something.
 
-- [ ] `KeyStore` OS adapter (Ed25519); load/generate the node key at startup.
-- [ ] Wire `Signer` into event/clock-event creation (sign the hash) and into `validate`
-      (verify signatures under the creator/reference public key). Sim keeps `StubSigner`.
-- [ ] `NodeId` derives from the public-key fingerprint in production (sim keeps module id).
-- [ ] Commands: `loti init` (create home, key, default config), `loti key gen/show`.
+- [x] `Ed25519KeyStore` OS adapter (`adapters/os/keystore.{hpp,cpp}`, OpenSSL EVP): load or
+      generate + persist the node key at startup (`lotid --key <path>`). Confined to the adapter —
+      only it + `lotid` link `libcrypto`; `loti_core` stays pure.
+- [x] `Signer` wired into creation (the core already signed the hash on event/clock-event create)
+      **and into `validate`** — `validate_event_chain` now verifies every clock-event and the
+      event signature. The sim keeps `NullSigner` (verify → true), so this is a no-op there and
+      the OMNeT++ statistics stay **bit-identical** (re-verified: 6802/698/646/400/246).
+- [x] `NodeId` derives from the public-key fingerprint in production (first 8 bytes of
+      SHA-256(pubkey)); the sim keeps the module id. **Self-contained verification:** a signature
+      is `Ed25519(hash) [64] || pubkey [32]`, so `verify` splits out the pubkey, checks
+      `fingerprint(pubkey) == creator`, then does the Ed25519 check — any party validates knowing
+      only the `NodeId`, no key registry (this is what makes offline `loti verify` possible in Stage 6).
+- [~] Commands — `lotid --key` covers key gen/load and the `key` stdin command shows the id +
+      public key. `loti init` / `loti key gen/show` as **`loti` CLI** subcommands are **deferred to
+      Stage 5** (they need the control-socket client that Stage 5 builds).
 
-**Verify:** signed events/clock events verify; tampering flips verification to fail; hashes are
-**unchanged** vs Stage 1 (signature excluded from hash). Sim run still green with the stub.
-**Commit:** "id: Ed25519 identity + signing; loti init / key".
+**Verify:** ✅ 19 unit cases / 45 assertions (was 12/34) incl. sign/verify, tamper→fail
+(signature, embedded pubkey, or message), wrong-claimed-identity→fail, cross-keystore verification
+from the embedded pubkey alone, and signature-excluded-from-hash. ✅ end-to-end: two **signed**
+`lotid` nodes on loopback (ids `0xc156…`, `0xfdb0…` = their key fingerprints) complete a chain +
+bounds discovery — completion means node 1 verified node 2's signed clock events using only node 2's
+NodeId + the embedded pubkey. ✅ hashes unchanged; ✅ sim bit-identical with `NullSigner`.
+**Commit:** "id: Ed25519 identity + signing; verification wired into validate".
 
 ## Stage 5 — Control channel + CLI client
 
@@ -403,5 +417,29 @@ deviations from the docs; per repo convention, decisions live here, not in sourc
     save and loses events created since the last save on a hard crash — fine at MVP scale;
     incremental/append or an embedded DB (LMDB/SQLite) is a Stage-7 scaling concern, and the
     fine-grained `Store` port can be introduced then if it earns its keep.
+- **Stage-4 identity & signing (2026-07-17):**
+  - **Crypto = OpenSSL EVP Ed25519** (real, audited — no hand-rolled crypto), confined to
+    `adapters/os/keystore.cpp`; the header exposes an opaque `void*` so only the adapter + `lotid`
+    link `libcrypto`. `loti_core` stays pure (it has only the `Signer` **port**).
+  - **Self-contained signatures:** a signature is `Ed25519(message) [64] || public key [32]`, and a
+    `NodeId` is `first 8 bytes of SHA-256(pubkey)`. `verify(msg, sig, signer)` splits out the
+    embedded pubkey, checks `fingerprint(pubkey) == signer`, then does the Ed25519 check — so any
+    node verifies any other's signatures with **no key registry / no key exchange** (the pubkey
+    rides in the signature, which rides on the wire and in snapshots). This is what makes offline
+    `loti verify` (Stage 6) work. Signature stays excluded from the hash → no hash changes, no
+    invalidated proofs.
+  - **`lotid` dual mode:** `--key <path>` → signed mode, `NodeId = fingerprint(pubkey)` (printed
+    hex; `--peer`/`--id`/`--route` now parse base-0 so hex fingerprints round-trip); no `--key` →
+    unsigned mode with `NullSigner` + `--id` (keeps the M2/3b tests working). Signer + Node became
+    `unique_ptr` so the mode is chosen at construction.
+  - **Verification in the core:** `validate_event_chain` now calls `signer_.verify` for each
+    clock event and the event. Because the sim's `NullSigner.verify()` returns true, this is a
+    no-op there — re-verified the OMNeT++ stats are still bit-identical.
+  - **Build-scoping gotcha (fixed):** once `adapters/os/keystore.cpp` and `app/lotid/lotid.cpp`
+    existed, `opp_makemake --deep` swept them into the sim's `libloti.so`, which then failed to
+    load on an unresolved `libcrypto` / KeyStore-vtable symbol. `scripts/build-sim.sh` now excludes
+    `-X adapters/os -X app/lotid -X app/loti` — the sim is built strictly from
+    `core/ + adapters/sim/ + app/sim/`. Rule going forward: any new production-only `.cpp` under
+    `adapters/os` or `app/*` (non-sim) must be outside the sim's `--deep` sweep.
 - _Store engine (incremental append / LMDB vs SQLite): deferred to Stage 7 (scaling)._
 - _RPC encoding (JSON-over-unix-socket vs framed binary): TBD — Stage 5._

@@ -477,6 +477,8 @@ void Node::validate_event_chain(const EventChain& chain) const {
     const auto& ce = *it;
     if (hash::calculate_clock_event_hash(ce) != ce.hash)
       throw std::runtime_error("invalid event hash");
+    if (!signer_.verify(ce.hash, ce.signature, ce.creator))
+      throw std::runtime_error("invalid clock event signature");
     if (have_prev) {
       bool found = false;
       for (const auto& ref : ce.referenced_events)
@@ -492,11 +494,15 @@ void Node::validate_event_chain(const EventChain& chain) const {
       if (ref == prev) { found = true; break; }
     if (!found && !chain.lower_bound.empty()) throw std::runtime_error("invalid event");
   }
+  if (!signer_.verify(chain.event.hash, chain.event.signature, chain.event.creator))
+    throw std::runtime_error("invalid event signature");
   prev = EventReference{chain.event.creator, chain.event.hash};
   for (auto it = chain.upper_bound.begin(); it != chain.upper_bound.end(); ++it) {
     const auto& ce = *it;
     if (hash::calculate_clock_event_hash(ce) != ce.hash)
       throw std::runtime_error("invalid event hash");
+    if (!signer_.verify(ce.hash, ce.signature, ce.creator))
+      throw std::runtime_error("invalid clock event signature");
     if (it != chain.upper_bound.begin()) {
       bool found = false;
       for (const auto& ref : ce.referenced_events)
