@@ -100,26 +100,33 @@ is unaffected because the stage is purely additive: the only modified tracked fi
 - Toolchain present here: cmake 4.2, g++ 15.2, clang++ 23. OMNeT++/INET are **not** installed,
   which is fine — that is exactly the environment `loti-core` must build in.
 
-## Stage 1 — De-OMNeT++ the domain model & serialization
+## Stage 1 — De-OMNeT++ the domain model & serialization  ✅ **DONE (folded into Stage 2, 2026-07-17)**
 
 **Goal:** protocol data types and hashing live in `loti-core` as plain C++, byte-identical to
 today. *Highest-risk stage — guard with golden tests.*
 
-- [ ] Port `Data.msg` types to plain structs in `core/domain/` (`Event`, `ClockEvent`,
-      `LocalClockEvent`, `EventReference`, `EventChain`, discovery records, `Neighbor`).
-- [ ] Reserve an **optional `signature` field** on `Event`/`ClockEvent` now (excluded from the
-      hash; it covers the hash) so adding real signing in Stage 4 does **not** change hashes.
-- [ ] Move `calculateEventHash`/`calculateClockEventHash` and all `calculate*Size` off INET's
-      `MemoryOutputStream` onto a core serializer; keep `picosha.h` as-is.
-- [ ] Reduce the `Packet.msg` chunk types to a **thin sim-transport wrapper** carrying the
-      core's canonical bytes (e.g. a `BytesChunk`, or a `FieldsChunk` whose length equals the
-      core encoding).
-- [ ] Golden tests: fixed input (fixed salt) → known SHA-256; core serializer length equals the
-      old `calculate*Size`.
+*Landed together with the Stage-2 `Node` extraction (same commit, `d569745`); the two were
+inseparable — the core engine couldn't be extracted without the plain-struct model + serializer.*
 
-**Verify:** golden hash/size tests pass; the OMNeT++ example produces **identical**
-`clockEventsFileLength`/`eventsFileLength` and packet-length histograms as before this stage.
-**Commit:** "core: plain-struct domain model + canonical serializer (byte-identical)".
+- [x] Ported `Data.msg` types to plain structs in `core/domain/types.hpp` (`Event`, `ClockEvent`,
+      `LocalClockEvent`, `EventReference`, `EventChain`, discovery records, `Neighbor`) — no
+      OMNeT++/INET dependency.
+- [x] Reserved an **optional `signature` field** on `Event`/`ClockEvent` (excluded from the hash);
+      Stage 4 wired real Ed25519 signing into it with **no hash change**, as designed.
+- [x] Moved `calculate*Hash`/`calculate*Size` onto a core serializer (`core/hash/serializer.hpp`
+      + `hashing.cpp`, byte-for-byte with `Data.cc`), `picosha2.hpp` vendored as-is.
+- [x] The sim transport carries the core's canonical bytes in an INET **`BytesChunk`**
+      (`adapters/sim/transport.hpp`); the `Packet.msg` chunk types are unused by the core-hosted
+      `app/sim` (they remain only in the `src/` baseline).
+- [x] Golden tests: `test/core/test_hashing.cpp` (fixed salt → known SHA-256; size == old
+      `calculate*Size`) + `test_wire.cpp` (codec round-trip).
+
+**Verify:** ✅ golden hash/size tests pass; the OMNeT++ example produces **byte-identical**
+`clockEventsFileLength`/`eventsFileLength` vs the `src/` baseline (M1 A/B check — the core
+serializer length equals `Data.cc`'s `calculate*Size`). *(Packet-length histograms differ by
+design — the `BytesChunk` carries the core wire encoding, per the Stage-2 parity note.)*
+**Commit:** folded into "Extract the Node protocol engine behind ports + in-process harness
+(MVP Stage 2)" (`d569745`).
 
 ## Stage 2 — Ports + extract the `Node` core  → **M1 ✅ REACHED (2026-07-17)**
 
