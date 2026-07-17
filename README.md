@@ -29,7 +29,7 @@ Start here depending on what you want:
 | --- | --- |
 | **The idea and the math** — goals, events/clock events, proving order and bounds, attack prevention, efficiency | [doc/theory.md](doc/theory.md) |
 | **How the code works** — modules, data model, packets, the three discovery algorithms, validation, statistics | [doc/implementation.md](doc/implementation.md) |
-| **The exact wire format** — every packet's fields, byte layout, sizes, and message flows | [doc/packet-format.md](doc/packet-format.md) |
+| **The on-the-wire protocol** — the three datagrams deployed nodes exchange: field encodings, byte layout, sizes, message flows | [doc/packet-format.md](doc/packet-format.md) |
 | **The example network and results** — topology, configuration, charts (the original project README) | [doc/simulation.md](doc/simulation.md) |
 | **What is / isn't implemented** — the gap between paper and code, simplifications, known issues | [doc/paper-vs-implementation.md](doc/paper-vs-implementation.md) |
 | **The product CLI** — command surface, daemon/client architecture, portable proof format | [doc/cli.md](doc/cli.md) |
