@@ -61,8 +61,10 @@ From [architecture.md](../../doc/architecture.md), non-negotiable throughout:
 - **M3 — Proofs end-to-end** (end of Stage 6) ✅ **REACHED 2026-07-17**: publish → `loti prove
   bounds/order` → `loti verify` offline (no daemon, no network) works on real Ed25519-signed
   proofs; a mutated proof is rejected with exit 6.
-- **M4 — MVP acceptance** (end of Stage 7): restart-survivable, backed up, both targets green,
-  docs updated.
+- **M4 — MVP acceptance** (end of Stage 7) ✅ **REACHED 2026-07-17**: restart-survivable, backed
+  up, both targets green, docs updated. The production node passes an end-to-end acceptance suite
+  (restart survival, backup/restore, and a multi-node offline-verifiable notary proof over real
+  UDP); the OMNeT++ example statistics are unchanged. *The MVP is complete.*
 
 ## How to work this plan
 
@@ -304,22 +306,41 @@ verify exit 0. Core suite green (26 cases / 86 assertions, +7 proof cases). Sim 
 by `--deep` with no new OpenSSL/OMNeT++ dependency.
 **Commit:** "proof: portable proof format + offline loti verify". **(M3)**
 
-## Stage 7 — Persistence hardening + acceptance  → **M4**
+## Stage 7 — Persistence hardening + acceptance  → **M4 ✅ REACHED (2026-07-17)**
 
 **Goal:** durable, backed-up, both targets green, docs current.
 
-- [ ] `loti db stat` and `loti db backup --out` / `db restore`; define + enforce the retention
-      rule (local events + local clock chain are never dropped).
-- [ ] Restart/backup/restore tests; a multi-node acceptance test (publish, prove, verify
-      offline) as a CI job.
-- [ ] Confirm the OMNeT++ example statistics are unchanged from `main` baseline (regression
-      gate on hashes/sizes/completion).
-- [ ] Update docs: mark the CLI MVP commands as implemented; note any deviations from
-      [cli.md](../../doc/cli.md)/[architecture.md](../../doc/architecture.md) discovered while
-      building.
+- [x] `loti db stat` / `db backup --out <f>` / `db restore <f>` (daemon `db-stat`/`db-backup`/
+      `db-restore`). The retention rule — local events + local clock chain are never dropped — is
+      **enforced by construction** (nothing prunes them; `snapshot`/`restore` round-trip the whole
+      DAG) and documented in `db_stat` + the store comment. `db gc`/`db verify` are unneeded at MVP
+      scale (no expendable derived state).
+- [x] Acceptance suite [test/acceptance/run.sh](../../test/acceptance/run.sh) (tier 4: real
+      sockets/disk/restart), the CI gate — 10 checks, exits non-zero on any failure: **restart
+      survival** (3 events survive stop+restart from `--store`; a restored event still
+      proves+verifies), **backup/restore** (backup at 2, diverge to 3, restore reverts to 2), and a
+      **multi-node notary proof** — two signed daemons over loopback UDP, B proves A's event via
+      `<creator>:<hash>`, the proof is anchored in B's clock, verifies offline (exit 0), and a
+      tampered copy is rejected (exit 6). Stable across repeated runs. **This required one small
+      feature — remote-event addressing** (`resolve_event`, `<creator>:<hash>`) so a node can
+      initiate a discovery for a peer's event; the protocol's chain-request path already supported
+      it. That is *addressing*, not reference selection (still deferred).
+- [x] OMNeT++ statistics regression gate: since Stage 7 changed **no** `core/`/`adapters/sim/`/
+      `app/sim/`/`sim/` files (only `app/lotid`, `app/loti`, `test/`), the sim is byte-identical to
+      the M3-verified state. Re-confirmed by a fresh build + run of all four configs; the 120 s
+      `NoDiscovery`+`EventBoundsDiscovery` re-run (the parameters the M1 baseline was captured with)
+      reproduces the recorded numbers **bit-for-bit** — `clockEventCreated` 6806 / 6802,
+      `eventCreated` 712 / 698, discovery started/completed/aborted 646 / 400 / 246.
+- [x] Docs updated: [cli.md](../../doc/cli.md) gains an "Implementation status (MVP)" section
+      (shipped commands, accepted deviations — binary proof format, advisory `--trust`, deferred
+      `--reference`, line-protocol RPC, `event find` addition — and the retention rule);
+      [architecture.md](../../doc/architecture.md) marks the ports/adapters design realized and
+      tier-4 testing implemented.
 
-**Verify:** full acceptance suite green in both targets; a cold restart of `lotid` resumes with
-all prior events/clock events and can still prove them.
+**Verify:** ✅ acceptance suite green (10/10, repeatable); a cold restart of `lotid` resumes with
+all prior events/clock events and still proves them; two-node offline-verifiable notary proof over
+real UDP. Core suite green (26/86). Sim regression gate: **statistics unchanged** — the M1 baseline
+(6802 / 698 / 646 / 400 / 246) reproduced **bit-for-bit** on a fresh build + run.
 **Commit:** "mvp: persistence + acceptance; both targets green". **(M4 — move plan to done/)**
 
 ---
@@ -550,5 +571,27 @@ deviations from the docs; per repo convention, decisions live here, not in sourc
   *parser* was added (the daemon still speaks the flat `key\tvalue` line protocol; the CLI shapes
   those fields), keeping the minimal-deps stance. Verified every `--json` output parses under
   `python -m json.tool`.
-- _Store engine (incremental append / LMDB vs SQLite): deferred to Stage 7 (scaling)._
+- **Stage-7 persistence hardening + acceptance (M4, 2026-07-17):**
+  - **`db stat/backup/restore` reuse the snapshot** (`Node::snapshot`/`restore` + `FileStore`): a
+    backup is a snapshot written to a chosen path; a restore loads one into the running node and
+    re-persists to the primary store. No new store engine — the retention rule (local events +
+    local clock chain never dropped) holds by construction, so `db gc`/`db verify` earn nothing at
+    MVP scale. Chose this over a fine-grained `Store` port for the same reasons as 3b.
+  - **Remote-event addressing (`<creatorHex>:<hashHex>`)** was the one feature the multi-node
+    acceptance needed: the daemon's `find_event` is local-only, so a node could not *name* a
+    peer's event to start a discovery — even though the protocol's chain-request path fully
+    supports it. `resolve_event` builds a synthetic reference; the creator's neighbor answers and
+    **this** node becomes the reference (an independent-notary proof). This is addressing, not
+    reference *selection* (`--reference` stays deferred), so it respects the earlier deferral.
+    Empirically: B proves A's event over real UDP, proof anchored in B's clock, verifies offline.
+  - **Acceptance is a shell CI gate** ([test/acceptance/run.sh](../../test/acceptance/run.sh))
+    driving the real binaries — restart survival, backup/restore, multi-node notary proof + tamper
+    rejection. The cross-node discovery retries while the bidirectional cross-links catch up (it
+    can abort mid-catch-up); stable across repeated runs. Two test-authoring bugs found and fixed:
+    `last` is daemon-ephemeral and not restored (prove a concrete hash after restart), and a
+    node-id parse (`node id:` spans two awk fields) had silently produced empty peer ids.
+  - **Sim regression by construction:** Stage 7 touched no `core/`/`adapters/sim/`/`app/sim/`/`sim/`
+    file, so the sim is byte-identical to the M3-verified state; re-confirmed with a fresh build +
+    run (statistics unchanged vs the M1 baseline).
+- _Store engine (incremental append / LMDB vs SQLite): deferred beyond the MVP (scaling)._
 - _RPC encoding (JSON-over-unix-socket vs framed binary): resolved in Stage 5 (hand-rolled line protocol)._
