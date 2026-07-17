@@ -24,6 +24,9 @@
 //   status                    node id, counts, mode
 //   key                       node id + public key
 //   save                      write a snapshot now (if --store is set)
+//   db-stat                   store status (paths, counts, sizes, retention)
+//   db-backup <path>          write a snapshot copy to <path>
+//   db-restore <path>         load a snapshot from <path> into the running node
 //   quit                      stop the daemon
 //
 // Usage:
@@ -31,6 +34,7 @@
 //         [--route <dst>:<nexthop>]... [--clock-interval <s>] [--expiry <s>]
 //         [--store <path>] [--control <path>] [--verbose]
 
+#include <sys/stat.h>
 #include <unistd.h>
 
 #include <cstdint>
@@ -106,6 +110,24 @@ std::string hex_id(domain::NodeId id) {
   char buf[19];
   std::snprintf(buf, sizeof(buf), "0x%016llx", static_cast<unsigned long long>(id));
   return buf;
+}
+
+std::optional<domain::EventHash> unhex(const std::string& s) {
+  if (s.empty() || s.size() % 2) return std::nullopt;
+  const auto nib = [](char c) -> int {
+    if (c >= '0' && c <= '9') return c - '0';
+    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+    return -1;
+  };
+  domain::EventHash b;
+  b.reserve(s.size() / 2);
+  for (std::size_t i = 0; i < s.size(); i += 2) {
+    const int hi = nib(s[i]), lo = nib(s[i + 1]);
+    if (hi < 0 || lo < 0) return std::nullopt;
+    b.push_back(static_cast<std::uint8_t>((hi << 4) | lo));
+  }
+  return b;
 }
 
 std::string hex_bytes(const domain::Bytes& b) {
@@ -362,6 +384,28 @@ class Lotid final : public ChainCallback, public BoundsCallback, public OrderCal
       save_snapshot();
       return {kOk, false, "", {{"snapshot", store_ ? store_->path() : "(none)"}}};
     }
+    if (verb == "db-stat") return db_stat();
+    if (verb == "db-backup") {
+      if (args.size() < 2) return {kUsage, false, "usage: db-backup <path>", {}};
+      os::FileStore(args[1]).save(node_->snapshot());
+      return {kOk, false, "", {{"backup", args[1]},
+                               {"events", std::to_string(node_->event_count())},
+                               {"clockEvents", std::to_string(node_->clock_event_count())}}};
+    }
+    if (verb == "db-restore") {
+      if (args.size() < 2) return {kUsage, false, "usage: db-restore <path>", {}};
+      const auto blob = os::FileStore(args[1]).load();
+      if (!blob) return {kNotFound, false, "cannot read snapshot", {}};
+      try {
+        node_->restore(*blob);
+      } catch (const std::exception& e) {
+        return {kInvalidResult, false, std::string("invalid snapshot: ") + e.what(), {}};
+      }
+      save_snapshot();  // persist the restored state to the primary store
+      return {kOk, false, "", {{"restored", args[1]},
+                               {"events", std::to_string(node_->event_count())},
+                               {"clockEvents", std::to_string(node_->clock_event_count())}}};
+    }
     if (verb == "quit" || verb == "exit") {
       reactor_.stop();
       return {kOk, false, "", {{"status", "stopping"}}};
@@ -372,15 +416,15 @@ class Lotid final : public ChainCallback, public BoundsCallback, public OrderCal
   Reply dispatch_query(const std::string& verb, const std::vector<std::string>& args, int reply_fd) {
     if (verb == "order") {
       if (args.size() < 3) return {kUsage, false, "usage: order <a> <b>", {}};
-      const auto* a = find_event(args[1]);
-      const auto* b = find_event(args[2]);
+      const auto a = resolve_event(args[1]);
+      const auto b = resolve_event(args[2]);
       if (!a || !b) return {kNotFound, false, "no such event", {}};
       if (reply_fd >= 0) pending_order_[std::make_pair(a->hash, b->hash)] = reply_fd;
       node_->discover_event_order(*a, *b, *this);
       return reply_fd >= 0 ? Reply{kOk, true, "", {}} : Reply{kOk, false, "", {{"status", "started"}}};
     }
     if (args.size() < 2) return {kUsage, false, "usage: " + verb + " <event>", {}};
-    const auto* e = find_event(args[1]);
+    const auto e = resolve_event(args[1]);
     if (!e) return {kNotFound, false, "no such event", {}};
     if (verb == "bounds") {
       if (reply_fd >= 0) pending_bounds_.insert({e->hash, reply_fd});
@@ -404,8 +448,8 @@ class Lotid final : public ChainCallback, public BoundsCallback, public OrderCal
 
     if (sub == "order") {
       if (args.size() < 4) return {kUsage, false, "usage: prove order <a> <b>", {}};
-      const auto* a = find_event(args[2]);
-      const auto* b = find_event(args[3]);
+      const auto a = resolve_event(args[2]);
+      const auto b = resolve_event(args[3]);
       if (!a || !b) return {kNotFound, false, "no such event", {}};
       order_proofs_.push_back(OrderProof{reply_fd, a->hash, b->hash, {}, {}});
       node_->discover_event_chain(*a, *this);
@@ -415,7 +459,7 @@ class Lotid final : public ChainCallback, public BoundsCallback, public OrderCal
     if (sub != "bounds" && sub != "chain")
       return {kUsage, false, "prove kind must be bounds|order|chain", {}};
     if (args.size() < 3) return {kUsage, false, "usage: prove " + sub + " <event>", {}};
-    const auto* e = find_event(args[2]);
+    const auto e = resolve_event(args[2]);
     if (!e) return {kNotFound, false, "no such event", {}};
     const proof::Kind kind = (sub == "chain") ? proof::Kind::chain : proof::Kind::bounds;
     pending_proof_.insert({e->hash, ProofRequest{reply_fd, kind}});
@@ -583,6 +627,24 @@ class Lotid final : public ChainCallback, public BoundsCallback, public OrderCal
     if (ref == "last") return last_event_.empty() ? nullptr : find_by_hash_prefix(hex(last_event_));
     return find_by_hash_prefix(ref);
   }
+  // Resolve an event argument to an Event to run a discovery on. A local reference
+  // ("last" or a hash prefix) returns the stored event; a remote reference
+  // "<creatorHex>:<fullHashHex>" builds a synthetic pointer so a discovery can be
+  // initiated for an event this node does not hold locally (the neighbor answers the
+  // chain request and this node becomes the reference — an independent-notary proof).
+  std::optional<domain::Event> resolve_event(const std::string& ref) {
+    const auto colon = ref.find(':');
+    if (colon != std::string::npos) {
+      const auto hash = unhex(ref.substr(colon + 1));
+      if (!hash || hash->size() != 32) return std::nullopt;
+      domain::Event e;
+      e.creator = std::strtoull(ref.substr(0, colon).c_str(), nullptr, 0);
+      e.hash = *hash;
+      return e;
+    }
+    if (const auto* e = find_event(ref)) return *e;
+    return std::nullopt;
+  }
   const domain::Event* find_by_hash_prefix(const std::string& prefix) {
     for (std::size_t i = 0; i < node_->event_count(); ++i)
       if (hex(node_->event_at(i).hash).rfind(prefix, 0) == 0) return &node_->event_at(i);
@@ -593,6 +655,27 @@ class Lotid final : public ChainCallback, public BoundsCallback, public OrderCal
     store_->save(node_->snapshot());
     std::fprintf(stderr, "[lotid] saved snapshot (%zu events, %zu clock events) to %s\n",
                  node_->event_count(), node_->clock_event_count(), store_->path().c_str());
+  }
+
+  // Store status: the retention invariant is that local events and the local clock
+  // chain are NEVER pruned (they are the node's only record and back every future
+  // proof), so the counts here only ever grow across a restart/backup/restore. The
+  // node keeps no expendable derived state to garbage-collect at MVP scale.
+  Reply db_stat() {
+    const auto snapshot = node_->snapshot();
+    Reply r{kOk, false, "", {}};
+    r.fields.emplace_back("store", store_ ? store_->path() : "(none)");
+    r.fields.emplace_back("events", std::to_string(node_->event_count()));
+    r.fields.emplace_back("clockEvents", std::to_string(node_->clock_event_count()));
+    r.fields.emplace_back("peers", std::to_string(peers_.size()));
+    r.fields.emplace_back("snapshotBytes", std::to_string(snapshot.size()));
+    r.fields.emplace_back("retention", "local events + clock chain never dropped");
+    if (store_) {
+      struct stat st {};
+      r.fields.emplace_back("diskBytes",
+                            std::to_string(::stat(store_->path().c_str(), &st) == 0 ? st.st_size : 0));
+    }
+    return r;
   }
   void schedule_snapshot() {
     reactor_.add_timer(clock_.now() + kSnapshotIntervalNs, [this] {

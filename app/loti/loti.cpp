@@ -19,6 +19,7 @@
 //   prove bounds|order|chain … --out  discover + serialize a portable proof
 //   verify <file> [--trust <node>]    verify a proof offline (exit 0 valid / 6 invalid)
 //   proof show <file>                 summarize a proof (no verification)
+//   db stat | backup --out | restore  inspect / back up / restore the snapshot
 //   peer add <id:ip:port> | peer ls   manage neighbors
 //   key [show]                        node id + public key
 //   node stop | stop                  stop the daemon
@@ -215,7 +216,8 @@ std::string json_pretty(const Json& j) { std::string out; json_emit(j, out, 0); 
 // their full 19-digit precision for consumers that parse numbers as doubles.
 bool json_numeric_key(const std::string& k) {
   return k == "size" || k == "references" || k == "clockEvents" || k == "peers" ||
-         k == "interval" || k == "order" || k == "events";
+         k == "interval" || k == "order" || k == "events" || k == "snapshotBytes" ||
+         k == "diskBytes";
 }
 Json json_value(const std::string& key, const std::string& val) {
   if (json_numeric_key(key) && !val.empty()) {
@@ -429,6 +431,50 @@ int do_prove(const std::vector<std::string>& args, const std::string& control,
   return 0;
 }
 
+// `loti db stat | backup --out <file> | restore <file>` — inspect and move the
+// node's on-disk snapshot. Local events + the local clock chain are never dropped
+// (the retention invariant enforced by the daemon).
+int do_db(const std::vector<std::string>& args, const std::string& control, const std::string& out,
+          bool json, bool quiet) {
+  if (args.size() < 2) {
+    std::fprintf(stderr, "usage: loti db <stat | backup --out <file> | restore <file>>\n");
+    return 2;
+  }
+  const std::string& sub = args[1];
+  std::string request;
+  if (sub == "stat") {
+    request = "db-stat";
+  } else if (sub == "backup") {
+    if (out.empty()) {
+      std::fprintf(stderr, "loti: db backup requires --out <file>\n");
+      return 2;
+    }
+    request = "db-backup " + out;
+  } else if (sub == "restore") {
+    if (args.size() < 3) {
+      std::fprintf(stderr, "usage: loti db restore <file>\n");
+      return 2;
+    }
+    request = "db-restore " + args[2];
+  } else {
+    std::fprintf(stderr, "loti: unknown db subcommand: %s\n", sub.c_str());
+    return 2;
+  }
+
+  const auto reply = os::control_request(control, request);
+  if (!reply) {
+    std::fprintf(stderr, "loti: cannot reach daemon at %s\n", control.c_str());
+    return 1;
+  }
+  if (json) {
+    std::fputs(json_pretty(reply_to_json(args, *reply)).c_str(), stdout);
+  } else if (!quiet) {
+    if (!reply->ok) std::fprintf(stderr, "error(%d): %s\n", reply->code, reply->message.c_str());
+    for (const auto& [k, v] : reply->fields) std::printf("%s: %s\n", k.c_str(), v.c_str());
+  }
+  return reply->code;
+}
+
 // `loti proof show <file> [--json]` — summary (human) or the full proof (JSON),
 // no verification.
 int do_proof_show(const std::vector<std::string>& args, bool json) {
@@ -605,6 +651,11 @@ void print_help(const Style& s) {
   help_cmd(s, "peer add <id:ip:port>", "add a neighbor");
   help_cmd(s, "peer ls", "list neighbors");
 
+  help_group(s, "Storage");
+  help_cmd(s, "db stat", "snapshot store status (paths, counts, sizes)");
+  help_cmd(s, "db backup --out <f>", "write a snapshot copy to a file");
+  help_cmd(s, "db restore <file>", "load a snapshot into the running node");
+
   help_group(s, "Daemon");
   help_cmd(s, "stop", "stop the daemon");
 
@@ -617,6 +668,8 @@ void print_help(const Style& s) {
   std::printf("  %sloti event find manuscript --json%s\n", s.dim(), s.reset());
   std::printf("  %sloti chain <hash> --json%s\n", s.dim(), s.reset());
   std::printf("  %sloti prove bounds <hash> --out proof.loti && loti verify proof.loti%s\n",
+              s.dim(), s.reset());
+  std::printf("  %sloti prove bounds <creator>:<hash> --out notary.loti   # prove a peer's event%s\n",
               s.dim(), s.reset());
 
   help_title(s, "EXIT CODES");
@@ -664,6 +717,7 @@ int main(int argc, char** argv) {
   if (args[0] == "prove") return do_prove(args, control, out, quiet);
   if (args[0] == "verify") return do_verify(args, trust, json);
   if (args[0] == "proof" && args.size() >= 2 && args[1] == "show") return do_proof_show(args, json);
+  if (args[0] == "db") return do_db(args, control, out, json, quiet);
 
   const std::string request = to_request(args);
   if (request.empty()) {
