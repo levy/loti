@@ -6,12 +6,15 @@ command surface, the daemon/client architecture, and the portable proof format.
 
 A **working subset is already implemented**: the [`lotid`](../app/lotid/lotid.cpp) daemon and
 [`loti`](../app/loti/loti.cpp) client cover `init`, the control-socket RPC, `peer add`/`peer ls`,
-`publish`, the three discoveries (`bounds` / `chain` / `order`), Ed25519 identity and signing,
-snapshot persistence, and portable, offline-verifiable proofs (`prove` / `verify`). The rest of
-the surface below — daemon supervision, key rotation and backup, routing/overlay management, the
-`clock` and `db` subcommands, `config`, `stats`/`metrics`, and reference-node targeting — remains
-design/reference (see [paper-vs-implementation.md](paper-vs-implementation.md) for the remaining
-gaps).
+`publish`, `events`/`event show`/`event find`, the three discoveries (`bounds` / `chain` / `order`,
+including remote `<creator>:<hash>` addressing), Ed25519 identity and signing, snapshot persistence
+with `db stat`/`backup`/`restore`, and portable, offline-verifiable proofs (`prove` / `verify` /
+`proof show`). The rest of the surface below — daemon supervision, key rotation, routing/overlay
+management, the `clock` subcommands, `db gc`/`db verify`, `config`, `stats`/`metrics`, and
+reference-node targeting — remains design/reference (see
+[paper-vs-implementation.md](paper-vs-implementation.md) for the remaining gaps). See
+[Implementation status](#implementation-status-mvp) below for the exact command table and where the
+implementation deviates from this spec.
 
 How one codebase provides both this CLI/daemon and the simulation model is described in
 [architecture.md](architecture.md).
@@ -57,6 +60,51 @@ out at the relevant command as a **Requires:** note. In summary the daemon must 
 - **A control channel** — a local RPC socket so `loti` can drive `lotid`.
 - **Proof export/verification** — serialize an event chain into a portable, offline-verifiable
   artifact.
+
+## Implementation status (MVP)
+
+The MVP delivers the operator's core loop — run a signed node, publish, discover, **prove and
+verify offline** — plus persistence. All of the daemon promotions above are implemented.
+
+**Implemented commands** (`loti <cmd>`; also accepted on the daemon's stdin):
+
+| Area | Commands |
+| --- | --- |
+| Node & identity | `init`, `status` (`node status`), `key`, `stop` (`node stop`) |
+| Events | `publish <text>`, `events`, `event show <hash\|last>`, `event find <text>` |
+| Discovery | `bounds <e>`, `chain <e>`, `order <a> <b>` — `<e>` is a local `hash`/`last` **or** a remote `<creator>:<hash>` |
+| Proofs | `prove bounds\|order\|chain … --out <f>`, `verify <f>`, `proof show <f>` |
+| Peers | `peer add <id:ip:port>`, `peer ls` |
+| Storage | `db stat`, `db backup --out <f>`, `db restore <f>` |
+| Global | `--control`, `--json` (pretty, nested), `--quiet`, `--home`, `--out`, `--trust`, `--help` |
+
+**Deviations from this spec** (accepted for the MVP):
+
+- **Proof format is the compact binary wire form**, not the JSON shown under
+  [Proof format](#proof-format). It reuses the DAG wire codec (magic `LOTIPROF` + version), so a
+  proof's bytes are byte-exact with what the node serializes and no JSON library is pulled in.
+  `verify`/`proof show` render a JSON *view* of it under `--json`.
+- **`--trust <node>` is advisory**: `verify` proves integrity + attribution (exit `0`/`6`); with
+  `--trust` it prints a warning if the reference node is outside the set but does not change the
+  exit code.
+- **`--reference <node>` (choosing which node anchors a proof) is deferred**: the reference is
+  always the node running the discovery. Remote-event addressing `<creator>:<hash>` lets an
+  independent node prove a *peer's* event — that node becomes the reference (an independent-notary
+  proof), which the acceptance suite exercises over real UDP.
+- **RPC is a hand-rolled versioned line protocol** over a Unix socket (not JSON-RPC); `--json` is
+  a client-side rendering of the reply fields.
+- **`event find <text>`** (local content substring search) is an addition not in the original
+  command surface.
+
+**Retention.** The rule *local events and the local clock chain are never dropped* (they back all
+future proofs) holds **by construction**: nothing prunes them, and `snapshot`/`restore` round-trip
+the whole DAG. `db gc` and `db verify` from [Storage & maintenance](#storage--maintenance) are not
+implemented — there is no expendable derived state to garbage-collect at MVP scale.
+
+**Deferred (post-MVP):** `config get/set/list` (+ a config-file loader; `init` writes a flat config
+that the operator pastes into the `lotid` command), `node start` (process spawn/daemonize),
+`publish --file|--sign|--salt|--wait` flags, `log` tailing, multi-reference proofs, and an
+incremental/append or embedded-DB store (the MVP writes a periodic full snapshot).
 
 ## Architecture
 

@@ -15,6 +15,15 @@ the DAG grows, how the three discoveries route and build chains, and how chains 
 The architecture's whole job is to isolate the first set of concerns so the second can be
 written once.
 
+> **Status (MVP, 2026-07):** this architecture is **realized**. The pure core (`core/`, no
+> OMNeT++/INET/OS deps) runs behind six ports; the simulation drives it via `adapters/sim/` +
+> `app/sim/`, and the production node via `adapters/os/` + `app/lotid` + `app/loti`. Both targets
+> are green: the OMNeT++ `SimpleNetwork` example runs on the core with unchanged statistics, and
+> the production node passes an end-to-end acceptance suite (restart survival, backup/restore,
+> and a multi-node offline-verifiable proof over real UDP —
+> [test/acceptance/run.sh](../test/acceptance/run.sh)). The MVP command surface and its deviations
+> from the design are tracked in [cli.md → Implementation status](cli.md#implementation-status-mvp).
+
 ## The core idea: functional core, imperative shell
 
 Use **ports and adapters** (hexagonal architecture). The protocol lives in a pure **core
@@ -298,7 +307,13 @@ Three tiers, each using the same core:
    ([simulation.md](simulation.md)); the authority for scale, topology, and bandwidth/storage
    numbers.
 
-Plus production integration tests of `lotid`/`loti` (real sockets, real disk, restart/backup).
+4. **Production integration tests** of `lotid`/`loti` (real sockets, real disk, restart/backup) —
+   implemented as [test/acceptance/run.sh](../test/acceptance/run.sh): restart survival,
+   `db backup`/`restore`, and a multi-node notary proof (B proves A's event over real UDP and it
+   verifies offline). This is the M4 acceptance gate.
+
+Tiers 1–3 are implemented under `test/core/` (doctest), `test/harness/` (the in-process world),
+and the OMNeT++ `sim/` example respectively.
 
 ## Reproducibility and replay
 
