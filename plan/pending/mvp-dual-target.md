@@ -52,8 +52,9 @@ From [architecture.md](../../doc/architecture.md), non-negotiable throughout:
 
 ## Milestones
 
-- **M1 — Simulation on the shared core** (end of Stage 2): the OMNeT++ example runs on
-  `loti-core` with unchanged statistics. *The simulation half of the MVP is done.*
+- **M1 — Simulation on the shared core** (end of Stage 2) ✅ **REACHED 2026-07-17**: the OMNeT++
+  example runs on `loti-core` with bit-identical protocol statistics. *The simulation half of
+  the MVP is done.*
 - **M2 — Real node, loopback** (end of Stage 3): two `lotid` processes on localhost exchange
   clock notifications and complete a discovery, reproducing sim behavior.
 - **M3 — Proofs end-to-end** (end of Stage 6): publish → prove → verify offline works; signed.
@@ -119,7 +120,7 @@ today. *Highest-risk stage — guard with golden tests.*
 `clockEventsFileLength`/`eventsFileLength` and packet-length histograms as before this stage.
 **Commit:** "core: plain-struct domain model + canonical serializer (byte-identical)".
 
-## Stage 2 — Ports + extract the `Node` core  → **M1 (core proven; OMNeT++ binding deferred)**
+## Stage 2 — Ports + extract the `Node` core  → **M1 ✅ REACHED (2026-07-17)**
 
 **Goal:** the protocol logic moves into `core/node`, driven by ports; the simulation runs on
 the shared core.
@@ -135,24 +136,34 @@ the shared core.
       primitives, request/response routing, validation, `on_packet_received`,
       `create_clock_event`, `add_neighbor`/`learn_route`, discovery coalescing + purge. Added a
       real wire codec (`core/wire`) so the transport carries canonical bytes.
-- [ ] Implement **simulation adapters** (`adapters/sim/`) and shrink the OMNeT++ modules
-      (`app/sim/`) to thin `Node` hosts. **Deferred:** requires an OMNeT++ 5.4 / INET 4.0 build
-      environment, which is not installed here. This is the remaining last mile to M1; the code
-      is unverifiable without OMNeT++, so it is not written speculatively.
+- [x] Implement **simulation adapters** (`adapters/sim/`) and shrink the OMNeT++ modules
+      (`app/sim/`) to thin `Node` hosts. **DONE (2026-07-17)** on OMNeT++ 6.4 / INET 4.7: six
+      header-only port adapters (`SimClock`/`SimScheduler`/`SimTransport`/`SimRng`/`NullSigner`/
+      `SimTelemetry` in `adapters/sim/`) plus four thin OMNeT++ modules in `app/sim/` — `Daemon`
+      hosts a `loti::Node`; `Publisher`/`Browser`/`NetworkConfigurator` drive it. The build
+      (`scripts/build-sim.sh`) now compiles `core/ + adapters/sim/ + app/sim/` and **excludes
+      `src/`** (kept as the untouched A/B baseline); NED path is `app/sim:sim`.
 - [x] Add `test/core` unit tests (fake ports) and a `test/harness` in-process multi-node
       integration test — chain / bounds / order discovery across several hops.
 
 **Verify:** ✅ **core + harness green** — `build-core.sh` runs 12 cases / 34 assertions under
-g++ 15.2, including: two-node chain discovery completes and validates (endpoints are the
-reference node's clock events); three-node path bounds discovery yields a sane interval; order
-discovery orders an earlier event `before` a later one; and the wire codec round-trips every
-packet (incl. a full `EventChain`). ⏳ The OMNeT++ sim-parity check (same started/completed/
-aborted counts and histograms) needs an OMNeT++ box and is **pending**.
+g++ 15.2 (chain/bounds/order discovery + wire round-trip). ✅ **OMNeT++ sim-parity achieved** —
+the `SimpleNetwork` example now runs on `loti-core` (release + debug build clean, C++20). Against
+the pre-refactor `src/` baseline (120 s, `NoDiscovery` + `EventBoundsDiscovery`, read back via the
+`omnetpp.scave` pandas API) every protocol statistic is **bit-identical**: clockEventCreated
+(6806 / 6802), eventCreatedCount (712 / 698), chain & bounds discovery started/completed/aborted
+(646 / 400 / 246), and the byte-exact clock/events file lengths. The only delta is
+`packetSent`/`Received` (−18…23%), fully explained by dropping a `NetworkConfigurator` bug in the
+original — a self-referential, mis-addressed neighbour entry that made every node emit one extra
+misdirected notification per tick; with it removed, packet counts match the true topology degree
+and discovery completion is unchanged. Debug mode (which re-verifies every clock-event hash) runs
+0 asserts, and `EventOrderDiscovery` — which assert-crashed in the old `Daemon.cc` — now runs
+clean (the core guards the abort).
 
-**Status:** the protocol demonstrably runs on `loti-core` (harness = the plan's Tier-2 test,
-a stronger *correctness* check than the sim). **M1 is reached for the core**; the OMNeT++
-binding that makes the actual simulation run on the core is the deferred remainder.
-**Commit:** "Extract the Node protocol engine behind ports + in-process harness (MVP Stage 2)".
+**Status:** ✅ **M1 fully reached** — the actual OMNeT++ simulation runs on `loti-core` with
+bit-identical protocol statistics. *The simulation half of the MVP is done.*
+**Commits:** "Extract the Node protocol engine behind ports + in-process harness (MVP Stage 2)";
+"Bind the OMNeT++ simulation onto loti-core (sim adapters + thin app/sim modules) — M1".
 
 ## Stage 3 — Production runtime adapters + `lotid` skeleton  → **M2**
 
@@ -300,5 +311,46 @@ deviations from the docs; per repo convention, decisions live here, not in sourc
   `EventOrderDiscovery` double-abort assertion race in the old `Daemon.cc` (out of scope — already
   avoided in the core `Node`, which guards on `in_progress`). Env: source `omnetpp/setenv -q`,
   `inet/setenv`, then loti `setenv -f`.
+- **Stage-2 OMNeT++ binding (M1 last mile, 2026-07-17):**
+  - **Layout:** the core-hosted OMNeT++ modules live in `app/sim/` (new home, per the target
+    layout) and the port adapters in `adapters/sim/`; `src/` is left untouched as the A/B
+    baseline. `sim/` (the `SimpleNetwork` scenario + `omnetpp.ini`) is shared and reused
+    unchanged except for the statistics sources (below). The build excludes `src/`; the two never
+    co-compile, so `app/sim` keeps the same `loti` C++/NED namespace and the ini's `typename`s
+    resolve to the core-hosted modules with no changes.
+  - **Extension `.cpp`:** `opp_makemake` refuses a deep build mixing `.cc` and `.cpp`; since
+    `core/` is `.cpp` (and CMake references those names), the `app/sim/` modules are `.cpp` too
+    (`-e cpp`). Adapters are header-only `.hpp`.
+  - **C++20 everywhere:** the whole sim build includes core headers (defaulted `operator==`), so
+    `makefrag` forces `CXXFLAGS += -std=c++20` over OMNeT++'s default. Build via
+    `scripts/build-sim.sh` (the `Makefile` is generated + gitignored).
+  - **Telemetry = precomputed scalar signals (no cObjects / no result filters).** The core
+    computes the quantities (byte sizes via `core/hash`, discovery times/lengths/intervals from
+    the discovery records' raw-tick timestamps); `SimTelemetry` emits them as plain numeric
+    signals. This drops the original's `Data.msg` cObjects + `ResultFilter.cc` from the sim
+    entirely. `app/sim/Daemon.ned` and `sim/Network.ned` keep the **same `@statistic` names**
+    (so results compare by name) but source them from the scalar signals — e.g.
+    `sum(clockEventSize(clockEventCreated))` → `sum(clockEventCreated)` (the created signal now
+    carries the byte size), and `eventChainDiscoveryTime(...Completed)` → its own
+    `eventChainDiscoveryTime` signal. Editing `sim/Network.ned`'s sources means re-running the
+    `src/` baseline needs the original `Network.ned` (in git history); the baseline scalars were
+    captured first.
+  - **Transport = INET `BytesChunk`.** `SimTransport` wraps the core's canonical wire bytes in a
+    `BytesChunk` over the existing `UdpSocket` (port 666); no `Packet.msg` chunk types. Packet
+    *lengths* therefore differ from the original FieldsChunk sizes (accepted — the parity bar is
+    behavioural + byte-exact object sizes, not bit-identical packets).
+  - **Clock timer stays in the host** (re-samples the volatile `createClockEventInterval` each
+    tick); only the purge timer is core-driven (`NodeConfig.discovery_expiry`, `clock_event_interval=0`).
+    `SimScheduler` backs each core timer with a `cMessage` and takes the module's protected
+    `scheduleAt`/`cancelEvent` as injected callbacks.
+  - **NetworkConfigurator:** replaced the original friend-class field-poking with the Daemon's
+    public `learnRoute()`/`addNeighbor()` API, and **dropped the original's buggy "reverse block"**
+    (which inserted a self-referential, mis-addressed neighbour per node). This is why
+    `packetSent`/`Received` drop ~18–23% vs baseline while every protocol statistic stays
+    bit-identical — the removed packets were misdirected duplicates.
+  - **Result:** bit-identical protocol statistics vs the `src/` baseline; `EventOrderDiscovery`
+    (which assert-crashed in the old `Daemon.cc`) now runs clean because the core `Node` guards
+    the double-abort. `src/`'s modules are now dead weight kept only as the baseline — retire them
+    once M2+ no longer needs the A/B reference.
 - _Store engine (LMDB vs SQLite): TBD — Stage 3._
 - _RPC encoding (JSON-over-unix-socket vs framed binary): TBD — Stage 5._

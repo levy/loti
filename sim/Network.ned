@@ -27,25 +27,25 @@ network SimpleNetwork
         @statistic[packetSent](title="packets sent"; source=packetSent; record=count,histogram(packetBytes); interpolationmode=none);
         @statistic[packetReceived](title="packets received"; source=packetReceived; record=count,histogram(packetBytes); interpolationmode=none);
         @statistic[clockEventCreated](title="clock event created count"; source=clockEventCreated; record=count; interpolationmode=none);
-        @statistic[clockEventsFileLength](title="clock events file length"; source=sum(clockEventSize(clockEventCreated)); record=vector; interpolationmode=sample-hold);
+        @statistic[clockEventsFileLength](title="clock events file length"; source=sum(clockEventCreated); record=vector; interpolationmode=sample-hold);
         @statistic[eventCreatedCount](title="event created count"; source=eventCreated; record=count; interpolationmode=none);
-        @statistic[eventsFileLength](title="events file length"; source=sum(eventSize(eventCreated)); record=vector; interpolationmode=sample-hold);
+        @statistic[eventsFileLength](title="events file length"; source=sum(eventCreated); record=vector; interpolationmode=sample-hold);
         @statistic[eventChainDiscoveryStartedCount](title="event chain discovery started count"; source=eventChainDiscoveryStarted; record=count; interpolationmode=none);
         @statistic[eventChainDiscoveryAbortedCount](title="event chain discovery aborted count"; source=eventChainDiscoveryAborted; record=count; interpolationmode=none);
         @statistic[eventChainDiscoveryCompletedCount](title="event chain discovery completed count"; source=eventChainDiscoveryCompleted; record=count; interpolationmode=none);
-        @statistic[eventChainDiscoveryTime](title="event chain discovery time"; source=eventChainDiscoveryTime(eventChainDiscoveryCompleted); record=vector,histogram; interpolationmode=none);
-        @statistic[eventChainDiscoveryLength](title="event chain discovery length"; source=eventChainDiscoveryLength(eventChainDiscoveryCompleted); record=vector,histogram; interpolationmode=none);
-        @statistic[eventChainDiscoveryInterval](title="event chain discovery interval"; source=eventChainDiscoveryInterval(eventChainDiscoveryCompleted); record=vector,histogram; interpolationmode=none);
+        @statistic[eventChainDiscoveryTime](title="event chain discovery time"; source=eventChainDiscoveryTime; record=vector,histogram; interpolationmode=none);
+        @statistic[eventChainDiscoveryLength](title="event chain discovery length"; source=eventChainDiscoveryLength; record=vector,histogram; interpolationmode=none);
+        @statistic[eventChainDiscoveryInterval](title="event chain discovery interval"; source=eventChainDiscoveryInterval; record=vector,histogram; interpolationmode=none);
         @statistic[eventBoundsDiscoveryStartedCount](title="event bounds discovery started count"; source=eventBoundsDiscoveryStarted; record=count; interpolationmode=none);
         @statistic[eventBoundsDiscoveryAbortedCount](title="event bounds discovery aborted count"; source=eventBoundsDiscoveryAborted; record=count; interpolationmode=none);
         @statistic[eventBoundsDiscoveryCompletedCount](title="event bounds discovery completed count"; source=eventBoundsDiscoveryCompleted; record=count; interpolationmode=none);
-        @statistic[eventBoundsDiscoveryTime](title="event bounds discovery time"; source=eventBoundsDiscoveryTime(eventBoundsDiscoveryCompleted); record=vector,histogram; interpolationmode=none);
-        @statistic[eventBoundsDiscoveryInterval](title="event bounds discovery interval"; source=eventBoundsDiscoveryInterval(eventBoundsDiscoveryCompleted); record=vector,histogram; interpolationmode=none);
+        @statistic[eventBoundsDiscoveryTime](title="event bounds discovery time"; source=eventBoundsDiscoveryTime; record=vector,histogram; interpolationmode=none);
+        @statistic[eventBoundsDiscoveryInterval](title="event bounds discovery interval"; source=eventBoundsDiscoveryInterval; record=vector,histogram; interpolationmode=none);
         @statistic[eventOrderDiscoveryStartedCount](title="event order discovery started count"; source=eventOrderDiscoveryStarted; record=count; interpolationmode=none);
         @statistic[eventOrderDiscoveryAbortedCount](title="event order discovery aborted count"; source=eventOrderDiscoveryAborted; record=count; interpolationmode=none);
         @statistic[eventOrderDiscoveryCompletedCount](title="event order discovery completed count"; source=eventOrderDiscoveryCompleted; record=count; interpolationmode=none);
-        @statistic[eventOrderDiscoveryTime](title="event order discovery time"; source=eventOrderDiscoveryTime(eventOrderDiscoveryCompleted); record=vector,histogram; interpolationmode=none);
-        @statistic[eventOrderDiscoveryOrder](title="event order discovery result"; source=eventOrderDiscoveryOrder(eventOrderDiscoveryCompleted); record=vector,histogram; interpolationmode=none);
+        @statistic[eventOrderDiscoveryTime](title="event order discovery time"; source=eventOrderDiscoveryTime; record=vector,histogram; interpolationmode=none);
+        @statistic[eventOrderDiscoveryOrder](title="event order discovery result"; source=eventOrderDiscoveryOrder; record=vector,histogram; interpolationmode=none);
     types:
         channel fiberline extends DatarateChannel
         {
