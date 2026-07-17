@@ -69,22 +69,34 @@ OMNeT++ example building and green after every stage.
 
 ---
 
-## Stage 0 — Scaffolding & build split
+## Stage 0 — Scaffolding & build split  ✅ DONE (2026-07-17)
 
 **Goal:** a `loti-core` library target that builds with no OMNeT++, a test harness, and the
 directory layout — without changing simulation behavior.
 
-- [ ] Create the layout from architecture.md: `core/{domain,hash,dag,discovery,validate,ports}`,
-      `adapters/{sim,os}`, `app/{sim,lotid,loti}`, `test/{core,harness}`. Move `sim/` as-is.
-- [ ] Add a CMake build producing `loti-core` (static lib) and wire a header-only test
-      framework (doctest or Catch2) for `test/core`.
-- [ ] Keep the existing `opp_makemake` flow for the sim; add a CI/script that builds core
-      standalone (proves the dependency rule mechanically).
-- [ ] Add a placeholder `loti-core` header + a trivial passing test so the pipeline is real.
+- [x] Create the layout from architecture.md: `core/{domain,hash,dag,discovery,validate,ports}`,
+      `adapters/{sim,os}`, `app/{sim,lotid,loti}`, `test/{core,harness}`. `sim/` and `src/` left
+      untouched. Empty module homes carry a `.gitkeep` so git tracks the tree.
+- [x] Add a CMake build producing `loti-core` (static lib) and wire a header-only test
+      framework for `test/core`. Chose **doctest** (vendored single header at
+      `test/doctest/doctest.h`, v2.4.11); C++20; `add_test`/`ctest` integration.
+- [x] Keep the existing `opp_makemake` flow for the sim; added `scripts/build-core.sh` which
+      configures + builds + `ctest`s the core with no OMNeT++/INET on the path.
+- [x] Added a placeholder core (`core/loti_core.{hpp,cpp}` — `library_id()` /
+      `protocol_version`) + a passing smoke test (`test/core/test_smoke.cpp`).
 
-**Verify:** `cmake` builds `loti-core` and runs an empty test suite; `make MODE=release` still
-builds the sim; the standalone core build uses **no** OMNeT++/INET include paths.
-**Commit:** "build: split loti-core library target and test harness".
+**Verify:** ✅ `scripts/build-core.sh` configures, builds `libloti_core.a`, and runs the test
+suite green (`1/1 passed`) under plain g++ 15.2 — no OMNeT++/INET include paths. The sim build
+is unaffected because the stage is purely additive: the only modified tracked file is
+`.gitignore` (added `/build/`); `src/`, `sim/`, and the OMNeT++ Makefile flow are untouched.
+**Commit:** "Added loti-core library target and test harness (MVP Stage 0)".
+
+**Notes discovered while building:**
+- The CMake build (`CMakeLists.txt` at repo root) and the OMNeT++ `opp_makemake` flow coexist:
+  different files (`CMakeLists.txt` vs the generated root `Makefile`), different build dirs.
+  Run `make` for the simulation, `cmake`/`scripts/build-core.sh` for the core/product.
+- Toolchain present here: cmake 4.2, g++ 15.2, clang++ 23. OMNeT++/INET are **not** installed,
+  which is fine — that is exactly the environment `loti-core` must build in.
 
 ## Stage 1 — De-OMNeT++ the domain model & serialization
 
@@ -241,7 +253,13 @@ and 5 can proceed in parallel once Stage 3 lands, but signing (4) should be wire
 *(fill in during implementation — record design changes, chosen libraries, and any accepted
 deviations from the docs; per repo convention, decisions live here, not in source comments)*
 
-- _Store engine (LMDB vs SQLite): TBD_
-- _Test framework (doctest vs Catch2): TBD_
-- _RPC encoding (JSON-over-unix-socket vs framed binary): TBD_
-- _Native build for lotid/loti (CMake): TBD_
+- **Worktree/branch:** implemented on branch `mvp` in a dedicated worktree
+  (`../loti-mvp`); merge to `master` at M4.
+- **Native build: CMake** (decided, Stage 0). Root `CMakeLists.txt`, `cmake_minimum_required
+  3.20`, out-of-tree build under `build/` (gitignored). Coexists with `opp_makemake`.
+- **Language standard: C++20** (g++ 15 / clang 23 both fully support it; gives `std::span`,
+  concepts, etc. used in the architecture sketches).
+- **Test framework: doctest v2.4.11** (decided, Stage 0), vendored single header at
+  `test/doctest/doctest.h`. Chosen over Catch2 for lighter/faster compiles; swap is localized.
+- _Store engine (LMDB vs SQLite): TBD — Stage 3._
+- _RPC encoding (JSON-over-unix-socket vs framed binary): TBD — Stage 5._

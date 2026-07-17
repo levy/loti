@@ -3,7 +3,16 @@ out
 sim/results
 sim/.*
 .settings
-loti*
+# OMNeT++-built binaries at the project root (anchored so they do NOT swallow
+# the loti-core sources under core/ and app/, e.g. core/loti_core.cpp, app/loti)
+/loti
+/loti_dbg
+/loti_release
+/loti.exe
+/loti_dbg.exe
+/loti*.dll
 *.so
 *_m.h
 *_m.cc
+# CMake build tree (loti-core / product)
+/build/
