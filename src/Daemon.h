@@ -110,6 +110,7 @@ class Daemon : public cSimpleModule, public UdpSocket::ICallback, public IEventC
 
     virtual void socketDataArrived(UdpSocket *socket, Packet *packet) override;
     virtual void socketErrorArrived(UdpSocket *socket, Indication *indication) override { delete indication; }
+    virtual void socketClosed(UdpSocket *socket) override {}
 
     virtual void processEventChainDiscoveryAborted(const Event& event) override;
     virtual void processEventChainDiscoveryCompleted(const Event& event, const EventChain& eventChain) override;

@@ -286,5 +286,19 @@ deviations from the docs; per repo convention, decisions live here, not in sourc
   - The `Node` calls `Signer::sign` on creation (NullSigner → empty signature); signature
     **verification** stays out of validation until Stage 4, so Stage-2 behavior matches the
     original exactly.
+- **Toolchain is OMNeT++ 6.4 / INET 4.7** (not the 5.4 / 4.0 the code targeted). Before the
+  Stage-2 OMNeT++ binding, ported the existing `src/` + `sim/` to build and run on it, so the
+  pre-refactor sim is a working baseline. Changes were **API-only**: `INITSTAGE_NETWORK_LAYER_3`
+  → `INITSTAGE_STATIC_ROUTING`; `getInterfaceByNode*GateId` → `findInterfaceByNode*GateId`;
+  `ipv4Data()` → `getProtocolData<Ipv4InterfaceData>()`; added the new `socketClosed`
+  `UdpSocket::ICallback` override; visualizer import package path; `@castFunction(false)` on the
+  aliased `Type.msg` primitives (`Salt`, `ByteVector`) to stop OMNeT++6 emitting duplicate
+  `toAnyPtr`/`fromAnyPtr`. **Serialization byte layout unchanged** (`Data.msg`/`Packet.msg`/
+  `Data.cc` untouched); builds clean in release + debug; runs with the debug hash-re-verification
+  passing (0 asserts). Two pre-existing bugs surfaced: `generateSalt`'s `intuniform(0,0xFFFFFFFF)`
+  overflowed a signed int (fixed to `0x7FFFFFFF`; salt is a hashed value, not layout); and an
+  `EventOrderDiscovery` double-abort assertion race in the old `Daemon.cc` (out of scope — already
+  avoided in the core `Node`, which guards on `in_progress`). Env: source `omnetpp/setenv -q`,
+  `inet/setenv`, then loti `setenv -f`.
 - _Store engine (LMDB vs SQLite): TBD — Stage 3._
 - _RPC encoding (JSON-over-unix-socket vs framed binary): TBD — Stage 5._

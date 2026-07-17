@@ -37,8 +37,8 @@ typedef deque<ClockEvent> ClockEventDeque;
 }}
 
 class NodeId { @existingClass; @primitive; @editable(false); }
-class Salt { @existingClass; @primitive; @editable(false); }
+class Salt { @existingClass; @primitive; @editable(false); @castFunction(false); }
 class EventHash { @existingClass; @primitive; @editable(false); @toString(std::string("hash$")); }
-class ByteVector { @existingClass; @toString(to_string($.size()) + " bytes"); }
+class ByteVector { @existingClass; @toString(to_string($.size()) + " bytes"); @castFunction(false); }
 class EventReferenceVector { @existingClass; }
 class ClockEventDeque { @existingClass; }

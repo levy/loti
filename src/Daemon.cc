@@ -855,9 +855,9 @@ const Neighbor *Daemon::findNextHopNeighbor(NodeId nodeId) const
 
 Salt Daemon::generateSalt() const
 {
-    Salt salt = intuniform(0, 0xFFFFFFFF);
+    Salt salt = intuniform(0, 0x7FFFFFFF);
     salt <<= 32;
-    salt |= intuniform(0, 0xFFFFFFFF);
+    salt |= intuniform(0, 0x7FFFFFFF);
     return salt;
 }
 

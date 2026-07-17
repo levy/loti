@@ -25,7 +25,7 @@ Define_Module(NetworkConfigurator);
 
 void NetworkConfigurator::initialize(int stage)
 {
-    if (stage == INITSTAGE_NETWORK_LAYER_3) {
+    if (stage == INITSTAGE_STATIC_ROUTING) {
         cTopology topology;
         L3AddressResolver resolver;
         topology.extractByProperty("networkNode");
@@ -47,8 +47,8 @@ void NetworkConfigurator::initialize(int stage)
                 auto nextHopModule = nextHopNode->getModule();
                 auto nextHopDaemon = findDaemon(nextHopModule);
                 auto nextHopInterfaceTable = resolver.findInterfaceTableOf(nextHopModule);
-                auto nextHopInterfaceEntry = nextHopInterfaceTable->getInterfaceByNodeInputGateId(linkOut->getRemoteGateId());
-                auto nextHopIpAddress = nextHopInterfaceEntry->ipv4Data()->getIPAddress();
+                auto nextHopInterfaceEntry = nextHopInterfaceTable->findInterfaceByNodeInputGateId(linkOut->getRemoteGateId());
+                auto nextHopIpAddress = nextHopInterfaceEntry->getProtocolData<Ipv4InterfaceData>()->getIPAddress();
                 sourceDaemon->destinationToNextHop.insert({destinationDaemon->nodeId, nextHopDaemon->nodeId});
                 if (sourceDaemon->neighbors.find(nextHopDaemon->nodeId) == sourceDaemon->neighbors.end()) {
                     Neighbor neighbor;
@@ -57,8 +57,8 @@ void NetworkConfigurator::initialize(int stage)
                     sourceDaemon->neighbors.insert({neighbor.getNodeId(), neighbor});
                 }
                 auto sourceInterfaceTable = resolver.findInterfaceTableOf(sourceModule);
-                auto sourceInterfaceEntry = sourceInterfaceTable->getInterfaceByNodeOutputGateId(linkOut->getLocalGateId());
-                auto sourceIpAddress = sourceInterfaceEntry->ipv4Data()->getIPAddress();
+                auto sourceInterfaceEntry = sourceInterfaceTable->findInterfaceByNodeOutputGateId(linkOut->getLocalGateId());
+                auto sourceIpAddress = sourceInterfaceEntry->getProtocolData<Ipv4InterfaceData>()->getIPAddress();
                 if (nextHopDaemon->neighbors.find(sourceDaemon->nodeId) == nextHopDaemon->neighbors.end()) {
                     Neighbor neighbor;
                     neighbor.setNodeId(nextHopDaemon->nodeId);
