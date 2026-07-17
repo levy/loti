@@ -12,7 +12,8 @@
 // discovery completes or aborts, then the reply is sent.
 //
 //   publish <text>            publish an event; reply carries its hash
-//   event   <hexprefix|last>  show a known event
+//   event   <hexprefix|last>  show a known event (creator, content, references)
+//   event-find <text>         list local events whose content contains <text>
 //   events                    list known event hashes
 //   bounds  <hexprefix|last>  discover time bounds  (async)
 //   chain   <hexprefix|last>  discover an event chain (async)
@@ -135,6 +136,37 @@ domain::Order compare_chains(const domain::EventChain& a, const domain::EventCha
   return domain::Order::undetermined;
 }
 
+// Event content rendered safe for the single-line control protocol (framing or
+// non-printable bytes → '.').
+std::string printable(const domain::Bytes& b) {
+  std::string s;
+  s.reserve(b.size());
+  for (unsigned char c : b) s.push_back((c >= 0x20 && c < 0x7f) ? static_cast<char>(c) : '.');
+  return s;
+}
+
+// One clock event of a chain path, as a compact "creator=… hash=… ts=…" line.
+std::string clock_line(const domain::ClockEvent& ce) {
+  return "creator=" + hex_id(ce.creator) + " hash=" + hex(ce.hash) + " ts=" +
+         std::to_string(ce.timestamp);
+}
+
+// The complete enclosing chain as control fields: the reference node, then the
+// ordered path lower → event → upper (one `lower`/`upper` line per clock event),
+// the event (hash + decoded content), and the total clock-event count. Repeated
+// lower/upper keys render as JSON arrays on the CLI side.
+os::ControlFields chain_path_fields(const domain::EventChain& c) {
+  os::ControlFields f;
+  const domain::NodeId reference = c.lower_bound.empty() ? 0 : c.lower_bound.front().creator;
+  f.emplace_back("reference", hex_id(reference));
+  for (const auto& ce : c.lower_bound) f.emplace_back("lower", clock_line(ce));
+  f.emplace_back("event", hex(c.event.hash));
+  f.emplace_back("content", printable(c.event.data));
+  for (const auto& ce : c.upper_bound) f.emplace_back("upper", clock_line(ce));
+  f.emplace_back("clockEvents", std::to_string(c.lower_bound.size() + c.upper_bound.size()));
+  return f;
+}
+
 // Exit codes (shared with the CLI; see cli.md).
 constexpr int kOk = 0;
 constexpr int kUsage = 2;
@@ -214,9 +246,8 @@ class Lotid final : public ChainCallback, public BoundsCallback, public OrderCal
 
   // ---- discovery callbacks: answer any control clients waiting on this event ----
   void on_chain_completed(const domain::Event& e, const domain::EventChain& c) override {
-    answer(pending_chain_, e.hash,
-           Reply{kOk, false, "", {{"event", hex(e.hash)},
-                                  {"clockEvents", std::to_string(c.lower_bound.size() + c.upper_bound.size())}}});
+    if (pending_chain_.count(e.hash))
+      answer(pending_chain_, e.hash, Reply{kOk, false, "", chain_path_fields(c)});
     finish_single_proof(e.hash, c);
     finish_order_proof(e.hash, c);
   }
@@ -270,8 +301,25 @@ class Lotid final : public ChainCallback, public BoundsCallback, public OrderCal
       const auto* e = find_event(args[1]);
       if (!e) return {kNotFound, false, "no such event", {}};
       return {kOk, false, "", {{"event", hex(e->hash)}, {"creator", hex_id(e->creator)},
-                               {"content", std::to_string(e->data.size())},
+                               {"content", printable(e->data)},
+                               {"size", std::to_string(e->data.size())},
                                {"references", std::to_string(e->referenced_events.size())}}};
+    }
+    if (verb == "event-find") {
+      if (args.size() < 2) return {kUsage, false, "usage: event-find <text>", {}};
+      std::string needle;
+      for (std::size_t k = 1; k < args.size(); ++k) needle += (k > 1 ? " " : "") + args[k];
+      Reply r;
+      for (std::size_t i = 0; i < node_->event_count(); ++i) {
+        const auto& e = node_->event_at(i);
+        const std::string content(e.data.begin(), e.data.end());
+        if (content.find(needle) != std::string::npos) {
+          r.fields.emplace_back("event", hex(e.hash));
+          r.fields.emplace_back("content", printable(e.data));
+        }
+      }
+      if (r.fields.empty()) return {kNotFound, false, "no event matches", {}};
+      return r;
     }
     if (verb == "events") {
       Reply r;

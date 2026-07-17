@@ -531,5 +531,14 @@ deviations from the docs; per repo convention, decisions live here, not in sourc
     is rejected on the stdin harness. Single-chain proofs (`bounds`/`chain`) wait on one event;
     `order` accumulates two chains keyed by the event pair, then compares intervals with the same
     rule as `Node::compare_event_chains`.
+- **Post-M3 CLI ergonomics (2026-07-17):** added `loti event find <text>` (daemon `event-find`
+  substring-scans local event content), made `event show` print the decoded content text (+ a
+  `size` field) instead of just the byte count, and made `chain` return the **complete path** —
+  the daemon's `on_chain_completed` now emits `reference` + ordered `lower`/`event`/`upper` fields
+  (each clock event a `creator=… hash=… ts=…` line) instead of just a count, so `loti chain <e>
+  --json` renders the whole enclosing chain (repeated `lower`/`upper` → JSON arrays). Content bytes
+  are sanitized to printable for the single-line control protocol. Also added a colored, sectioned
+  `loti --help`/`-h`/`help` (ANSI only when stdout is a TTY and `NO_COLOR` is unset). All CLI-only;
+  the daemon changes are additive fields, no protocol/format break.
 - _Store engine (incremental append / LMDB vs SQLite): deferred to Stage 7 (scaling)._
 - _RPC encoding (JSON-over-unix-socket vs framed binary): resolved in Stage 5 (hand-rolled line protocol)._

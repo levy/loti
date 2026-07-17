@@ -16,3 +16,5 @@ sim/.*
 *_m.cc
 # CMake build tree (loti-core / product)
 /build/
+# proof artifacts written by `loti prove … --out`
+*.loti

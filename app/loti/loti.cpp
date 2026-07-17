@@ -11,7 +11,8 @@
 //
 //   status | node status              node id, counts, mode
 //   publish <text...>                 publish an event
-//   event show <hash|last>            show a known event
+//   event show <hash|last>            show a known event (creator, content, refs)
+//   event find <text...>              find local events whose content contains <text>
 //   events                            list event hashes
 //   bounds <event> | chain <event>    discover time bounds / an event chain
 //   order <a> <b>                     discover the order of two events
@@ -24,9 +25,11 @@
 //   init [--home <dir>]               create home dir, key, and config
 
 #include <sys/stat.h>
+#include <unistd.h>
 
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <ctime>
 #include <map>
 #include <optional>
@@ -40,6 +43,18 @@
 namespace {
 
 using namespace loti;
+
+// ANSI styling, enabled only for an interactive stdout with NO_COLOR unset.
+struct Style {
+  bool on = false;
+  const char* title() const { return on ? "\033[1;36m" : ""; }  // bold cyan — section
+  const char* group() const { return on ? "\033[1;33m" : ""; }  // bold yellow — group
+  const char* cmd()   const { return on ? "\033[32m"   : ""; }  // green — command
+  const char* opt()   const { return on ? "\033[33m"   : ""; }  // yellow — option
+  const char* bold()  const { return on ? "\033[1m"    : ""; }
+  const char* dim()   const { return on ? "\033[2m"    : ""; }
+  const char* reset() const { return on ? "\033[0m"    : ""; }
+};
 
 std::string hex(const domain::EventHash& h) {
   static const char* d = "0123456789abcdef";
@@ -180,6 +195,7 @@ std::string to_request(const std::vector<std::string>& a) {
   if (c == "key") return "key";
   if (c == "stop") return "quit";
   if (c == "event" && a.size() >= 3 && a[1] == "show") return "event " + a[2];
+  if (c == "event" && a.size() >= 3 && a[1] == "find") return join_from(2, "event-find");
   if (c == "peer" && a.size() >= 3 && a[1] == "add") return "peer-add " + a[2];
   if (c == "peer" && a.size() >= 2 && a[1] == "ls") return "peer-ls";
   if (c == "node" && a.size() >= 2 && a[1] == "status") return "status";
@@ -344,6 +360,82 @@ int do_verify(const std::vector<std::string>& args, const std::vector<std::strin
   return 0;
 }
 
+// ---- help ---------------------------------------------------------------
+// Color codes sit OUTSIDE the padded field so column alignment is exact.
+void help_title(const Style& s, const char* t) { std::printf("\n%s%s%s\n", s.title(), t, s.reset()); }
+void help_group(const Style& s, const char* t) { std::printf("\n  %s%s%s\n", s.group(), t, s.reset()); }
+void help_cmd(const Style& s, const char* name, const char* desc) {
+  std::printf("    %s%-24s%s%s\n", s.cmd(), name, s.reset(), desc);
+}
+void help_opt(const Style& s, const char* name, const char* desc) {
+  std::printf("  %s%-20s%s%s\n", s.opt(), name, s.reset(), desc);
+}
+
+void print_help(const Style& s) {
+  std::printf("%sloti%s — command-line client for a LOTI node\n", s.bold(), s.reset());
+
+  help_title(s, "USAGE");
+  std::printf("  loti [global options] <command> [args]\n");
+
+  help_title(s, "GLOBAL OPTIONS");
+  help_opt(s, "--control <path>", "control socket (default: $LOTI_CONTROL or ./loti.sock)");
+  help_opt(s, "--json", "machine-readable JSON output");
+  help_opt(s, "--quiet, -q", "suppress human output (exit code only)");
+  help_opt(s, "--home <dir>", "home directory for `init` (default: $HOME/.loti)");
+  help_opt(s, "--out <file>", "output file for `prove`");
+  help_opt(s, "--trust <node>", "trusted reference node for `verify` (repeatable)");
+  help_opt(s, "--help, -h", "show this help");
+
+  help_title(s, "COMMANDS");
+
+  help_group(s, "Node & identity");
+  help_cmd(s, "status", "node id, mode, and DAG counts");
+  help_cmd(s, "key", "show node id and public key");
+  help_cmd(s, "init", "create home dir, key, and config (local; no daemon)");
+
+  help_group(s, "Events");
+  help_cmd(s, "publish <text...>", "publish an event; prints its hash");
+  help_cmd(s, "events", "list all known event hashes");
+  help_cmd(s, "event show <hash|last>", "show one event (creator, content, refs)");
+  help_cmd(s, "event find <text>", "find local events whose content contains <text>");
+
+  help_group(s, "Discovery");
+  help_cmd(s, "bounds <event>", "discover an event's time bounds");
+  help_cmd(s, "chain <event>", "discover the enclosing chain (the complete path)");
+  help_cmd(s, "order <a> <b>", "discover the order of two events");
+
+  help_group(s, "Proofs — portable, offline-verifiable");
+  help_cmd(s, "prove bounds <event>", "write a bounds proof to --out <file>");
+  help_cmd(s, "prove order <a> <b>", "write an order proof to --out <file>");
+  help_cmd(s, "prove chain <event>", "write a raw-chain proof to --out <file>");
+  help_cmd(s, "verify <file>", "verify a proof offline (exit 0 valid / 6 invalid)");
+  help_cmd(s, "proof show <file>", "summarize a proof (no verification)");
+
+  help_group(s, "Peers");
+  help_cmd(s, "peer add <id:ip:port>", "add a neighbor");
+  help_cmd(s, "peer ls", "list neighbors");
+
+  help_group(s, "Daemon");
+  help_cmd(s, "stop", "stop the daemon");
+
+  help_title(s, "ENVIRONMENT");
+  help_opt(s, "LOTI_CONTROL", "default control socket path");
+  help_opt(s, "NO_COLOR", "disable colored output");
+
+  help_title(s, "EXAMPLES");
+  std::printf("  %sloti publish \"manuscript sha256 deadbeef\"%s\n", s.dim(), s.reset());
+  std::printf("  %sloti event find manuscript --json%s\n", s.dim(), s.reset());
+  std::printf("  %sloti chain <hash> --json%s\n", s.dim(), s.reset());
+  std::printf("  %sloti prove bounds <hash> --out proof.loti && loti verify proof.loti%s\n",
+              s.dim(), s.reset());
+
+  help_title(s, "EXIT CODES");
+  std::printf("  %s0%s ok   %s2%s usage   %s4%s not found   %s6%s verification failed   %s1%s no daemon\n",
+              s.bold(), s.reset(), s.bold(), s.reset(), s.bold(), s.reset(), s.bold(), s.reset(),
+              s.bold(), s.reset());
+  std::printf("\n");
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -351,13 +443,14 @@ int main(int argc, char** argv) {
   std::string home = std::getenv("HOME") ? std::string(std::getenv("HOME")) + "/.loti" : ".loti";
   std::string out;
   std::vector<std::string> trust;
-  bool json = false, quiet = false;
+  bool json = false, quiet = false, help = false;
   std::vector<std::string> args;
 
   for (int i = 1; i < argc; ++i) {
     std::string a = argv[i];
     if (a == "--json") json = true;
     else if (a == "--quiet" || a == "-q") quiet = true;
+    else if (a == "--help" || a == "-h") help = true;
     else if (a == "--control" && i + 1 < argc) control = argv[++i];
     else if (a == "--home" && i + 1 < argc) home = argv[++i];
     else if (a == "--out" && i + 1 < argc) out = argv[++i];
@@ -365,11 +458,16 @@ int main(int argc, char** argv) {
     else args.push_back(a);
   }
 
+  Style style;
+  style.on = ::isatty(STDOUT_FILENO) && std::getenv("NO_COLOR") == nullptr;
+  if (help || (!args.empty() && args[0] == "help")) {
+    print_help(style);
+    return 0;
+  }
+
   if (args.empty()) {
-    std::fprintf(stderr, "usage: loti [--control <path>] [--json] [--quiet] <command> [args...]\n"
-                         "commands: status | publish <text> | event show <h> | events | "
-                         "bounds <e> | chain <e> | order <a> <b> | prove <kind> <e> [e2] --out <f> | "
-                         "verify <f> | proof show <f> | peer add|ls | key | stop | init\n");
+    std::fprintf(stderr, "usage: loti [global options] <command> [args]\n"
+                         "run `loti --help` for the full command list\n");
     return 2;
   }
   if (args[0] == "init") return do_init(home);
