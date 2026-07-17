@@ -119,28 +119,40 @@ today. *Highest-risk stage — guard with golden tests.*
 `clockEventsFileLength`/`eventsFileLength` and packet-length histograms as before this stage.
 **Commit:** "core: plain-struct domain model + canonical serializer (byte-identical)".
 
-## Stage 2 — Ports + extract the `Node` core  → **M1**
+## Stage 2 — Ports + extract the `Node` core  → **M1 (core proven; OMNeT++ binding deferred)**
 
 **Goal:** the protocol logic moves into `core/node`, driven by ports; the simulation runs on
 the shared core.
 
-- [ ] Define port interfaces in `core/ports/`: `Clock`, `Scheduler`, `Transport`, `Rng`,
-      `Store`, `Signer` (+ shared `Hasher`), `Config`, `Telemetry`.
-- [ ] Move `Daemon.cc` protocol methods into `core/node` (`Node`), taking ports by reference:
-      `publishEvent`, `discoverEvent{Chain,Bounds,Order}`, the four `add*/extend*` primitives,
-      routing, validation, `onPacketReceived`, `onTimer`, `addNeighbor`/`learnRoute`.
-- [ ] Implement **simulation adapters** in `adapters/sim/`: `SimClock`(`simTime`),
-      `SimScheduler`(`scheduleAt`/self-msgs), `SimTransport`(`UdpSocket`), `SimRng`(seeded
-      `intuniform`), `InMemoryStore`, `StubSigner`, `NedConfig`(`par`), `SignalTelemetry`(the
-      existing `@signal`/`ResultFilter`s).
-- [ ] Shrink `app/sim/` modules to thin adapters: `Daemon` owns a `Node`; `Publisher`/`Browser`
-      call the `Node` API; `NetworkConfigurator` calls `addNeighbor`/`learnRoute`.
-- [ ] Add `test/core` unit tests (fake ports) and a `test/harness` in-process multi-node
-      integration test (chain discovery across several hops, expiry, ordering).
+- [x] Define port interfaces in `core/ports/`: `Clock`, `Scheduler`, `Transport`, `Rng`,
+      `Signer`, `Telemetry`. **`Store` and `Config` were intentionally NOT made ports yet** —
+      DAG state stays in the `Node` (extracted behind a `Store` port in Stage 3, when the
+      persistent implementation gives the abstraction a second implementation); config is a
+      plain `NodeConfig` struct for now. Hashing stays a shared free function (`core/hash`),
+      not a port.
+- [x] Move `Daemon.cc` protocol methods into `core/node` (`Node`), ports by reference:
+      `publish_event`, `discover_event_{chain,bounds,order}`, the four `add*/extend*`
+      primitives, request/response routing, validation, `on_packet_received`,
+      `create_clock_event`, `add_neighbor`/`learn_route`, discovery coalescing + purge. Added a
+      real wire codec (`core/wire`) so the transport carries canonical bytes.
+- [ ] Implement **simulation adapters** (`adapters/sim/`) and shrink the OMNeT++ modules
+      (`app/sim/`) to thin `Node` hosts. **Deferred:** requires an OMNeT++ 5.4 / INET 4.0 build
+      environment, which is not installed here. This is the remaining last mile to M1; the code
+      is unverifiable without OMNeT++, so it is not written speculatively.
+- [x] Add `test/core` unit tests (fake ports) and a `test/harness` in-process multi-node
+      integration test — chain / bounds / order discovery across several hops.
 
-**Verify:** core unit + harness tests green; the OMNeT++ example completes with the same
-started/completed/aborted counts and interval/length histograms (within run-to-run noise).
-**Commit:** "core: extract Node behind ports; simulation now runs on loti-core". **(M1)**
+**Verify:** ✅ **core + harness green** — `build-core.sh` runs 12 cases / 34 assertions under
+g++ 15.2, including: two-node chain discovery completes and validates (endpoints are the
+reference node's clock events); three-node path bounds discovery yields a sane interval; order
+discovery orders an earlier event `before` a later one; and the wire codec round-trips every
+packet (incl. a full `EventChain`). ⏳ The OMNeT++ sim-parity check (same started/completed/
+aborted counts and histograms) needs an OMNeT++ box and is **pending**.
+
+**Status:** the protocol demonstrably runs on `loti-core` (harness = the plan's Tier-2 test,
+a stronger *correctness* check than the sim). **M1 is reached for the core**; the OMNeT++
+binding that makes the actual simulation run on the core is the deferred remainder.
+**Commit:** "Extract the Node protocol engine behind ports + in-process harness (MVP Stage 2)".
 
 ## Stage 3 — Production runtime adapters + `lotid` skeleton  → **M2**
 
@@ -261,5 +273,18 @@ deviations from the docs; per repo convention, decisions live here, not in sourc
   concepts, etc. used in the architecture sketches).
 - **Test framework: doctest v2.4.11** (decided, Stage 0), vendored single header at
   `test/doctest/doctest.h`. Chosen over Catch2 for lighter/faster compiles; swap is localized.
+- **Stage 2 deviations from the doc's port list (accepted):**
+  - `Store` and `Config` are **not** ports yet. The `Node` holds its DAG state directly (as the
+    original `Daemon` did) and takes a `NodeConfig` struct. Rationale: in Stage 2 the store has
+    exactly one (in-RAM) implementation, so the abstraction earns nothing until Stage 3's
+    `PersistentStore`; keeping state in the `Node` reduced risk during the delicate extraction.
+  - `discovery` / `validate` / `dag` logic lives in `core/node.cpp` (one engine, like the
+    original) rather than split across `core/discovery|validate|dag/`; those dirs remain
+    placeholders. Split later only if it earns clarity.
+  - `Timestamp`/`Duration` are `int64` ticks; the wire header carries the sender id (as the
+    original `LotiHeader.neighbor`), so `Transport::send` needs only the destination.
+  - The `Node` calls `Signer::sign` on creation (NullSigner → empty signature); signature
+    **verification** stays out of validation until Stage 4, so Stage-2 behavior matches the
+    original exactly.
 - _Store engine (LMDB vs SQLite): TBD — Stage 3._
 - _RPC encoding (JSON-over-unix-socket vs framed binary): TBD — Stage 5._

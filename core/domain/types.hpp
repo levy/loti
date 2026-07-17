@@ -28,6 +28,9 @@ using Signature = std::vector<std::uint8_t>;  // empty = unsigned; excluded from
 // tick (e.g. nanoseconds). The core neither knows nor cares which.
 using Timestamp = std::int64_t;
 
+// A span of time in the same tick unit as Timestamp (a difference of Timestamps).
+using Duration = std::int64_t;
+
 // A typed pointer to another event / clock event (its creator + hash).
 struct EventReference {
   NodeId creator = 0;
