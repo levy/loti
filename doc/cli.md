@@ -1,11 +1,17 @@
 # LOTI CLI — Design Specification
 
 This document specifies the command-line interface for a **deployable LOTI node** — the tool
-that would turn the [simulation model](implementation.md) into a viable product. It is a
-design/reference document: it defines the full command surface, the daemon/client
-architecture, and the portable proof format. It does **not** yet describe
-existing code; the current repository is a simulation with no CLI (see
-[paper-vs-implementation.md](paper-vs-implementation.md) for the gaps this design fills).
+that turns the [simulation model](implementation.md) into a viable product. It defines the full
+command surface, the daemon/client architecture, and the portable proof format.
+
+A **working subset is already implemented**: the [`lotid`](../app/lotid/lotid.cpp) daemon and
+[`loti`](../app/loti/loti.cpp) client cover `init`, the control-socket RPC, `peer add`/`peer ls`,
+`publish`, the three discoveries (`bounds` / `chain` / `order`), Ed25519 identity and signing,
+snapshot persistence, and portable, offline-verifiable proofs (`prove` / `verify`). The rest of
+the surface below — daemon supervision, key rotation and backup, routing/overlay management, the
+`clock` and `db` subcommands, `config`, `stats`/`metrics`, and reference-node targeting — remains
+design/reference (see [paper-vs-implementation.md](paper-vs-implementation.md) for the remaining
+gaps).
 
 How one codebase provides both this CLI/daemon and the simulation model is described in
 [architecture.md](architecture.md).
