@@ -55,8 +55,9 @@ From [architecture.md](../../doc/architecture.md), non-negotiable throughout:
 - **M1 — Simulation on the shared core** (end of Stage 2) ✅ **REACHED 2026-07-17**: the OMNeT++
   example runs on `loti-core` with bit-identical protocol statistics. *The simulation half of
   the MVP is done.*
-- **M2 — Real node, loopback** (end of Stage 3): two `lotid` processes on localhost exchange
-  clock notifications and complete a discovery, reproducing sim behavior.
+- **M2 — Real node, loopback** (end of Stage 3) ✅ **REACHED 2026-07-17**: two `lotid` processes on
+  localhost exchange clock notifications over real UDP and complete a discovery (chain + bounds),
+  reproducing sim behavior. *(Restart-survivable persistence is the remaining Stage 3b work.)*
 - **M3 — Proofs end-to-end** (end of Stage 6): publish → prove → verify offline works; signed.
 - **M4 — MVP acceptance** (end of Stage 7): restart-survivable, backed up, both targets green,
   docs updated.
@@ -165,23 +166,36 @@ bit-identical protocol statistics. *The simulation half of the MVP is done.*
 **Commits:** "Extract the Node protocol engine behind ports + in-process harness (MVP Stage 2)";
 "Bind the OMNeT++ simulation onto loti-core (sim adapters + thin app/sim modules) — M1".
 
-## Stage 3 — Production runtime adapters + `lotid` skeleton  → **M2**
+## Stage 3 — Production runtime adapters + `lotid` skeleton  → **M2 ✅ core reached (2026-07-17); persistence = 3b**
 
 **Goal:** a real single-node daemon that reproduces protocol behavior over real UDP, with
 persistence.
 
-- [ ] Implement OS adapters in `adapters/os/`: `WallClock`, a single-threaded **reactor**
-      `Scheduler`, `UdpTransport` (real socket, port from config), `SecureRng` (CSPRNG),
-      `PersistentStore` (LMDB or SQLite), `FileConfig` (TOML), `LogTelemetry`.
-- [ ] Build `app/lotid`: construct one `Node` with the OS ports, run the reactor, open the
-      transport, load/persist state, drive the clock-event and purge timers.
-- [ ] Minimal static peering (config file lists neighbors + routes) to get two nodes talking;
-      dynamic `peer add` comes in Stage 5.
+- [x] OS adapters in `adapters/os/` (header-only): `WallClock` (CLOCK_REALTIME ns), a
+      single-threaded **epoll `Reactor`** + `ReactorScheduler`, `UdpTransport` (real non-blocking
+      socket, port from CLI), `SecureRng` (getrandom CSPRNG), `NullSigner`, `LogTelemetry`.
+      `PersistentStore` + `FileConfig` (TOML) are **deferred to Stage 3b** (below).
+- [x] `app/lotid`: constructs one `Node` on the OS ports, runs the reactor, opens the transport,
+      drives the clock + purge timers, and takes stdin line commands
+      (`publish`/`chain`/`bounds`/`order`/`events`/`quit`) so two instances can be scripted.
+      Built by CMake (`add_executable(lotid …)` links `loti_core` **only — no OMNeT++/INET**), so
+      it also builds under `scripts/build-core.sh`. **Deferred to 3b:** load/persist state.
+- [x] Minimal static peering via `--peer id:ip:port` / `--route dst:nexthop` CLI flags (a TOML
+      config file is the 3b form). Enough to get two nodes talking; dynamic `peer add` is Stage 5.
 
-**Verify:** two `lotid` processes on localhost exchange clock-event notifications; a scripted
-discovery on one for an event published on the other completes and validates; state reloads
-after restart.
-**Commit:** "rt: OS adapters + lotid daemon; loopback two-node discovery works". **(M2)**
+**Verify:** ✅ two `lotid` processes on loopback (udp/5001 + udp/5002) exchange clock-event
+notifications over **real UDP**; node 1 publishes an event, then a **chain discovery completes
+and validates** (endpoints are 2 clock events of node 2, the reference) and a **bounds discovery
+completes** with a real wall-clock interval (`[…337904181, …838555560]` ns ≈ 0.50 s wide, matching
+the 0.5 s clock cadence, dated 2026). Core unit tests stay green (`ctest` 1/1). ⏳ *state reloads
+after restart* needs persistence (Stage 3b).
+**Commit:** "rt: OS adapters + lotid daemon; loopback two-node discovery works — M2".
+
+**Stage 3b (remaining, not yet done):** `PersistentStore` (extract a `Store` port from the `Node`
++ an embedded LMDB/SQLite impl), `FileConfig` (TOML), and restart-survivable state — completes the
+Stage 3 checklist. Split out so the M2 milestone (live two-node discovery) lands and is verifiable
+on its own; the persistent store is also where the Stage-2-deferred `Store` port finally earns its
+second implementation.
 
 ## Stage 4 — Identity & signing
 
@@ -352,5 +366,27 @@ deviations from the docs; per repo convention, decisions live here, not in sourc
     (which assert-crashed in the old `Daemon.cc`) now runs clean because the core `Node` guards
     the double-abort. `src/`'s modules are now dead weight kept only as the baseline — retire them
     once M2+ no longer needs the A/B reference.
-- _Store engine (LMDB vs SQLite): TBD — Stage 3._
+- **Stage-3 OMNeT++-free production runtime (M2 core, 2026-07-17):**
+  - **OS adapters are header-only** in `adapters/os/` (namespace `loti::os`): `WallClock`
+    (CLOCK_REALTIME nanoseconds — a production "tick" is 1 ns, so proof bounds are real dates),
+    `Reactor` (epoll + a `multimap`-ordered timer queue) with `ReactorScheduler` expressing the
+    core's Scheduler port, `UdpTransport` (non-blocking UDP socket; the core's canonical wire
+    bytes go out verbatim — the same encoding the sim's `BytesChunk` carries), `SecureRng`
+    (getrandom(2)), `NullSigner`, `LogTelemetry` (stderr lines).
+  - **The reactor is the only loop.** It fires due timers (how the core "waits"), then
+    `epoll_wait`s until the next timer or a readable fd (UDP socket, stdin), then dispatches —
+    single-threaded and non-blocking, matching the sim's DES ordering discipline so both drivers
+    exercise the same core code paths. Timers and `WallClock` share CLOCK_REALTIME, so the due
+    time the core computes (`clock.now() + delay`) lines up with the reactor's comparisons.
+  - **`lotid` builds via CMake and links `loti_core` only** — no OMNeT++/INET —
+    so `scripts/build-core.sh` builds it too, mechanically proving the real node needs nothing but
+    the pure core + the C++/POSIX runtime.
+  - **Peering is CLI flags** (`--peer id:ip:port`, `--route dst:nexthop`), not a config file yet
+    (a neighbour gets a direct route by default). **Driving is stdin line commands** — there is no
+    control socket yet (that's Stage 5); the stdin interface is a throwaway harness that lets two
+    daemons be scripted end to end.
+  - **Persistence deferred to Stage 3b** — the `Node` still holds its DAG state in RAM; extracting
+    the `Store` port + an embedded store (and restart survival) is where Stage-2's deferred
+    `Store` abstraction finally earns its second implementation.
+- _Store engine (LMDB vs SQLite): TBD — Stage 3b._
 - _RPC encoding (JSON-over-unix-socket vs framed binary): TBD — Stage 5._

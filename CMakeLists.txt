@@ -35,6 +35,16 @@ add_library(loti_core STATIC
 target_include_directories(loti_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/core)
 
 # ----------------------------------------------------------------------------
+# lotid — the production daemon: one loti::Node on the OS port adapters
+# (adapters/os/, header-only) driven by an epoll reactor. Links loti_core ONLY —
+# no OMNeT++/INET — so this target existing under scripts/build-core.sh proves the
+# real node needs nothing but the pure core plus the C++/POSIX runtime.
+# ----------------------------------------------------------------------------
+add_executable(lotid app/lotid/lotid.cpp)
+target_link_libraries(lotid PRIVATE loti_core)
+target_include_directories(lotid PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+
+# ----------------------------------------------------------------------------
 # Tests (doctest, vendored under test/doctest).
 # ----------------------------------------------------------------------------
 enable_testing()
