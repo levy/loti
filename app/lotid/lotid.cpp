@@ -17,6 +17,7 @@
 //   bounds  <hexprefix|last>  discover time bounds  (async)
 //   chain   <hexprefix|last>  discover an event chain (async)
 //   order   <a> <b>           discover the order of two events (async)
+//   prove   <kind> <e> [e2]   discover + serialize a portable proof (async)
 //   peer-add <id:ip:port>     add a neighbor
 //   peer-ls                   list neighbors
 //   status                    node id, counts, mode
@@ -52,6 +53,7 @@
 #include "adapters/os/telemetry.hpp"
 #include "adapters/os/transport.hpp"
 #include "node.hpp"
+#include "proof/proof.hpp"
 
 namespace {
 
@@ -103,6 +105,34 @@ std::string hex_id(domain::NodeId id) {
   char buf[19];
   std::snprintf(buf, sizeof(buf), "0x%016llx", static_cast<unsigned long long>(id));
   return buf;
+}
+
+std::string hex_bytes(const domain::Bytes& b) {
+  static const char* d = "0123456789abcdef";
+  std::string s;
+  s.reserve(b.size() * 2);
+  for (unsigned char c : b) {
+    s.push_back(d[c >> 4]);
+    s.push_back(d[c & 0xF]);
+  }
+  return s;
+}
+
+const char* kind_name(proof::Kind k) {
+  switch (k) {
+    case proof::Kind::bounds: return "bounds";
+    case proof::Kind::order:  return "order";
+    case proof::Kind::chain:  return "chain";
+  }
+  return "unknown";
+}
+
+// The order two enclosing chains imply — the same interval comparison the core's
+// order discovery uses (Node::compare_event_chains). Kept in sync deliberately.
+domain::Order compare_chains(const domain::EventChain& a, const domain::EventChain& b) {
+  if (a.upper_bound.back().timestamp < b.lower_bound.front().timestamp) return domain::Order::before;
+  if (b.upper_bound.back().timestamp < a.lower_bound.front().timestamp) return domain::Order::after;
+  return domain::Order::undetermined;
 }
 
 // Exit codes (shared with the CLI; see cli.md).
@@ -187,8 +217,14 @@ class Lotid final : public ChainCallback, public BoundsCallback, public OrderCal
     answer(pending_chain_, e.hash,
            Reply{kOk, false, "", {{"event", hex(e.hash)},
                                   {"clockEvents", std::to_string(c.lower_bound.size() + c.upper_bound.size())}}});
+    finish_single_proof(e.hash, c);
+    finish_order_proof(e.hash, c);
   }
-  void on_chain_aborted(const domain::Event& e) override { abort_pending(pending_chain_, e.hash); }
+  void on_chain_aborted(const domain::Event& e) override {
+    abort_pending(pending_chain_, e.hash);
+    abort_single_proof(e.hash);
+    abort_order_proof(e.hash);
+  }
   void on_bounds_completed(const domain::Event& e, domain::Timestamp lo, domain::Timestamp hi) override {
     answer(pending_bounds_, e.hash,
            Reply{kOk, false, "", {{"event", hex(e.hash)},
@@ -244,6 +280,7 @@ class Lotid final : public ChainCallback, public BoundsCallback, public OrderCal
       return r;
     }
     if (verb == "bounds" || verb == "chain" || verb == "order") return dispatch_query(verb, args, reply_fd);
+    if (verb == "prove") return dispatch_prove(args, reply_fd);
     if (verb == "peer-add") {
       if (args.size() < 2) return {kUsage, false, "usage: peer-add <id:ip:port>", {}};
       auto f = split(args[1], ':');
@@ -305,6 +342,110 @@ class Lotid final : public ChainCallback, public BoundsCallback, public OrderCal
       node_->discover_event_chain(*e, *this);
     }
     return reply_fd >= 0 ? Reply{kOk, true, "", {}} : Reply{kOk, false, "", {{"status", "started"}}};
+  }
+
+  // ---- prove: run a chain discovery, then serialize a portable proof ------
+  // The reply carries the proof as hex under `proof`; the CLI writes it to --out.
+  // Proofs need to hold a connection until the discovery completes, so the control
+  // socket (not stdin) is required.
+  Reply dispatch_prove(const std::vector<std::string>& args, int reply_fd) {
+    if (args.size() < 2)
+      return {kUsage, false, "usage: prove <bounds|order|chain> <event> [event2]", {}};
+    const std::string& sub = args[1];
+    if (reply_fd < 0) return {kUsage, false, "prove requires the control socket", {}};
+
+    if (sub == "order") {
+      if (args.size() < 4) return {kUsage, false, "usage: prove order <a> <b>", {}};
+      const auto* a = find_event(args[2]);
+      const auto* b = find_event(args[3]);
+      if (!a || !b) return {kNotFound, false, "no such event", {}};
+      order_proofs_.push_back(OrderProof{reply_fd, a->hash, b->hash, {}, {}});
+      node_->discover_event_chain(*a, *this);
+      node_->discover_event_chain(*b, *this);
+      return {kOk, true, "", {}};
+    }
+    if (sub != "bounds" && sub != "chain")
+      return {kUsage, false, "prove kind must be bounds|order|chain", {}};
+    if (args.size() < 3) return {kUsage, false, "usage: prove " + sub + " <event>", {}};
+    const auto* e = find_event(args[2]);
+    if (!e) return {kNotFound, false, "no such event", {}};
+    const proof::Kind kind = (sub == "chain") ? proof::Kind::chain : proof::Kind::bounds;
+    pending_proof_.insert({e->hash, ProofRequest{reply_fd, kind}});
+    node_->discover_event_chain(*e, *this);
+    return {kOk, true, "", {}};
+  }
+
+  // Assemble a completed proof into a reply: the hex blob plus a human summary.
+  Reply proof_reply(const proof::Proof& p) {
+    Reply r{kOk, false, "", {}};
+    r.fields.emplace_back("proof", hex_bytes(proof::serialize(p)));
+    r.fields.emplace_back("kind", kind_name(p.kind));
+    r.fields.emplace_back("reference", hex_id(p.reference.node));
+    r.fields.emplace_back("chainLength",
+                          std::to_string(p.chain.lower_bound.size() + p.chain.upper_bound.size()));
+    if (p.kind == proof::Kind::order) {
+      r.fields.emplace_back("chain2Length",
+                            std::to_string(p.chain2.lower_bound.size() + p.chain2.upper_bound.size()));
+      r.fields.emplace_back("order", std::to_string(static_cast<int>(p.order)));
+    } else {
+      r.fields.emplace_back("lower", std::to_string(p.chain.lower_bound.front().timestamp));
+      r.fields.emplace_back("upper", std::to_string(p.chain.upper_bound.back().timestamp));
+    }
+    return r;
+  }
+
+  proof::Reference my_reference() const {
+    proof::Reference ref;
+    ref.node = node_id_;
+    if (auto* ks = dynamic_cast<os::Ed25519KeyStore*>(signer_.get())) ref.pubkey = ks->public_key();
+    return ref;
+  }
+
+  void finish_single_proof(const domain::EventHash& hash, const domain::EventChain& c) {
+    auto range = pending_proof_.equal_range(hash);
+    for (auto it = range.first; it != range.second; ++it) {
+      proof::Proof p;
+      p.kind = it->second.kind;
+      p.reference = my_reference();
+      p.chain = c;
+      respond(it->second.fd, proof_reply(p));
+    }
+    pending_proof_.erase(range.first, range.second);
+  }
+  void abort_single_proof(const domain::EventHash& hash) {
+    auto range = pending_proof_.equal_range(hash);
+    for (auto it = range.first; it != range.second; ++it)
+      respond(it->second.fd, Reply{kInvalidResult, false, "discovery aborted", {}});
+    pending_proof_.erase(range.first, range.second);
+  }
+
+  void finish_order_proof(const domain::EventHash& hash, const domain::EventChain& c) {
+    for (auto it = order_proofs_.begin(); it != order_proofs_.end();) {
+      if (it->a == hash && !it->chain_a) it->chain_a = c;
+      if (it->b == hash && !it->chain_b) it->chain_b = c;
+      if (it->chain_a && it->chain_b) {
+        proof::Proof p;
+        p.kind = proof::Kind::order;
+        p.reference = my_reference();
+        p.chain = *it->chain_a;
+        p.chain2 = *it->chain_b;
+        p.order = compare_chains(p.chain, p.chain2);
+        respond(it->fd, proof_reply(p));
+        it = order_proofs_.erase(it);
+      } else {
+        ++it;
+      }
+    }
+  }
+  void abort_order_proof(const domain::EventHash& hash) {
+    for (auto it = order_proofs_.begin(); it != order_proofs_.end();) {
+      if (it->a == hash || it->b == hash) {
+        respond(it->fd, Reply{kInvalidResult, false, "discovery aborted", {}});
+        it = order_proofs_.erase(it);
+      } else {
+        ++it;
+      }
+    }
   }
 
   // ---- stdin: dispatch and print the reply as human text ------------------
@@ -435,6 +576,19 @@ class Lotid final : public ChainCallback, public BoundsCallback, public OrderCal
   std::map<int, std::string> client_buf_;  // per-connection read buffer
   PendingByEvent pending_bounds_, pending_chain_;
   std::map<std::pair<domain::EventHash, domain::EventHash>, int> pending_order_;
+
+  // prove: a single-chain proof waits on one event; an order proof accumulates two.
+  struct ProofRequest {
+    int fd;
+    proof::Kind kind;
+  };
+  struct OrderProof {
+    int fd;
+    domain::EventHash a, b;
+    std::optional<domain::EventChain> chain_a, chain_b;
+  };
+  std::multimap<domain::EventHash, ProofRequest> pending_proof_;
+  std::vector<OrderProof> order_proofs_;
 };
 
 double parse_seconds(const char* s) { return std::atof(s); }

@@ -31,6 +31,7 @@ add_library(loti_core STATIC
   core/hash/hashing.cpp
   core/wire/packets.cpp
   core/node.cpp
+  core/proof/proof.cpp
 )
 target_include_directories(loti_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/core)
 

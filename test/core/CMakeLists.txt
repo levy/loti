@@ -7,6 +7,7 @@ add_executable(loti_core_tests
   test_wire.cpp
   test_discovery.cpp
   test_keystore.cpp
+  test_proof.cpp
   ${CMAKE_SOURCE_DIR}/adapters/os/keystore.cpp  # the crypto adapter under test
 )
 target_link_libraries(loti_core_tests PRIVATE loti_core OpenSSL::Crypto)

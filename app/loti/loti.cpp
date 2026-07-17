@@ -15,6 +15,9 @@
 //   events                            list event hashes
 //   bounds <event> | chain <event>    discover time bounds / an event chain
 //   order <a> <b>                     discover the order of two events
+//   prove bounds|order|chain … --out  discover + serialize a portable proof
+//   verify <file> [--trust <node>]    verify a proof offline (exit 0 valid / 6 invalid)
+//   proof show <file>                 summarize a proof (no verification)
 //   peer add <id:ip:port> | peer ls   manage neighbors
 //   key [show]                        node id + public key
 //   node stop | stop                  stop the daemon
@@ -24,12 +27,15 @@
 
 #include <cstdio>
 #include <cstdlib>
+#include <ctime>
 #include <map>
+#include <optional>
 #include <string>
 #include <vector>
 
 #include "adapters/os/control.hpp"
 #include "adapters/os/keystore.hpp"
+#include "proof/proof.hpp"
 
 namespace {
 
@@ -48,6 +54,71 @@ std::string hex_id(domain::NodeId id) {
   char buf[19];
   std::snprintf(buf, sizeof(buf), "0x%016llx", static_cast<unsigned long long>(id));
   return buf;
+}
+
+const char* kind_name(proof::Kind k) {
+  switch (k) {
+    case proof::Kind::bounds: return "bounds";
+    case proof::Kind::order:  return "order";
+    case proof::Kind::chain:  return "chain";
+  }
+  return "unknown";
+}
+const char* order_name(domain::Order o) {
+  switch (o) {
+    case domain::Order::before: return "before";
+    case domain::Order::after:  return "after";
+    case domain::Order::undetermined: return "undetermined";
+  }
+  return "undetermined";
+}
+
+// Render a raw clock tick. Production timestamps are CLOCK_REALTIME nanoseconds, so
+// show the wall-clock time alongside the raw value (which is what the hash covers).
+std::string format_ts(domain::Timestamp ns) {
+  const std::time_t secs = static_cast<std::time_t>(ns / 1'000'000'000);
+  std::tm tm{};
+  gmtime_r(&secs, &tm);
+  char buf[32];
+  std::strftime(buf, sizeof(buf), "%Y-%m-%dT%H:%M:%SZ", &tm);
+  return std::string(buf) + " (raw " + std::to_string(ns) + ")";
+}
+
+std::optional<domain::Bytes> unhex(const std::string& s) {
+  if (s.size() % 2) return std::nullopt;
+  auto nib = [](char c) -> int {
+    if (c >= '0' && c <= '9') return c - '0';
+    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+    return -1;
+  };
+  domain::Bytes b;
+  b.reserve(s.size() / 2);
+  for (std::size_t i = 0; i < s.size(); i += 2) {
+    const int hi = nib(s[i]), lo = nib(s[i + 1]);
+    if (hi < 0 || lo < 0) return std::nullopt;
+    b.push_back(static_cast<std::uint8_t>((hi << 4) | lo));
+  }
+  return b;
+}
+
+std::optional<domain::Bytes> read_file(const std::string& path) {
+  FILE* f = std::fopen(path.c_str(), "rb");
+  if (!f) return std::nullopt;
+  domain::Bytes b;
+  char buf[4096];
+  std::size_t n;
+  while ((n = std::fread(buf, 1, sizeof(buf), f)) > 0) b.insert(b.end(), buf, buf + n);
+  std::fclose(f);
+  return b;
+}
+
+bool write_file(const std::string& path, const domain::Bytes& b) {
+  FILE* f = std::fopen(path.c_str(), "wb");
+  if (!f) return false;
+  const bool ok = std::fwrite(b.data(), 1, b.size(), f) == b.size();
+  std::fclose(f);
+  return ok;
 }
 
 std::string json_escape(const std::string& s) {
@@ -136,11 +207,150 @@ int do_init(const std::string& home) {
   return 0;
 }
 
+// `loti prove <bounds|order|chain> <event> [event2] --out <file>` — ask the daemon
+// to run the discovery and serialize a proof, then write the artifact to --out.
+int do_prove(const std::vector<std::string>& args, const std::string& control,
+             const std::string& out, bool quiet) {
+  if (out.empty()) {
+    std::fprintf(stderr, "loti: prove requires --out <file>\n");
+    return 2;
+  }
+  std::string request;
+  for (std::size_t i = 0; i < args.size(); ++i) request += (i ? " " : "") + args[i];
+  const auto reply = os::control_request(control, request);
+  if (!reply) {
+    std::fprintf(stderr, "loti: cannot reach daemon at %s\n", control.c_str());
+    return 1;
+  }
+  if (!reply->ok) {
+    std::fprintf(stderr, "error(%d): %s\n", reply->code, reply->message.c_str());
+    return reply->code;
+  }
+  std::string hexproof, kind = "?", reference = "?", chain_length = "?";
+  for (const auto& [k, v] : reply->fields) {
+    if (k == "proof") hexproof = v;
+    else if (k == "kind") kind = v;
+    else if (k == "reference") reference = v;
+    else if (k == "chainLength") chain_length = v;
+  }
+  const auto bytes = unhex(hexproof);
+  if (!bytes || bytes->empty()) {
+    std::fprintf(stderr, "loti: daemon returned no proof\n");
+    return 1;
+  }
+  if (!write_file(out, *bytes)) {
+    std::fprintf(stderr, "loti: cannot write %s\n", out.c_str());
+    return 1;
+  }
+  if (!quiet)
+    std::printf("wrote %s  (%s proof, chain length %s, reference %s)\n", out.c_str(), kind.c_str(),
+                chain_length.c_str(), reference.c_str());
+  return 0;
+}
+
+// `loti proof show <file>` — human summary, no verification.
+int do_proof_show(const std::vector<std::string>& args) {
+  if (args.size() < 3) {
+    std::fprintf(stderr, "usage: loti proof show <file>\n");
+    return 2;
+  }
+  const auto bytes = read_file(args[2]);
+  if (!bytes) {
+    std::fprintf(stderr, "loti: cannot read %s\n", args[2].c_str());
+    return 4;
+  }
+  proof::Proof p;
+  try {
+    p = proof::deserialize(*bytes);
+  } catch (const std::exception& e) {
+    std::fprintf(stderr, "loti: %s\n", e.what());
+    return 4;
+  }
+  std::printf("kind: %s\n", kind_name(p.kind));
+  std::printf("reference: %s\n", hex_id(p.reference.node).c_str());
+  if (!p.reference.pubkey.empty()) std::printf("pubkey: ed25519:%s\n", hex(p.reference.pubkey).c_str());
+  std::printf("event: %s\n", hex(p.chain.event.hash).c_str());
+  std::printf("chainLength: %zu\n", p.chain.lower_bound.size() + p.chain.upper_bound.size());
+  if (p.kind == proof::Kind::order) {
+    std::printf("event2: %s\n", hex(p.chain2.event.hash).c_str());
+    std::printf("order: %s\n", order_name(p.order));
+  } else {
+    std::printf("lower: %s\n", format_ts(p.chain.lower_bound.front().timestamp).c_str());
+    std::printf("upper: %s\n", format_ts(p.chain.upper_bound.back().timestamp).c_str());
+  }
+  std::printf("(not verified — run `loti verify %s`)\n", args[2].c_str());
+  return 0;
+}
+
+// `loti verify <file> [--trust <node>]... [--json]` — offline verification.
+// Exit 0 if the proof is valid (integrity + attribution), 6 if not. `--trust` is
+// advisory for the MVP: verification proves integrity, and a warning is printed if
+// the reference node is outside the supplied trust set.
+int do_verify(const std::vector<std::string>& args, const std::vector<std::string>& trust, bool json) {
+  if (args.size() < 2) {
+    std::fprintf(stderr, "usage: loti verify <file> [--trust <node>]... [--json]\n");
+    return 2;
+  }
+  const auto bytes = read_file(args[1]);
+  if (!bytes) {
+    std::fprintf(stderr, "loti: cannot read %s\n", args[1].c_str());
+    return 4;
+  }
+  proof::Proof p;
+  try {
+    p = proof::deserialize(*bytes);
+  } catch (const std::exception& e) {
+    std::fprintf(stderr, "loti: %s\n", e.what());
+    return 4;
+  }
+
+  os::Ed25519KeyStore verifier;  // verify() uses each signature's embedded public key
+  const auto res = proof::verify(p, verifier);
+
+  bool trusted = trust.empty();  // no --trust given → don't gate, just report validity
+  for (const auto& t : trust)
+    if (std::strtoull(t.c_str(), nullptr, 0) == p.reference.node) trusted = true;
+
+  if (json) {
+    std::string o = "{\"valid\":" + std::string(res.valid ? "true" : "false");
+    o += ",\"kind\":\"" + std::string(kind_name(p.kind)) + "\"";
+    o += ",\"reference\":\"" + hex_id(p.reference.node) + "\"";
+    if (!res.valid) o += ",\"reason\":\"" + json_escape(res.reason) + "\"";
+    else if (p.kind == proof::Kind::order) o += ",\"order\":\"" + std::string(order_name(res.order)) + "\"";
+    else { o += ",\"lower\":" + std::to_string(res.lower) + ",\"upper\":" + std::to_string(res.upper); }
+    if (!trust.empty()) o += ",\"trusted\":" + std::string(trusted ? "true" : "false");
+    o += "}\n";
+    std::fputs(o.c_str(), stdout);
+    return res.valid ? 0 : 6;
+  }
+
+  if (!res.valid) {
+    std::fprintf(stderr, "invalid: %s\n", res.reason.c_str());
+    return 6;
+  }
+  std::printf("valid: %s proof\n", kind_name(p.kind));
+  std::printf("reference: %s\n", hex_id(p.reference.node).c_str());
+  if (!p.reference.pubkey.empty()) std::printf("pubkey: ed25519:%s\n", hex(p.reference.pubkey).c_str());
+  if (p.kind == proof::Kind::order) {
+    std::printf("order: %s (relative to the reference node's clock)\n", order_name(res.order));
+  } else {
+    std::printf("lower: %s\n", format_ts(res.lower).c_str());
+    std::printf("upper: %s\n", format_ts(res.upper).c_str());
+    std::printf("(bounds are in the reference node's clock)\n");
+  }
+  if (!trust.empty() && !trusted)
+    std::fprintf(stderr, "warning: reference %s is not in the --trust set\n",
+                 hex_id(p.reference.node).c_str());
+  return 0;
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
   std::string control = std::getenv("LOTI_CONTROL") ? std::getenv("LOTI_CONTROL") : "loti.sock";
   std::string home = std::getenv("HOME") ? std::string(std::getenv("HOME")) + "/.loti" : ".loti";
+  std::string out;
+  std::vector<std::string> trust;
   bool json = false, quiet = false;
   std::vector<std::string> args;
 
@@ -150,16 +360,22 @@ int main(int argc, char** argv) {
     else if (a == "--quiet" || a == "-q") quiet = true;
     else if (a == "--control" && i + 1 < argc) control = argv[++i];
     else if (a == "--home" && i + 1 < argc) home = argv[++i];
+    else if (a == "--out" && i + 1 < argc) out = argv[++i];
+    else if (a == "--trust" && i + 1 < argc) trust.push_back(argv[++i]);
     else args.push_back(a);
   }
 
   if (args.empty()) {
     std::fprintf(stderr, "usage: loti [--control <path>] [--json] [--quiet] <command> [args...]\n"
                          "commands: status | publish <text> | event show <h> | events | "
-                         "bounds <e> | chain <e> | order <a> <b> | peer add|ls | key | stop | init\n");
+                         "bounds <e> | chain <e> | order <a> <b> | prove <kind> <e> [e2] --out <f> | "
+                         "verify <f> | proof show <f> | peer add|ls | key | stop | init\n");
     return 2;
   }
   if (args[0] == "init") return do_init(home);
+  if (args[0] == "prove") return do_prove(args, control, out, quiet);
+  if (args[0] == "verify") return do_verify(args, trust, json);
+  if (args[0] == "proof" && args.size() >= 2 && args[1] == "show") return do_proof_show(args);
 
   const std::string request = to_request(args);
   if (request.empty()) {

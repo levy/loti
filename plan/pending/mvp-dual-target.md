@@ -58,7 +58,9 @@ From [architecture.md](../../doc/architecture.md), non-negotiable throughout:
 - **M2 — Real node, loopback** (end of Stage 3) ✅ **REACHED 2026-07-17**: two `lotid` processes on
   localhost exchange clock notifications over real UDP and complete a discovery (chain + bounds),
   reproducing sim behavior; node state survives restart (snapshot persistence).
-- **M3 — Proofs end-to-end** (end of Stage 6): publish → prove → verify offline works; signed.
+- **M3 — Proofs end-to-end** (end of Stage 6) ✅ **REACHED 2026-07-17**: publish → `loti prove
+  bounds/order` → `loti verify` offline (no daemon, no network) works on real Ed25519-signed
+  proofs; a mutated proof is rejected with exit 6.
 - **M4 — MVP acceptance** (end of Stage 7): restart-survivable, backed up, both targets green,
   docs updated.
 
@@ -266,20 +268,40 @@ socket → exit 1; `loti init` writes key+config and prints the start command. C
 unaffected (only `adapters/os` + `app/` changed, which the sim build excludes).
 **Commit:** "cli: control-socket RPC + loti client (publish/queries/peer/status/key/init)".
 
-## Stage 6 — Proofs: export & offline verify  → **M3**
+## Stage 6 — Proofs: export & offline verify  → **M3 ✅ REACHED (2026-07-17)**
 
 **Goal:** the MVP-defining feature — portable, offline-verifiable proofs.
 
-- [ ] Implement the proof serialization from cli.md (`loti_proof` v1: event, lowerBound[],
-      upperBound[], reference pubkey, result; order variant = two chains + comparison).
-- [ ] `loti prove bounds/order --reference <node> --out <file>` (runs the discovery, serializes).
-- [ ] `loti verify <file>` linking `core/validate` **directly** (no daemon/network): recompute
-      hashes, check linkage, confirm endpoints are the reference node's, verify signatures;
-      exit `0` valid / `6` invalid; print the proven bounds/order and which node's clock.
-- [ ] `loti proof show` (summary, no verification).
+- [x] Proof serialization (`core/proof/`): a `Proof` = kind + reference (node id + embedded
+      Ed25519 pubkey) + the enclosing `EventChain` (event, lowerBound[], upperBound[]); the order
+      variant carries two chains + the compared `order`. The portable form reuses the wire codec
+      (`core/wire/codec.hpp`) behind a `"LOTIPROF"` magic + version, so a proof's bytes are
+      identical to what the node puts on the wire. **Chosen the binary wire form** over the JSON
+      shown in cli.md (no JSON lib; byte-exact with the node) — noted as a deviation.
+- [x] `loti prove bounds|order|chain <event> [event2] --out <file>` — the daemon runs the chain
+      discovery(ies), serializes a proof (reference = the discovering node, whose own clock events
+      anchor the chain), and returns it hex over the control socket; the CLI writes the artifact.
+      *Deferred:* `--reference <node>` (the core always anchors in the discovering node's clock —
+      explicit/multi-reference is post-MVP, as already noted for the queries).
+- [x] `loti verify <file>` — pure offline verification in `core/proof::verify(Proof, Signer)`,
+      linked directly into the CLI (no daemon, no network): recompute every clock/event hash, check
+      the chain is linked, confirm both endpoints are the reference node's, cross-check the
+      reference pubkey fingerprints to the reference id, and verify every Ed25519 signature under
+      its embedded pubkey. Exit `0` valid / `6` invalid; prints the proven bounds/order and that
+      they are in the reference node's clock. `--json` supported; `--trust <node>` is advisory for
+      the MVP (a warning if the reference is outside the set) — noted as a deviation from cli.md.
+- [x] `loti proof show <file>` — human summary (kind, reference + pubkey, event, chain length,
+      bounds/order) with no verification.
 
-**Verify:** publish → `prove` on one machine → copy file to a daemon-less environment →
-`verify` returns `0` with correct bounds; a mutated proof returns `6`.
+**Verify:** ✅ end-to-end against a real signed `lotid`: `loti init` + signed daemon (0.25 s clock),
+`publish` → `prove bounds last --out proof.loti` (exit 0, chain length 2), `proof show` renders the
+interval + reference pubkey, `verify proof.loti` → exit 0 with the correct bounds, `verify --json`
+emits stable JSON. Copied the artifact out, **killed the daemon**, and verified from `/tmp` with no
+control socket present → still exit 0 (proves offline). A one-byte flip → `invalid: lower-bound
+clock event hash mismatch`, exit 6. `prove order A B` on two clock-separated events → `order: before`,
+verify exit 0. Core suite green (26 cases / 86 assertions, +7 proof cases). Sim unaffected: the new
+`core/proof/proof.cpp` is pure (wire + picosha2 + the abstract Signer port), swept into `libloti.so`
+by `--deep` with no new OpenSSL/OMNeT++ dependency.
 **Commit:** "proof: portable proof format + offline loti verify". **(M3)**
 
 ## Stage 7 — Persistence hardening + acceptance  → **M4**
@@ -482,5 +504,32 @@ deviations from the docs; per repo convention, decisions live here, not in sourc
     deferred; the file is documentation the operator pastes into the `lotid` command for now.
   - Both `lotid` and `loti` link `loti_core` + `libcrypto`; the sim build already excludes
     `app/lotid`/`app/loti`, so adding `app/loti` needed no build-scope change.
+- **Stage-6 portable proofs + offline verify (M3, 2026-07-17):**
+  - **Proof lives in the pure core** (`core/proof/`, `loti::proof`): a `Proof` = kind + reference
+    (node id + embedded pubkey) + the enclosing `EventChain`(s). `serialize`/`deserialize` reuse the
+    wire codec behind a `"LOTIPROF"` magic + version; `verify(Proof, Signer&)` runs the offline
+    checks and delegates *only* signature verification to the injected `Signer` port — so the core
+    stays OpenSSL-free and the same file compiles into `libloti.so` (verified: no new undefined
+    crypto symbol). `loti verify` injects an `os::Ed25519KeyStore` whose `verify()` uses each
+    signature's *embedded* pubkey (its own key is irrelevant), which is what makes verification work
+    with no key registry and no daemon.
+  - **Binary wire form, not the JSON in cli.md (accepted deviation).** No JSON library to vendor,
+    and the bytes are identical to what the node already serializes. `proof show`/`verify` render a
+    human summary (ISO time + raw tick) from it.
+  - **`verify` mirrors `Node::validate_event_chain`** (recompute hashes, linkage, endpoints are the
+    reference node's) **plus** two productization checks: the reference pubkey must fingerprint to
+    the reference id, and every signature must verify. Kept as an independent free function (not a
+    call into the private `Node` validator) so the hot protocol path is untouched — the two are
+    deliberately kept in sync (noted in both sources' comments).
+  - **The reference node is the discovering node.** The core always anchors a chain in the
+    discovering node's own clock events, so `prove` sets `reference = self` and embeds *its* pubkey;
+    `--reference <node>` (proofs anchored in a *chosen* remote node) stays deferred with the other
+    explicit-reference query work. `--trust <node>` on `verify` is advisory for the MVP (a warning
+    if the reference is outside the set) — verification proves integrity + attribution, and trust
+    is the verifier's call (accepted deviation from cli.md's gating phrasing).
+  - **`prove` needs the control socket** (a proof rides back as hex after an async discovery), so it
+    is rejected on the stdin harness. Single-chain proofs (`bounds`/`chain`) wait on one event;
+    `order` accumulates two chains keyed by the event pair, then compares intervals with the same
+    rule as `Node::compare_event_chains`.
 - _Store engine (incremental append / LMDB vs SQLite): deferred to Stage 7 (scaling)._
-- _RPC encoding (JSON-over-unix-socket vs framed binary): TBD — Stage 5._
+- _RPC encoding (JSON-over-unix-socket vs framed binary): resolved in Stage 5 (hand-rolled line protocol)._
