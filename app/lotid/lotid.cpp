@@ -33,6 +33,7 @@
 #include "adapters/os/reactor.hpp"
 #include "adapters/os/rng.hpp"
 #include "adapters/os/signer.hpp"
+#include "adapters/os/store.hpp"
 #include "adapters/os/telemetry.hpp"
 #include "adapters/os/transport.hpp"
 #include "node.hpp"
@@ -71,18 +72,32 @@ std::string hex(const domain::EventHash& h) {
 class Lotid final : public ChainCallback, public BoundsCallback, public OrderCallback {
  public:
   Lotid(domain::NodeId id, std::uint16_t port, domain::Duration clock_ns,
-        domain::Duration expiry_ns, bool verbose)
+        domain::Duration expiry_ns, bool verbose, const std::string& store_path)
       : transport_(port),
         scheduler_(reactor_, clock_),
         telemetry_(verbose),
         node_(id, NodePorts{clock_, scheduler_, transport_, rng_, signer_, telemetry_},
-              NodeConfig{clock_ns, expiry_ns}) {}
+              NodeConfig{clock_ns, expiry_ns}) {
+    if (!store_path.empty()) store_.emplace(store_path);
+  }
 
   Node& node() { return node_; }
   os::UdpTransport& transport() { return transport_; }
 
+  // Load a prior snapshot (if any) BEFORE static peering is applied, so learned
+  // neighbor state survives while CLI --peer/--route still set current addresses.
+  void restore_from_store() {
+    if (!store_) return;
+    if (auto blob = store_->load()) {
+      node_.restore(*blob);
+      std::fprintf(stderr, "[lotid] restored %zu events, %zu clock events from %s\n",
+                   node_.event_count(), node_.clock_event_count(), store_->path().c_str());
+    }
+  }
+
   void run() {
     node_.start();
+    if (store_) schedule_snapshot();
     // Inbound UDP: drain every pending datagram into the core.
     reactor_.add_reader(transport_.fd(), [this] {
       for (;;) {
@@ -94,6 +109,7 @@ class Lotid final : public ChainCallback, public BoundsCallback, public OrderCal
     // Line commands on stdin (EOF stops the daemon).
     reactor_.add_reader(STDIN_FILENO, [this] { on_stdin_readable(); });
     reactor_.run();
+    save_snapshot();  // durable final state on graceful shutdown
   }
 
   // ---- discovery callbacks (logging is done by LogTelemetry; keep these terse) --
@@ -153,6 +169,8 @@ class Lotid final : public ChainCallback, public BoundsCallback, public OrderCal
     } else if (cmd == "events") {
       for (std::size_t i = 0; i < node_.event_count(); ++i)
         std::printf("  %s\n", hex(node_.event_at(i).hash).c_str());
+    } else if (cmd == "save") {
+      save_snapshot();
     } else if (cmd == "quit" || cmd == "exit") {
       reactor_.stop();
     } else {
@@ -176,6 +194,21 @@ class Lotid final : public ChainCallback, public BoundsCallback, public OrderCal
     return nullptr;
   }
 
+  void save_snapshot() {
+    if (!store_) return;
+    store_->save(node_.snapshot());
+    std::fprintf(stderr, "[lotid] saved snapshot (%zu events, %zu clock events) to %s\n",
+                 node_.event_count(), node_.clock_event_count(), store_->path().c_str());
+  }
+  void schedule_snapshot() {
+    reactor_.add_timer(clock_.now() + kSnapshotIntervalNs, [this] {
+      save_snapshot();
+      schedule_snapshot();
+    });
+  }
+
+  static constexpr domain::Duration kSnapshotIntervalNs = 5'000'000'000;  // 5 s
+
   os::WallClock clock_;
   os::Reactor reactor_;
   os::UdpTransport transport_;
@@ -187,6 +220,7 @@ class Lotid final : public ChainCallback, public BoundsCallback, public OrderCal
 
   domain::EventHash last_event_;
   std::string pending_;
+  std::optional<os::FileStore> store_;
 };
 
 double parse_seconds(const char* s) { return std::atof(s); }
@@ -199,6 +233,7 @@ int main(int argc, char** argv) {
   double clock_interval = 1.0;
   double expiry = 5.0;
   bool verbose = false;
+  std::string store_path;           // snapshot file (empty = no persistence)
   std::vector<std::string> peers;   // "id:ip:port"
   std::vector<std::string> routes;  // "dst:nexthop"
 
@@ -217,6 +252,7 @@ int main(int argc, char** argv) {
     else if (a == "--route") routes.push_back(next("--route"));
     else if (a == "--clock-interval") clock_interval = parse_seconds(next("--clock-interval"));
     else if (a == "--expiry") expiry = parse_seconds(next("--expiry"));
+    else if (a == "--store") store_path = next("--store");
     else if (a == "--verbose" || a == "-v") verbose = true;
     else {
       std::fprintf(stderr, "unknown argument: %s\n", a.c_str());
@@ -225,7 +261,8 @@ int main(int argc, char** argv) {
   }
   if (!id || port == 0) {
     std::fprintf(stderr, "usage: lotid --id <n> --port <p> [--peer id:ip:port]... "
-                         "[--route dst:nexthop]... [--clock-interval s] [--expiry s] [--verbose]\n");
+                         "[--route dst:nexthop]... [--clock-interval s] [--expiry s] "
+                         "[--store <path>] [--verbose]\n");
     return 2;
   }
 
@@ -234,7 +271,8 @@ int main(int argc, char** argv) {
   };
 
   try {
-    Lotid daemon(*id, port, to_ns(clock_interval), to_ns(expiry), verbose);
+    Lotid daemon(*id, port, to_ns(clock_interval), to_ns(expiry), verbose, store_path);
+    daemon.restore_from_store();  // load prior state before static peering is applied
     for (const auto& p : peers) {
       auto f = split(p, ':');
       if (f.size() != 3) {

@@ -57,7 +57,7 @@ From [architecture.md](../../doc/architecture.md), non-negotiable throughout:
   the MVP is done.*
 - **M2 — Real node, loopback** (end of Stage 3) ✅ **REACHED 2026-07-17**: two `lotid` processes on
   localhost exchange clock notifications over real UDP and complete a discovery (chain + bounds),
-  reproducing sim behavior. *(Restart-survivable persistence is the remaining Stage 3b work.)*
+  reproducing sim behavior; node state survives restart (snapshot persistence).
 - **M3 — Proofs end-to-end** (end of Stage 6): publish → prove → verify offline works; signed.
 - **M4 — MVP acceptance** (end of Stage 7): restart-survivable, backed up, both targets green,
   docs updated.
@@ -166,36 +166,40 @@ bit-identical protocol statistics. *The simulation half of the MVP is done.*
 **Commits:** "Extract the Node protocol engine behind ports + in-process harness (MVP Stage 2)";
 "Bind the OMNeT++ simulation onto loti-core (sim adapters + thin app/sim modules) — M1".
 
-## Stage 3 — Production runtime adapters + `lotid` skeleton  → **M2 ✅ core reached (2026-07-17); persistence = 3b**
+## Stage 3 — Production runtime adapters + `lotid` skeleton  → **M2 ✅ REACHED (2026-07-17), incl. restart-survivable persistence**
 
 **Goal:** a real single-node daemon that reproduces protocol behavior over real UDP, with
 persistence.
 
 - [x] OS adapters in `adapters/os/` (header-only): `WallClock` (CLOCK_REALTIME ns), a
       single-threaded **epoll `Reactor`** + `ReactorScheduler`, `UdpTransport` (real non-blocking
-      socket, port from CLI), `SecureRng` (getrandom CSPRNG), `NullSigner`, `LogTelemetry`.
-      `PersistentStore` + `FileConfig` (TOML) are **deferred to Stage 3b** (below).
+      socket, port from CLI), `SecureRng` (getrandom CSPRNG), `NullSigner`, `LogTelemetry`, and a
+      **`FileStore`** (atomic snapshot blob store). `FileConfig` (TOML) is **still deferred**
+      (CLI flags serve as config for now).
 - [x] `app/lotid`: constructs one `Node` on the OS ports, runs the reactor, opens the transport,
-      drives the clock + purge timers, and takes stdin line commands
-      (`publish`/`chain`/`bounds`/`order`/`events`/`quit`) so two instances can be scripted.
+      drives the clock + purge timers, **loads a snapshot on start and saves one on exit +
+      periodically** (`--store <path>`), and takes stdin line commands
+      (`publish`/`chain`/`bounds`/`order`/`events`/`save`/`quit`) so two instances can be scripted.
       Built by CMake (`add_executable(lotid …)` links `loti_core` **only — no OMNeT++/INET**), so
-      it also builds under `scripts/build-core.sh`. **Deferred to 3b:** load/persist state.
+      it also builds under `scripts/build-core.sh`.
 - [x] Minimal static peering via `--peer id:ip:port` / `--route dst:nexthop` CLI flags (a TOML
-      config file is the 3b form). Enough to get two nodes talking; dynamic `peer add` is Stage 5.
+      config file is a later nicety). Enough to get two nodes talking; dynamic `peer add` is Stage 5.
 
 **Verify:** ✅ two `lotid` processes on loopback (udp/5001 + udp/5002) exchange clock-event
 notifications over **real UDP**; node 1 publishes an event, then a **chain discovery completes
 and validates** (endpoints are 2 clock events of node 2, the reference) and a **bounds discovery
 completes** with a real wall-clock interval (`[…337904181, …838555560]` ns ≈ 0.50 s wide, matching
-the 0.5 s clock cadence, dated 2026). Core unit tests stay green (`ctest` 1/1). ⏳ *state reloads
-after restart* needs persistence (Stage 3b).
-**Commit:** "rt: OS adapters + lotid daemon; loopback two-node discovery works — M2".
+the 0.5 s clock cadence, dated 2026). ✅ **State survives restart**: a node publishes an event +
+ticks 8 clock events, `quit` saves a 1106-byte snapshot; a fresh process with the same `--store`
+restores all 1 event + 8 clock events (same hashes) and continues the clock chain coherently. Core
+unit tests stay green (`ctest` 1/1); the OMNeT++ sim still builds and its clock/event density is
+unchanged (the snapshot methods are unused there).
+**Commits:** "rt: OS adapters + lotid daemon; loopback two-node discovery works — M2";
+"rt: snapshot persistence — lotid state survives restart (Stage 3b)".
 
-**Stage 3b (remaining, not yet done):** `PersistentStore` (extract a `Store` port from the `Node`
-+ an embedded LMDB/SQLite impl), `FileConfig` (TOML), and restart-survivable state — completes the
-Stage 3 checklist. Split out so the M2 milestone (live two-node discovery) lands and is verifiable
-on its own; the persistent store is also where the Stage-2-deferred `Store` port finally earns its
-second implementation.
+**Remaining (minor, non-blocking):** `FileConfig` (TOML) — CLI flags cover config for MVP; and
+incremental/DB-backed storage (the current `FileStore` writes a full snapshot, fine at MVP scale
+but not for the paper's GB/year — a Stage-7 concern).
 
 ## Stage 4 — Identity & signing
 
@@ -385,8 +389,19 @@ deviations from the docs; per repo convention, decisions live here, not in sourc
     (a neighbour gets a direct route by default). **Driving is stdin line commands** — there is no
     control socket yet (that's Stage 5); the stdin interface is a throwaway harness that lets two
     daemons be scripted end to end.
-  - **Persistence deferred to Stage 3b** — the `Node` still holds its DAG state in RAM; extracting
-    the `Store` port + an embedded store (and restart survival) is where Stage-2's deferred
-    `Store` abstraction finally earns its second implementation.
-- _Store engine (LMDB vs SQLite): TBD — Stage 3b._
+  - **Persistence = snapshot, not a fine-grained `Store` port (Stage 3b, 2026-07-17).** Rather than
+    extract a `Store` port threaded through every DAG access + an embedded DB, the `Node` gained
+    `snapshot()`/`restore()`: serialize the whole DAG (events, clock events **with their learned
+    `referencing_events`**, unreferenced events, neighbors, routes) to an opaque blob via the wire
+    codec, and load one back rebuilding the derived indices. `adapters/os/FileStore` writes/reads
+    the blob (temp-file + `rename` for atomicity); `lotid --store <path>` restores on start (before
+    static peering, so learned neighbor state survives while CLI addresses are re-applied) and
+    saves on exit + every 5 s. Rationale: (a) a snapshot captures the **dynamic** `referencing_events`
+    that per-op append logging would miss; (b) it is **zero-risk to M1** — `snapshot`/`restore` are
+    pure additions the sim never calls, so byte-parity is untouched (verified: sim still builds,
+    density unchanged); (c) backup = copy the file. Trade-off: rewrites the whole snapshot each
+    save and loses events created since the last save on a hard crash — fine at MVP scale;
+    incremental/append or an embedded DB (LMDB/SQLite) is a Stage-7 scaling concern, and the
+    fine-grained `Store` port can be introduced then if it earns its keep.
+- _Store engine (incremental append / LMDB vs SQLite): deferred to Stage 7 (scaling)._
 - _RPC encoding (JSON-over-unix-socket vs framed binary): TBD — Stage 5._

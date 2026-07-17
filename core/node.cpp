@@ -4,6 +4,7 @@
 #include <stdexcept>
 
 #include "hash/hashing.hpp"
+#include "wire/codec.hpp"
 #include "wire/packets.hpp"
 
 namespace loti {
@@ -575,6 +576,80 @@ const Neighbor* Node::find_next_hop_neighbor(NodeId node) const {
   if (it == destination_to_next_hop_.end()) return nullptr;
   auto jt = neighbors_.find(it->second);
   return jt == neighbors_.end() ? nullptr : &jt->second;
+}
+
+// ---------------------------------------------------------------------------
+// persistence (snapshot / restore) — see node.hpp
+// ---------------------------------------------------------------------------
+namespace {
+constexpr std::uint64_t kSnapshotVersion = 1;
+}  // namespace
+
+Bytes Node::snapshot() const {
+  wire::Writer w;
+  w.u64(kSnapshotVersion);
+  w.u64(all_events_.size());
+  for (const auto& e : all_events_) w.event(e);
+  w.u64(all_clock_events_.size());
+  for (const auto& c : all_clock_events_) {
+    w.clock_event(c);            // the ClockEvent part
+    w.refs(c.referencing_events);  // the learned back-references (LocalClockEvent extra)
+  }
+  w.u64(unreferenced_events_.size());
+  for (const auto& e : unreferenced_events_) w.event(e);
+  w.u64(neighbors_.size());
+  for (const auto& [id, n] : neighbors_) {
+    w.u64(n.node_id);
+    w.blob(n.last_clock_event_hash);
+  }
+  w.u64(destination_to_next_hop_.size());
+  for (const auto& [dst, next_hop] : destination_to_next_hop_) {
+    w.u64(dst);
+    w.u64(next_hop);
+  }
+  return w.bytes();
+}
+
+void Node::restore(const Bytes& blob) {
+  all_events_.clear();
+  all_clock_events_.clear();
+  unreferenced_events_.clear();
+  neighbors_.clear();
+  destination_to_next_hop_.clear();
+  event_hash_to_event_index_.clear();
+  event_hash_to_clock_event_index_.clear();
+  event_hash_to_referencing_event_index_.clear();
+
+  wire::Reader r(blob);
+  if (r.u64() != kSnapshotVersion) throw std::runtime_error("snapshot: unsupported version");
+  for (auto n = r.u64(); n > 0; --n) all_events_.push_back(r.event());
+  for (auto n = r.u64(); n > 0; --n) {
+    LocalClockEvent clock_event;
+    static_cast<ClockEvent&>(clock_event) = r.clock_event();
+    clock_event.referencing_events = r.refs();
+    all_clock_events_.push_back(std::move(clock_event));
+  }
+  for (auto n = r.u64(); n > 0; --n) unreferenced_events_.push_back(r.event());
+  for (auto n = r.u64(); n > 0; --n) {
+    Neighbor neighbor;
+    neighbor.node_id = r.u64();
+    neighbor.last_clock_event_hash = r.blob();
+    neighbors_[neighbor.node_id] = std::move(neighbor);
+  }
+  for (auto n = r.u64(); n > 0; --n) {
+    const auto dst = r.u64();
+    const auto next_hop = r.u64();
+    destination_to_next_hop_[dst] = next_hop;
+  }
+
+  // Rebuild the derived indices (same mapping publish_event / create_clock_event build).
+  for (std::size_t i = 0; i < all_events_.size(); ++i)
+    event_hash_to_event_index_[all_events_[i].hash] = i;
+  for (std::size_t i = 0; i < all_clock_events_.size(); ++i) {
+    event_hash_to_clock_event_index_[all_clock_events_[i].hash] = i;
+    for (const auto& ref : all_clock_events_[i].referenced_events)
+      event_hash_to_referencing_event_index_.insert({ref.hash, i});
+  }
 }
 
 }  // namespace loti

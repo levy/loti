@@ -93,6 +93,14 @@ class Node final : private ChainCallback {
   [[nodiscard]] const domain::Event& event_at(std::size_t i) const { return all_events_[i]; }
   [[nodiscard]] std::size_t clock_event_count() const noexcept { return all_clock_events_.size(); }
 
+  // Persistence. snapshot() serializes the full DAG state (events, clock events with
+  // their learned back-references, unreferenced events, neighbors, routes) to an
+  // opaque blob; restore() loads one and rebuilds the derived indices. The
+  // production daemon uses these to survive restart; the simulation never calls
+  // them. In-flight discoveries are transient and deliberately excluded.
+  [[nodiscard]] domain::Bytes snapshot() const;
+  void restore(const domain::Bytes& blob);
+
  private:
   using Hash = domain::EventHash;
 
