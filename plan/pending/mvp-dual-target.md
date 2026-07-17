@@ -229,20 +229,35 @@ bounds discovery — completion means node 1 verified node 2's signed clock even
 NodeId + the embedded pubkey. ✅ hashes unchanged; ✅ sim bit-identical with `NullSigner`.
 **Commit:** "id: Ed25519 identity + signing; verification wired into validate".
 
-## Stage 5 — Control channel + CLI client
+## Stage 5 — Control channel + CLI client  ✅ **DONE (2026-07-17)**
 
 **Goal:** drive the daemon with `loti`; cover the MVP management + query commands.
 
-- [ ] RPC server in `lotid` over a local control socket; a versioned request/response schema.
-- [ ] `app/loti` client with global conventions from cli.md: `--json`, `--quiet`, exit-code
-      table, object addressing (hash prefixes, `@self`, aliases).
-- [ ] Commands: `node start/stop/status`, `config get/set/list`, `peer add/ls`,
-      `publish [--file|-] [--sign] [--wait]`, `event show`, and the queries
-      `chain`/`bounds`/`order` with `--reference`.
+- [x] Control server in `lotid` over a Unix-domain socket (`--control <path>`), integrated into
+      the reactor. **Versioned line protocol** (`adapters/os/control.hpp`): request `verb args…\n`;
+      reply `LOTI/1 OK|ERR <code>` + `key\tvalue` field lines + blank terminator. Queries
+      (`bounds`/`chain`/`order`) are **asynchronous** — the connection is held until the discovery
+      completes or aborts (the purge timer guarantees a callback within `expiry`), then the reply
+      is sent. Command dispatch is shared with the stdin interface.
+- [x] `app/loti` client: connect → send → render. Globals `--json` (object; repeated field keys
+      become an array), `--quiet`, `--control <path>` (or `$LOTI_CONTROL`), and an exit-code table
+      (0 ok · 2 usage · 4 not-found · 6 invalid/aborted · 1 unreachable). Object addressing by
+      **hash prefix** works (`@self`/aliases deferred).
+- [x] Commands: `status`, `publish <text>`, `event show <h>`, `events`, `bounds`/`chain`/`order`
+      (with `--wait` semantics — they block on the async reply), `peer add`/`peer ls`, `key`,
+      `node status`/`node stop`/`stop`, and **`loti init`** (create home dir + generate key + write
+      config) — this delivers the Stage-4-deferred `loti init` / key setup. **Deferred (noted):**
+      `config get/set/list` (config is CLI flags + the init file for now), `node start` (process
+      spawn/daemonize), `publish --file|-`, and `--reference <node>` on queries (the core picks the
+      reference; explicit/multi-reference is a post-MVP item).
 
-**Verify:** end-to-end shell session — start, peer up, publish, then `loti bounds <event>`
-prints an interval; `--json` output is stable; wrong inputs return the documented exit codes.
-**Commit:** "cli: control-socket RPC + loti client (node/config/peer/publish/queries)".
+**Verify:** ✅ end-to-end against two signed daemons over their control sockets: `loti status`
+(id/mode/counts), `loti peer ls`, `loti publish "…"` → hash, `loti event show <h>`, then
+`loti bounds <h>` prints a real ~0.5 s interval (async), `loti --json bounds <h>` emits stable
+JSON, `loti chain <h>` returns; `loti event show deadbeef` → `error(4)` exit 4; an unreachable
+socket → exit 1; `loti init` writes key+config and prints the start command. Core tests green; sim
+unaffected (only `adapters/os` + `app/` changed, which the sim build excludes).
+**Commit:** "cli: control-socket RPC + loti client (publish/queries/peer/status/key/init)".
 
 ## Stage 6 — Proofs: export & offline verify  → **M3**
 
@@ -441,5 +456,24 @@ deviations from the docs; per repo convention, decisions live here, not in sourc
     `-X adapters/os -X app/lotid -X app/loti` — the sim is built strictly from
     `core/ + adapters/sim/ + app/sim/`. Rule going forward: any new production-only `.cpp` under
     `adapters/os` or `app/*` (non-sim) must be outside the sim's `--deep` sweep.
+- **Stage-5 control channel + `loti` CLI (2026-07-17):**
+  - **RPC encoding = a hand-rolled versioned line protocol over a Unix-domain socket**, not
+    JSON-over-socket or framed binary. Resolves the Stage-1 TBD. Rationale: no JSON library to
+    vendor (keeps the minimal-deps stance), trivial to frame (`\n`-terminated request, blank-line
+    terminated reply), and `--json` is a pure CLI-side render of the `key\tvalue` fields (repeated
+    keys → array). Header `adapters/os/control.hpp` is shared by both binaries.
+  - **Queries are async on one connection.** `bounds`/`chain`/`order` register the client fd in a
+    per-event pending map and return "deferred"; the discovery completion/abort callback sends the
+    reply and closes the fd. No extra timeout needed — the discovery purge (expiry) guarantees a
+    completion-or-abort callback, so a waiting client always gets a reply within ~`expiry`.
+  - **Dispatch is shared** between the control socket and the stdin interface (one `dispatch()` →
+    `Reply`), so the two never drift. Peering also went through one `add_peer()` (used by both the
+    `--peer` flag and the `peer-add` command) which also feeds `peer ls`.
+  - **`loti init` uses the keystore adapter directly** (local, no daemon) to generate the key and
+    writes a flat `key=…`/`port=…`/`store=…`/`control=…` config — this covers the Stage-4-deferred
+    `loti init`/key setup. A real config *loader* (`FileConfig`) and `config get/set/list` are still
+    deferred; the file is documentation the operator pastes into the `lotid` command for now.
+  - Both `lotid` and `loti` link `loti_core` + `libcrypto`; the sim build already excludes
+    `app/lotid`/`app/loti`, so adding `app/loti` needed no build-scope change.
 - _Store engine (incremental append / LMDB vs SQLite): deferred to Stage 7 (scaling)._
 - _RPC encoding (JSON-over-unix-socket vs framed binary): TBD — Stage 5._

@@ -1,26 +1,33 @@
 // lotid — the LOTI daemon: one protocol node running on the OS port adapters.
 //
-// This is the production counterpart of the OMNeT++ Daemon module. It constructs a
-// single loti::Node, wires it to the wall clock, the epoll reactor (scheduler), a
-// real UDP socket (transport), a CSPRNG, a signer (an Ed25519 keystore with --key,
-// else a null signer), a snapshot store (--store), and a logging telemetry sink,
-// then runs the reactor. Overlay peering is static (from --peer/--route flags); a
-// control channel + `loti` CLI arrive in Stage 5. For now the daemon takes line
-// commands on stdin so two instances can be scripted:
+// It hosts a single loti::Node and wires it to the wall clock, the epoll reactor
+// (scheduler), a real UDP socket (transport), a CSPRNG, a signer (an Ed25519
+// keystore with --key, else a null signer), a snapshot store (--store), and a
+// logging telemetry sink, then runs the reactor.
 //
-//   publish <text>          publish an event with the given content
-//   bounds  <hexprefix|last> discover the time bounds of a known event
-//   chain   <hexprefix|last> discover (and validate) an event chain
-//   order   <a> <b>          discover the order of two events (hex prefixes/last)
-//   events                   list known event hashes
-//   key                      show this node's id and public key
-//   save                     write a snapshot now (if --store is set)
-//   quit                     stop the daemon
+// It exposes a local control socket (--control <path>) speaking the versioned line
+// protocol in adapters/os/control.hpp; the `loti` CLI is the client. The same
+// commands are also accepted on stdin (one per line) for quick scripting. Queries
+// (bounds/chain/order) are asynchronous: the control connection is held until the
+// discovery completes or aborts, then the reply is sent.
+//
+//   publish <text>            publish an event; reply carries its hash
+//   event   <hexprefix|last>  show a known event
+//   events                    list known event hashes
+//   bounds  <hexprefix|last>  discover time bounds  (async)
+//   chain   <hexprefix|last>  discover an event chain (async)
+//   order   <a> <b>           discover the order of two events (async)
+//   peer-add <id:ip:port>     add a neighbor
+//   peer-ls                   list neighbors
+//   status                    node id, counts, mode
+//   key                       node id + public key
+//   save                      write a snapshot now (if --store is set)
+//   quit                      stop the daemon
 //
 // Usage:
 //   lotid --port <p> {--id <n> | --key <path>} [--peer <id>:<ip>:<port>]...
 //         [--route <dst>:<nexthop>]... [--clock-interval <s>] [--expiry <s>]
-//         [--store <path>] [--verbose]
+//         [--store <path>] [--control <path>] [--verbose]
 
 #include <unistd.h>
 
@@ -28,12 +35,15 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <map>
 #include <memory>
 #include <optional>
 #include <string>
+#include <tuple>
 #include <vector>
 
 #include "adapters/os/clock.hpp"
+#include "adapters/os/control.hpp"
 #include "adapters/os/keystore.hpp"
 #include "adapters/os/reactor.hpp"
 #include "adapters/os/rng.hpp"
@@ -46,6 +56,23 @@
 namespace {
 
 using namespace loti;
+
+std::vector<std::string> tokenize(const std::string& s) {
+  std::vector<std::string> out;
+  std::string cur;
+  for (char c : s) {
+    if (c == ' ' || c == '\t' || c == '\r') {
+      if (!cur.empty()) {
+        out.push_back(cur);
+        cur.clear();
+      }
+    } else {
+      cur.push_back(c);
+    }
+  }
+  if (!cur.empty()) out.push_back(cur);
+  return out;
+}
 
 std::vector<std::string> split(const std::string& s, char sep) {
   std::vector<std::string> parts;
@@ -72,35 +99,63 @@ std::string hex(const domain::EventHash& h) {
   return s;
 }
 
-// A daemon hosting one Node, plus the stdin command interface. It is the core's
-// discovery callback so results print as they complete.
+std::string hex_id(domain::NodeId id) {
+  char buf[19];
+  std::snprintf(buf, sizeof(buf), "0x%016llx", static_cast<unsigned long long>(id));
+  return buf;
+}
+
+// Exit codes (shared with the CLI; see cli.md).
+constexpr int kOk = 0;
+constexpr int kUsage = 2;
+constexpr int kNotFound = 4;
+constexpr int kInvalidResult = 6;
+
+// A command result. `deferred` means the reply is sent later, by a discovery
+// callback, over the control connection whose fd is remembered.
+struct Reply {
+  int code = kOk;
+  bool deferred = false;
+  std::string error;
+  os::ControlFields fields;
+};
+
 class Lotid final : public ChainCallback, public BoundsCallback, public OrderCallback {
  public:
   Lotid(domain::NodeId id, std::uint16_t port, domain::Duration clock_ns,
-        domain::Duration expiry_ns, bool verbose, const std::string& store_path,
-        const std::string& key_path)
-      : transport_(port), scheduler_(reactor_, clock_), telemetry_(verbose) {
+        domain::Duration expiry_ns, bool verbose, std::string store_path, const std::string& key_path,
+        std::string control_path)
+      : transport_(port),
+        scheduler_(reactor_, clock_),
+        telemetry_(verbose),
+        control_path_(std::move(control_path)) {
     if (key_path.empty()) {
-      signer_ = std::make_unique<os::NullSigner>();  // unsigned mode: NodeId from --id
+      signer_ = std::make_unique<os::NullSigner>();
       node_id_ = id;
     } else {
       auto keystore = std::make_unique<os::Ed25519KeyStore>();
       keystore->load_or_generate(key_path);
-      node_id_ = keystore->node_id();  // signed mode: NodeId is the key fingerprint
+      node_id_ = keystore->node_id();
+      signed_ = true;
       signer_ = std::move(keystore);
     }
     node_ = std::make_unique<Node>(
         node_id_, NodePorts{clock_, scheduler_, transport_, rng_, *signer_, telemetry_},
         NodeConfig{clock_ns, expiry_ns});
-    if (!store_path.empty()) store_.emplace(store_path);
+    if (!store_path.empty()) store_.emplace(std::move(store_path));
   }
 
-  Node& node() { return *node_; }
   domain::NodeId node_id() const { return node_id_; }
-  os::UdpTransport& transport() { return transport_; }
 
-  // Load a prior snapshot (if any) BEFORE static peering is applied, so learned
-  // neighbor state survives while CLI --peer/--route still set current addresses.
+  // Add a neighbor (used by --peer flags and the peer-add command).
+  void add_peer(domain::NodeId id, const std::string& ip, std::uint16_t port) {
+    node_->add_neighbor(id);
+    node_->learn_route(id, id);  // direct route to a neighbor
+    transport_.set_peer(id, ip, port);
+    peers_.emplace_back(id, ip, port);
+  }
+  void learn_route(domain::NodeId dst, domain::NodeId next_hop) { node_->learn_route(dst, next_hop); }
+
   void restore_from_store() {
     if (!store_) return;
     if (auto blob = store_->load()) {
@@ -113,7 +168,6 @@ class Lotid final : public ChainCallback, public BoundsCallback, public OrderCal
   void run() {
     node_->start();
     if (store_) schedule_snapshot();
-    // Inbound UDP: drain every pending datagram into the core.
     reactor_.add_reader(transport_.fd(), [this] {
       for (;;) {
         domain::Bytes datagram = transport_.receive();
@@ -121,100 +175,230 @@ class Lotid final : public ChainCallback, public BoundsCallback, public OrderCal
         node_->on_packet_received(datagram);
       }
     });
-    // Line commands on stdin (EOF stops the daemon).
     reactor_.add_reader(STDIN_FILENO, [this] { on_stdin_readable(); });
+    setup_control();
     reactor_.run();
-    save_snapshot();  // durable final state on graceful shutdown
+    if (!control_path_.empty()) ::unlink(control_path_.c_str());
+    save_snapshot();
   }
 
-  // ---- discovery callbacks (logging is done by LogTelemetry; keep these terse) --
-  void on_chain_completed(const domain::Event&, const domain::EventChain&) override {}
-  void on_chain_aborted(const domain::Event&) override {}
-  void on_bounds_completed(const domain::Event&, domain::Timestamp, domain::Timestamp) override {}
-  void on_bounds_aborted(const domain::Event&) override {}
-  void on_order_completed(const domain::Event&, const domain::Event&, domain::Order) override {}
-  void on_order_aborted(const domain::Event&, const domain::Event&) override {}
+  // ---- discovery callbacks: answer any control clients waiting on this event ----
+  void on_chain_completed(const domain::Event& e, const domain::EventChain& c) override {
+    answer(pending_chain_, e.hash,
+           Reply{kOk, false, "", {{"event", hex(e.hash)},
+                                  {"clockEvents", std::to_string(c.lower_bound.size() + c.upper_bound.size())}}});
+  }
+  void on_chain_aborted(const domain::Event& e) override { abort_pending(pending_chain_, e.hash); }
+  void on_bounds_completed(const domain::Event& e, domain::Timestamp lo, domain::Timestamp hi) override {
+    answer(pending_bounds_, e.hash,
+           Reply{kOk, false, "", {{"event", hex(e.hash)},
+                                  {"lower", std::to_string(lo)},
+                                  {"upper", std::to_string(hi)},
+                                  {"interval", std::to_string(hi - lo)}}});
+  }
+  void on_bounds_aborted(const domain::Event& e) override { abort_pending(pending_bounds_, e.hash); }
+  void on_order_completed(const domain::Event& a, const domain::Event& b, domain::Order o) override {
+    const auto key = std::make_pair(a.hash, b.hash);
+    auto it = pending_order_.find(key);
+    if (it == pending_order_.end()) return;
+    respond(it->second, Reply{kOk, false, "", {{"event1", hex(a.hash)}, {"event2", hex(b.hash)},
+                                               {"order", std::to_string(static_cast<int>(o))}}});
+    pending_order_.erase(it);
+  }
+  void on_order_aborted(const domain::Event& a, const domain::Event& b) override {
+    const auto key = std::make_pair(a.hash, b.hash);
+    auto it = pending_order_.find(key);
+    if (it == pending_order_.end()) return;
+    respond(it->second, Reply{kInvalidResult, false, "discovery aborted", {}});
+    pending_order_.erase(it);
+  }
 
  private:
-  void on_stdin_readable() {
-    char buf[4096];
-    const ssize_t n = ::read(STDIN_FILENO, buf, sizeof(buf));
-    if (n <= 0) {  // EOF or error → shut down
-      reactor_.stop();
-      return;
-    }
-    pending_.append(buf, static_cast<std::size_t>(n));
-    std::size_t nl;
-    while ((nl = pending_.find('\n')) != std::string::npos) {
-      handle_command(pending_.substr(0, nl));
-      pending_.erase(0, nl + 1);
-    }
-  }
+  // ---- command dispatch (shared by stdin and the control socket) ----------
+  // reply_fd >= 0 identifies a control connection that a deferred (async) reply
+  // will be sent to; -1 means stdin (async commands just start, logged by telemetry).
+  Reply dispatch(const std::vector<std::string>& args, int reply_fd) {
+    const std::string& verb = args[0];
 
-  void handle_command(const std::string& line) {
-    auto tok = split(line, ' ');
-    // drop empty tokens (e.g. double spaces)
-    std::vector<std::string> args;
-    for (auto& t : tok)
-      if (!t.empty()) args.push_back(t);
-    if (args.empty()) return;
-    const std::string& cmd = args[0];
-
-    if (cmd == "publish" && args.size() >= 2) {
+    if (verb == "publish") {
+      if (args.size() < 2) return {kUsage, false, "usage: publish <text>", {}};
       std::string content;
-      for (std::size_t k = 1; k < args.size(); ++k) {
-        if (k > 1) content += ' ';
-        content += args[k];
-      }
+      for (std::size_t k = 1; k < args.size(); ++k) content += (k > 1 ? " " : "") + args[k];
       domain::Bytes data(content.begin(), content.end());
       const auto& e = node_->publish_event(data);
       last_event_ = e.hash;
-      std::printf("published %s\n", hex(e.hash).c_str());
-    } else if (cmd == "bounds" && args.size() >= 2) {
-      if (auto* e = find_event(args[1])) node_->discover_event_bounds(*e, *this);
-      else std::printf("no such event: %s\n", args[1].c_str());
-    } else if (cmd == "chain" && args.size() >= 2) {
-      if (auto* e = find_event(args[1])) node_->discover_event_chain(*e, *this);
-      else std::printf("no such event: %s\n", args[1].c_str());
-    } else if (cmd == "order" && args.size() >= 3) {
-      auto* a = find_event(args[1]);
-      auto* b = find_event(args[2]);
-      if (a && b) node_->discover_event_order(*a, *b, *this);
-      else std::printf("no such event\n");
-    } else if (cmd == "events") {
-      for (std::size_t i = 0; i < node_->event_count(); ++i)
-        std::printf("  %s\n", hex(node_->event_at(i).hash).c_str());
-    } else if (cmd == "key") {
-      std::printf("node id: 0x%016llx\n", static_cast<unsigned long long>(node_id_));
-      if (auto* ks = dynamic_cast<os::Ed25519KeyStore*>(signer_.get()))
-        std::printf("public key: %s\n", hex(ks->public_key()).c_str());
-      else
-        std::printf("(unsigned mode — no key)\n");
-    } else if (cmd == "save") {
-      save_snapshot();
-    } else if (cmd == "quit" || cmd == "exit") {
-      reactor_.stop();
-    } else {
-      std::printf("unknown command: %s\n", line.c_str());
+      return {kOk, false, "", {{"event", hex(e.hash)}}};
     }
-    std::fflush(stdout);
+    if (verb == "event") {
+      if (args.size() < 2) return {kUsage, false, "usage: event <hash|last>", {}};
+      const auto* e = find_event(args[1]);
+      if (!e) return {kNotFound, false, "no such event", {}};
+      return {kOk, false, "", {{"event", hex(e->hash)}, {"creator", hex_id(e->creator)},
+                               {"content", std::to_string(e->data.size())},
+                               {"references", std::to_string(e->referenced_events.size())}}};
+    }
+    if (verb == "events") {
+      Reply r;
+      for (std::size_t i = 0; i < node_->event_count(); ++i)
+        r.fields.emplace_back("event", hex(node_->event_at(i).hash));
+      return r;
+    }
+    if (verb == "bounds" || verb == "chain" || verb == "order") return dispatch_query(verb, args, reply_fd);
+    if (verb == "peer-add") {
+      if (args.size() < 2) return {kUsage, false, "usage: peer-add <id:ip:port>", {}};
+      auto f = split(args[1], ':');
+      if (f.size() != 3) return {kUsage, false, "want id:ip:port", {}};
+      add_peer(std::strtoull(f[0].c_str(), nullptr, 0), f[1],
+               static_cast<std::uint16_t>(std::atoi(f[2].c_str())));
+      return {kOk, false, "", {{"peer", args[1]}}};
+    }
+    if (verb == "peer-ls") {
+      Reply r;
+      for (const auto& [id, ip, port] : peers_)
+        r.fields.emplace_back("peer", hex_id(id) + " " + ip + ":" + std::to_string(port));
+      return r;
+    }
+    if (verb == "status") {
+      return {kOk, false, "", {{"node", hex_id(node_id_)},
+                               {"mode", signed_ ? "signed" : "unsigned"},
+                               {"events", std::to_string(node_->event_count())},
+                               {"clockEvents", std::to_string(node_->clock_event_count())},
+                               {"peers", std::to_string(peers_.size())}}};
+    }
+    if (verb == "key") {
+      Reply r{kOk, false, "", {{"node", hex_id(node_id_)}}};
+      if (auto* ks = dynamic_cast<os::Ed25519KeyStore*>(signer_.get()))
+        r.fields.emplace_back("publicKey", hex(ks->public_key()));
+      else
+        r.fields.emplace_back("publicKey", "(unsigned)");
+      return r;
+    }
+    if (verb == "save") {
+      save_snapshot();
+      return {kOk, false, "", {{"snapshot", store_ ? store_->path() : "(none)"}}};
+    }
+    if (verb == "quit" || verb == "exit") {
+      reactor_.stop();
+      return {kOk, false, "", {{"status", "stopping"}}};
+    }
+    return {kUsage, false, "unknown command: " + verb, {}};
   }
 
-  // Resolve an event by "last" or a hex-hash prefix over this node's own events.
-  const domain::Event* find_event(const std::string& ref) {
-    if (ref == "last") {
-      if (last_event_.empty()) return nullptr;
-      return find_by_hash_prefix(hex(last_event_));
+  Reply dispatch_query(const std::string& verb, const std::vector<std::string>& args, int reply_fd) {
+    if (verb == "order") {
+      if (args.size() < 3) return {kUsage, false, "usage: order <a> <b>", {}};
+      const auto* a = find_event(args[1]);
+      const auto* b = find_event(args[2]);
+      if (!a || !b) return {kNotFound, false, "no such event", {}};
+      if (reply_fd >= 0) pending_order_[std::make_pair(a->hash, b->hash)] = reply_fd;
+      node_->discover_event_order(*a, *b, *this);
+      return reply_fd >= 0 ? Reply{kOk, true, "", {}} : Reply{kOk, false, "", {{"status", "started"}}};
     }
+    if (args.size() < 2) return {kUsage, false, "usage: " + verb + " <event>", {}};
+    const auto* e = find_event(args[1]);
+    if (!e) return {kNotFound, false, "no such event", {}};
+    if (verb == "bounds") {
+      if (reply_fd >= 0) pending_bounds_.insert({e->hash, reply_fd});
+      node_->discover_event_bounds(*e, *this);
+    } else {  // chain
+      if (reply_fd >= 0) pending_chain_.insert({e->hash, reply_fd});
+      node_->discover_event_chain(*e, *this);
+    }
+    return reply_fd >= 0 ? Reply{kOk, true, "", {}} : Reply{kOk, false, "", {{"status", "started"}}};
+  }
+
+  // ---- stdin: dispatch and print the reply as human text ------------------
+  void on_stdin_readable() {
+    char buf[4096];
+    const ssize_t n = ::read(STDIN_FILENO, buf, sizeof(buf));
+    if (n <= 0) {
+      reactor_.stop();
+      return;
+    }
+    stdin_buf_.append(buf, static_cast<std::size_t>(n));
+    std::size_t nl;
+    while ((nl = stdin_buf_.find('\n')) != std::string::npos) {
+      const std::string line = stdin_buf_.substr(0, nl);
+      stdin_buf_.erase(0, nl + 1);
+      const auto args = tokenize(line);
+      if (args.empty()) continue;
+      const Reply r = dispatch(args, -1);
+      if (!r.error.empty())
+        std::printf("error(%d): %s\n", r.code, r.error.c_str());
+      else
+        for (const auto& [k, v] : r.fields) std::printf("%s: %s\n", k.c_str(), v.c_str());
+      std::fflush(stdout);
+    }
+  }
+
+  // ---- control socket -----------------------------------------------------
+  void setup_control() {
+    if (control_path_.empty()) return;
+    control_fd_ = os::control_listen(control_path_);
+    if (control_fd_ < 0) {
+      std::fprintf(stderr, "[lotid] cannot listen on control socket %s\n", control_path_.c_str());
+      return;
+    }
+    reactor_.add_reader(control_fd_, [this] { on_control_accept(); });
+    std::fprintf(stderr, "[lotid] control socket at %s\n", control_path_.c_str());
+  }
+  void on_control_accept() {
+    const int fd = ::accept(control_fd_, nullptr, nullptr);
+    if (fd < 0) return;
+    client_buf_[fd];
+    reactor_.add_reader(fd, [this, fd] { on_control_readable(fd); });
+  }
+  void on_control_readable(int fd) {
+    char buf[4096];
+    const ssize_t n = ::read(fd, buf, sizeof(buf));
+    if (n <= 0) {
+      close_client(fd);
+      return;
+    }
+    auto& acc = client_buf_[fd];
+    acc.append(buf, static_cast<std::size_t>(n));
+    const std::size_t nl = acc.find('\n');
+    if (nl == std::string::npos) return;  // await the full request line
+    const auto args = tokenize(acc.substr(0, nl));
+    if (args.empty()) {
+      respond(fd, {kUsage, false, "empty request", {}});
+      return;
+    }
+    const Reply r = dispatch(args, fd);
+    if (!r.deferred) respond(fd, r);  // deferred replies come from a discovery callback
+  }
+  void respond(int fd, const Reply& r) {
+    if (!client_buf_.count(fd)) return;  // client already gone
+    os::write_all(fd, os::format_reply(r.code, r.error, r.fields));
+    close_client(fd);
+  }
+  void close_client(int fd) {
+    if (!client_buf_.count(fd)) return;
+    reactor_.remove_reader(fd);
+    ::close(fd);
+    client_buf_.erase(fd);
+  }
+
+  using PendingByEvent = std::multimap<domain::EventHash, int>;
+  void answer(PendingByEvent& pending, const domain::EventHash& hash, const Reply& reply) {
+    auto range = pending.equal_range(hash);
+    for (auto it = range.first; it != range.second; ++it) respond(it->second, reply);
+    pending.erase(range.first, range.second);
+  }
+  void abort_pending(PendingByEvent& pending, const domain::EventHash& hash) {
+    answer(pending, hash, Reply{kInvalidResult, false, "discovery aborted", {}});
+  }
+
+  // ---- events / snapshots -------------------------------------------------
+  const domain::Event* find_event(const std::string& ref) {
+    if (ref == "last") return last_event_.empty() ? nullptr : find_by_hash_prefix(hex(last_event_));
     return find_by_hash_prefix(ref);
   }
-  const domain::Event* find_event_ptr(std::size_t i) { return &node_->event_at(i); }
   const domain::Event* find_by_hash_prefix(const std::string& prefix) {
     for (std::size_t i = 0; i < node_->event_count(); ++i)
-      if (hex(node_->event_at(i).hash).rfind(prefix, 0) == 0) return find_event_ptr(i);
+      if (hex(node_->event_at(i).hash).rfind(prefix, 0) == 0) return &node_->event_at(i);
     return nullptr;
   }
-
   void save_snapshot() {
     if (!store_) return;
     store_->save(node_->snapshot());
@@ -236,13 +420,21 @@ class Lotid final : public ChainCallback, public BoundsCallback, public OrderCal
   os::ReactorScheduler scheduler_;
   os::SecureRng rng_;
   os::LogTelemetry telemetry_;
-  std::unique_ptr<ports::Signer> signer_;  // NullSigner (unsigned) or Ed25519KeyStore
+  std::unique_ptr<ports::Signer> signer_;
   std::unique_ptr<Node> node_;
 
   domain::NodeId node_id_ = 0;
+  bool signed_ = false;
   domain::EventHash last_event_;
-  std::string pending_;
+  std::string stdin_buf_;
   std::optional<os::FileStore> store_;
+  std::vector<std::tuple<domain::NodeId, std::string, std::uint16_t>> peers_;
+
+  std::string control_path_;
+  int control_fd_ = -1;
+  std::map<int, std::string> client_buf_;  // per-connection read buffer
+  PendingByEvent pending_bounds_, pending_chain_;
+  std::map<std::pair<domain::EventHash, domain::EventHash>, int> pending_order_;
 };
 
 double parse_seconds(const char* s) { return std::atof(s); }
@@ -255,10 +447,8 @@ int main(int argc, char** argv) {
   double clock_interval = 1.0;
   double expiry = 5.0;
   bool verbose = false;
-  std::string store_path;           // snapshot file (empty = no persistence)
-  std::string key_path;             // Ed25519 key file (empty = unsigned mode)
-  std::vector<std::string> peers;   // "id:ip:port"
-  std::vector<std::string> routes;  // "dst:nexthop"
+  std::string store_path, key_path, control_path;
+  std::vector<std::string> peers, routes;
 
   for (int i = 1; i < argc; ++i) {
     std::string a = argv[i];
@@ -277,6 +467,7 @@ int main(int argc, char** argv) {
     else if (a == "--expiry") expiry = parse_seconds(next("--expiry"));
     else if (a == "--store") store_path = next("--store");
     else if (a == "--key") key_path = next("--key");
+    else if (a == "--control") control_path = next("--control");
     else if (a == "--verbose" || a == "-v") verbose = true;
     else {
       std::fprintf(stderr, "unknown argument: %s\n", a.c_str());
@@ -287,9 +478,7 @@ int main(int argc, char** argv) {
     std::fprintf(stderr,
                  "usage: lotid --port <p> {--id <n> | --key <path>} [--peer id:ip:port]... "
                  "[--route dst:nexthop]... [--clock-interval s] [--expiry s] [--store <path>] "
-                 "[--verbose]\n"
-                 "  --key <path>  signed mode: load/generate an Ed25519 key; NodeId = its fingerprint\n"
-                 "  --id  <n>     unsigned mode: use n as the NodeId\n");
+                 "[--control <path>] [--verbose]\n");
     return 2;
   }
 
@@ -299,18 +488,16 @@ int main(int argc, char** argv) {
 
   try {
     Lotid daemon(id.value_or(0), port, to_ns(clock_interval), to_ns(expiry), verbose, store_path,
-                 key_path);
-    daemon.restore_from_store();  // load prior state before static peering is applied
+                 key_path, control_path);
+    daemon.restore_from_store();
     for (const auto& p : peers) {
       auto f = split(p, ':');
       if (f.size() != 3) {
         std::fprintf(stderr, "bad --peer (want id:ip:port): %s\n", p.c_str());
         return 2;
       }
-      const auto peer_id = std::strtoull(f[0].c_str(), nullptr, 0);
-      daemon.node().add_neighbor(peer_id);
-      daemon.node().learn_route(peer_id, peer_id);  // direct route to a neighbor
-      daemon.transport().set_peer(peer_id, f[1], static_cast<std::uint16_t>(std::atoi(f[2].c_str())));
+      daemon.add_peer(std::strtoull(f[0].c_str(), nullptr, 0), f[1],
+                      static_cast<std::uint16_t>(std::atoi(f[2].c_str())));
     }
     for (const auto& r : routes) {
       auto f = split(r, ':');
@@ -318,12 +505,11 @@ int main(int argc, char** argv) {
         std::fprintf(stderr, "bad --route (want dst:nexthop): %s\n", r.c_str());
         return 2;
       }
-      daemon.node().learn_route(std::strtoull(f[0].c_str(), nullptr, 0),
-                                std::strtoull(f[1].c_str(), nullptr, 0));
+      daemon.learn_route(std::strtoull(f[0].c_str(), nullptr, 0),
+                         std::strtoull(f[1].c_str(), nullptr, 0));
     }
-    std::fprintf(stderr, "[lotid] node 0x%016llx listening on udp/%u%s\n",
-                 static_cast<unsigned long long>(daemon.node_id()), port,
-                 key_path.empty() ? " (unsigned)" : " (signed)");
+    std::fprintf(stderr, "[lotid] node %s listening on udp/%u (%s)\n", hex_id(daemon.node_id()).c_str(),
+                 port, key_path.empty() ? "unsigned" : "signed");
     daemon.run();
   } catch (const std::exception& e) {
     std::fprintf(stderr, "[lotid] fatal: %s\n", e.what());

@@ -50,6 +50,15 @@ add_executable(lotid
 target_link_libraries(lotid PRIVATE loti_core OpenSSL::Crypto)
 target_include_directories(lotid PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 
+# loti — the CLI client. Talks to lotid over the control socket; `loti init` also
+# generates a key (hence loti_core + libcrypto via the keystore adapter).
+add_executable(loti
+  app/loti/loti.cpp
+  adapters/os/keystore.cpp
+)
+target_link_libraries(loti PRIVATE loti_core OpenSSL::Crypto)
+target_include_directories(loti PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+
 # ----------------------------------------------------------------------------
 # Tests (doctest, vendored under test/doctest).
 # ----------------------------------------------------------------------------
