@@ -150,30 +150,195 @@ std::string json_escape(const std::string& s) {
   return o;
 }
 
-void print_json(const os::ControlReply& r) {
-  // group values by key (in first-seen order) so repeated keys form arrays
+std::string printable(const domain::Bytes& b) {
+  std::string s;
+  s.reserve(b.size());
+  for (unsigned char c : b) s.push_back((c >= 0x20 && c < 0x7f) ? static_cast<char>(c) : '.');
+  return s;
+}
+
+// ---- JSON output: a tiny tree writer with pretty-printing --------------------
+// Build a value tree, then serialize it with 2-space indentation and newlines.
+// This is a WRITER only — no parser is needed (the daemon speaks the flat line
+// protocol; the CLI shapes those fields into proper nested JSON per command).
+struct Json {
+  enum class Type { Null, Bool, Num, Str, Arr, Obj } type = Type::Null;
+  bool b = false;
+  std::string text;                                   // Num: literal; Str: raw value
+  std::vector<Json> items;                            // Arr
+  std::vector<std::pair<std::string, Json>> members;  // Obj
+
+  static Json str(std::string v) { Json j; j.type = Type::Str; j.text = std::move(v); return j; }
+  static Json num(long long v) { Json j; j.type = Type::Num; j.text = std::to_string(v); return j; }
+  static Json num_text(std::string v) { Json j; j.type = Type::Num; j.text = std::move(v); return j; }
+  static Json boolean(bool v) { Json j; j.type = Type::Bool; j.b = v; return j; }
+  static Json array() { Json j; j.type = Type::Arr; return j; }
+  static Json object() { Json j; j.type = Type::Obj; return j; }
+  Json& set(std::string k, Json v) { members.emplace_back(std::move(k), std::move(v)); return *this; }
+  Json& push(Json v) { items.push_back(std::move(v)); return *this; }
+};
+
+void json_emit(const Json& j, std::string& out, int depth) {
+  const auto indent = [&](int d) { out.append(static_cast<std::size_t>(d) * 2, ' '); };
+  switch (j.type) {
+    case Json::Type::Null: out += "null"; break;
+    case Json::Type::Bool: out += j.b ? "true" : "false"; break;
+    case Json::Type::Num:  out += j.text; break;
+    case Json::Type::Str:  out += '"'; out += json_escape(j.text); out += '"'; break;
+    case Json::Type::Arr:
+      if (j.items.empty()) { out += "[]"; break; }
+      out += "[\n";
+      for (std::size_t i = 0; i < j.items.size(); ++i) {
+        indent(depth + 1);
+        json_emit(j.items[i], out, depth + 1);
+        out += (i + 1 < j.items.size() ? ",\n" : "\n");
+      }
+      indent(depth); out += "]";
+      break;
+    case Json::Type::Obj:
+      if (j.members.empty()) { out += "{}"; break; }
+      out += "{\n";
+      for (std::size_t i = 0; i < j.members.size(); ++i) {
+        indent(depth + 1);
+        out += '"'; out += json_escape(j.members[i].first); out += "\": ";
+        json_emit(j.members[i].second, out, depth + 1);
+        out += (i + 1 < j.members.size() ? ",\n" : "\n");
+      }
+      indent(depth); out += "}";
+      break;
+  }
+}
+std::string json_pretty(const Json& j) { std::string out; json_emit(j, out, 0); out += "\n"; return out; }
+
+// Field keys whose values are small integers (safe as JSON numbers). Absolute
+// timestamps (clock-event `ts`, bounds `lower`/`upper`) stay strings to preserve
+// their full 19-digit precision for consumers that parse numbers as doubles.
+bool json_numeric_key(const std::string& k) {
+  return k == "size" || k == "references" || k == "clockEvents" || k == "peers" ||
+         k == "interval" || k == "order" || k == "events";
+}
+Json json_value(const std::string& key, const std::string& val) {
+  if (json_numeric_key(key) && !val.empty()) {
+    std::size_t i = (val[0] == '-') ? 1 : 0;
+    bool digits = i < val.size();
+    for (; i < val.size(); ++i)
+      if (val[i] < '0' || val[i] > '9') { digits = false; break; }
+    if (digits) return Json::num_text(val);
+  }
+  return Json::str(val);
+}
+
+// Parse one chain-path element "creator=<id> hash=<hex> ts=<n>" into an object.
+Json json_clock_from_line(const std::string& v) {
+  std::string creator, h, ts;
+  for (std::size_t p = 0; p < v.size();) {
+    const std::size_t sp = v.find(' ', p);
+    const std::string tok = v.substr(p, sp == std::string::npos ? std::string::npos : sp - p);
+    const std::size_t eq = tok.find('=');
+    if (eq != std::string::npos) {
+      const std::string key = tok.substr(0, eq), val = tok.substr(eq + 1);
+      if (key == "creator") creator = val;
+      else if (key == "hash") h = val;
+      else if (key == "ts") ts = val;
+    }
+    if (sp == std::string::npos) break;
+    p = sp + 1;
+  }
+  Json o = Json::object();
+  o.set("creator", Json::str(creator));
+  o.set("hash", Json::str(h));
+  o.set("timestamp", Json::str(ts));
+  return o;
+}
+
+Json json_base(const os::ControlReply& r) {
+  Json o = Json::object();
+  o.set("ok", Json::boolean(r.ok));
+  o.set("code", Json::num(r.code));
+  if (!r.ok) o.set("error", Json::str(r.message));
+  return o;
+}
+
+// chain reply → { reference, lowerBound[], event, content, upperBound[], clockEvents }
+void json_build_chain(Json& o, const os::ControlReply& r) {
+  Json lower = Json::array(), upper = Json::array();
+  std::string reference, event, content, clock_events;
+  for (const auto& [k, v] : r.fields) {
+    if (k == "lower") lower.push(json_clock_from_line(v));
+    else if (k == "upper") upper.push(json_clock_from_line(v));
+    else if (k == "reference") reference = v;
+    else if (k == "event") event = v;
+    else if (k == "content") content = v;
+    else if (k == "clockEvents") clock_events = v;
+  }
+  o.set("reference", Json::str(reference));
+  o.set("lowerBound", std::move(lower));
+  o.set("event", Json::str(event));
+  o.set("content", Json::str(content));
+  o.set("upperBound", std::move(upper));
+  if (!clock_events.empty()) o.set("clockEvents", json_value("clockEvents", clock_events));
+}
+
+// event-find reply (interleaved event/content) → { matches: [ {event, content}, … ] }
+void json_build_find(Json& o, const os::ControlReply& r) {
+  Json matches = Json::array();
+  for (const auto& [k, v] : r.fields) {
+    if (k == "event") { Json m = Json::object(); m.set("event", Json::str(v)); matches.push(std::move(m)); }
+    else if (k == "content" && !matches.items.empty()) matches.items.back().set("content", Json::str(v));
+  }
+  o.set("matches", std::move(matches));
+}
+
+// Any other reply → object of typed fields; repeated keys become arrays.
+void json_build_generic(Json& o, const os::ControlReply& r) {
   std::vector<std::string> order;
   std::map<std::string, std::vector<std::string>> grouped;
   for (const auto& [k, v] : r.fields) {
     if (!grouped.count(k)) order.push_back(k);
     grouped[k].push_back(v);
   }
-  std::string out = "{";
-  out += "\"ok\":" + std::string(r.ok ? "true" : "false") + ",\"code\":" + std::to_string(r.code);
-  if (!r.ok) out += ",\"error\":\"" + json_escape(r.message) + "\"";
   for (const auto& k : order) {
-    out += ",\"" + json_escape(k) + "\":";
     const auto& vs = grouped[k];
     if (vs.size() == 1) {
-      out += "\"" + json_escape(vs[0]) + "\"";
+      o.set(k, json_value(k, vs[0]));
     } else {
-      out += "[";
-      for (std::size_t i = 0; i < vs.size(); ++i) out += (i ? "," : "") + std::string("\"") + json_escape(vs[i]) + "\"";
-      out += "]";
+      Json a = Json::array();
+      for (const auto& v : vs) a.push(json_value(k, v));
+      o.set(k, std::move(a));
     }
   }
-  out += "}\n";
-  std::fputs(out.c_str(), stdout);
+}
+
+Json reply_to_json(const std::vector<std::string>& args, const os::ControlReply& r) {
+  Json o = json_base(r);
+  if (!r.ok) return o;
+  if (args[0] == "chain") json_build_chain(o, r);
+  else if (args[0] == "event" && args.size() > 1 && args[1] == "find") json_build_find(o, r);
+  else json_build_generic(o, r);
+  return o;
+}
+
+// A typed clock event (used by `proof show --json`, which has the full chain).
+Json json_clock(const domain::ClockEvent& ce) {
+  Json o = Json::object();
+  o.set("creator", Json::str(hex_id(ce.creator)));
+  o.set("hash", Json::str(hex(ce.hash)));
+  o.set("timestamp", Json::str(std::to_string(ce.timestamp)));
+  return o;
+}
+Json json_chain(const domain::EventChain& c) {
+  Json o = Json::object();
+  Json lower = Json::array(), upper = Json::array();
+  for (const auto& ce : c.lower_bound) lower.push(json_clock(ce));
+  for (const auto& ce : c.upper_bound) upper.push(json_clock(ce));
+  Json ev = Json::object();
+  ev.set("creator", Json::str(hex_id(c.event.creator)));
+  ev.set("hash", Json::str(hex(c.event.hash)));
+  ev.set("content", Json::str(printable(c.event.data)));
+  o.set("lowerBound", std::move(lower));
+  o.set("event", std::move(ev));
+  o.set("upperBound", std::move(upper));
+  return o;
 }
 
 // Map a CLI subcommand (argv after the globals) to a daemon request line.
@@ -264,10 +429,11 @@ int do_prove(const std::vector<std::string>& args, const std::string& control,
   return 0;
 }
 
-// `loti proof show <file>` — human summary, no verification.
-int do_proof_show(const std::vector<std::string>& args) {
+// `loti proof show <file> [--json]` — summary (human) or the full proof (JSON),
+// no verification.
+int do_proof_show(const std::vector<std::string>& args, bool json) {
   if (args.size() < 3) {
-    std::fprintf(stderr, "usage: loti proof show <file>\n");
+    std::fprintf(stderr, "usage: loti proof show <file> [--json]\n");
     return 2;
   }
   const auto bytes = read_file(args[2]);
@@ -282,6 +448,24 @@ int do_proof_show(const std::vector<std::string>& args) {
     std::fprintf(stderr, "loti: %s\n", e.what());
     return 4;
   }
+
+  if (json) {
+    Json o = Json::object();
+    o.set("loti_proof", Json::num(1));
+    o.set("kind", Json::str(kind_name(p.kind)));
+    Json ref = Json::object();
+    ref.set("node", Json::str(hex_id(p.reference.node)));
+    if (!p.reference.pubkey.empty()) ref.set("pubkey", Json::str("ed25519:" + hex(p.reference.pubkey)));
+    o.set("reference", std::move(ref));
+    o.set("chain", json_chain(p.chain));
+    if (p.kind == proof::Kind::order) {
+      o.set("chain2", json_chain(p.chain2));
+      o.set("order", Json::str(order_name(p.order)));
+    }
+    std::fputs(json_pretty(o).c_str(), stdout);
+    return 0;
+  }
+
   std::printf("kind: %s\n", kind_name(p.kind));
   std::printf("reference: %s\n", hex_id(p.reference.node).c_str());
   if (!p.reference.pubkey.empty()) std::printf("pubkey: ed25519:%s\n", hex(p.reference.pubkey).c_str());
@@ -328,15 +512,21 @@ int do_verify(const std::vector<std::string>& args, const std::vector<std::strin
     if (std::strtoull(t.c_str(), nullptr, 0) == p.reference.node) trusted = true;
 
   if (json) {
-    std::string o = "{\"valid\":" + std::string(res.valid ? "true" : "false");
-    o += ",\"kind\":\"" + std::string(kind_name(p.kind)) + "\"";
-    o += ",\"reference\":\"" + hex_id(p.reference.node) + "\"";
-    if (!res.valid) o += ",\"reason\":\"" + json_escape(res.reason) + "\"";
-    else if (p.kind == proof::Kind::order) o += ",\"order\":\"" + std::string(order_name(res.order)) + "\"";
-    else { o += ",\"lower\":" + std::to_string(res.lower) + ",\"upper\":" + std::to_string(res.upper); }
-    if (!trust.empty()) o += ",\"trusted\":" + std::string(trusted ? "true" : "false");
-    o += "}\n";
-    std::fputs(o.c_str(), stdout);
+    Json o = Json::object();
+    o.set("valid", Json::boolean(res.valid));
+    o.set("kind", Json::str(kind_name(p.kind)));
+    o.set("reference", Json::str(hex_id(p.reference.node)));
+    if (!p.reference.pubkey.empty()) o.set("pubkey", Json::str("ed25519:" + hex(p.reference.pubkey)));
+    if (!res.valid) {
+      o.set("reason", Json::str(res.reason));
+    } else if (p.kind == proof::Kind::order) {
+      o.set("order", Json::str(order_name(res.order)));
+    } else {
+      o.set("lower", Json::str(std::to_string(res.lower)));
+      o.set("upper", Json::str(std::to_string(res.upper)));
+    }
+    if (!trust.empty()) o.set("trusted", Json::boolean(trusted));
+    std::fputs(json_pretty(o).c_str(), stdout);
     return res.valid ? 0 : 6;
   }
 
@@ -473,7 +663,7 @@ int main(int argc, char** argv) {
   if (args[0] == "init") return do_init(home);
   if (args[0] == "prove") return do_prove(args, control, out, quiet);
   if (args[0] == "verify") return do_verify(args, trust, json);
-  if (args[0] == "proof" && args.size() >= 2 && args[1] == "show") return do_proof_show(args);
+  if (args[0] == "proof" && args.size() >= 2 && args[1] == "show") return do_proof_show(args, json);
 
   const std::string request = to_request(args);
   if (request.empty()) {
@@ -487,7 +677,7 @@ int main(int argc, char** argv) {
     return 1;
   }
   if (json) {
-    print_json(*reply);
+    std::fputs(json_pretty(reply_to_json(args, *reply)).c_str(), stdout);
   } else if (!quiet) {
     if (!reply->ok)
       std::fprintf(stderr, "error(%d): %s\n", reply->code, reply->message.c_str());

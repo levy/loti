@@ -540,5 +540,15 @@ deviations from the docs; per repo convention, decisions live here, not in sourc
   are sanitized to printable for the single-line control protocol. Also added a colored, sectioned
   `loti --help`/`-h`/`help` (ANSI only when stdout is a TTY and `NO_COLOR` is unset). All CLI-only;
   the daemon changes are additive fields, no protocol/format break.
+- **Proper, pretty JSON output (2026-07-17):** replaced the flat single-line `--json` renderer with
+  a small tree-based JSON writer (build a value tree, emit with 2-space indent + newlines) in the
+  CLI. `--json` now produces well-typed, nested documents per command: `chain` →
+  `{reference, lowerBound:[{creator,hash,timestamp}], event, content, upperBound:[…], clockEvents}`;
+  `event find` → `{matches:[{event,content},…]}`; `verify`/`proof show` build proper objects
+  (`proof show --json` emits the whole proof incl. the typed path). Counts render as JSON numbers;
+  absolute timestamps stay strings to preserve 19-digit precision for double-based parsers. No JSON
+  *parser* was added (the daemon still speaks the flat `key\tvalue` line protocol; the CLI shapes
+  those fields), keeping the minimal-deps stance. Verified every `--json` output parses under
+  `python -m json.tool`.
 - _Store engine (incremental append / LMDB vs SQLite): deferred to Stage 7 (scaling)._
 - _RPC encoding (JSON-over-unix-socket vs framed binary): resolved in Stage 5 (hand-rolled line protocol)._
