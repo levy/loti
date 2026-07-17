@@ -28,6 +28,7 @@ add_compile_options(-Wall -Wextra -Wpedantic)
 # ----------------------------------------------------------------------------
 add_library(loti_core STATIC
   core/loti_core.cpp
+  core/hash/hashing.cpp
 )
 target_include_directories(loti_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/core)
 
