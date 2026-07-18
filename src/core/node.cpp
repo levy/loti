@@ -32,11 +32,13 @@ void Node::start() {
 }
 
 void Node::add_neighbor(NodeId neighbor) {
-  neighbors_.try_emplace(neighbor, Neighbor{neighbor, {}});
+  auto [it, inserted] = neighbors_.try_emplace(neighbor, Neighbor{neighbor, {}});
+  if (inserted && persistence_) persistence_->on_neighbor_changed(it->second);
 }
 
 void Node::learn_route(NodeId destination, NodeId next_hop) {
   destination_to_next_hop_[destination] = next_hop;
+  if (persistence_) persistence_->on_route_changed(destination, next_hop);
 }
 
 // ---------------------------------------------------------------------------
@@ -125,10 +127,13 @@ void Node::on_packet_received(const Bytes& datagram) {
 
 void Node::process_clock_event_notification(Neighbor& neighbor, const Hash& last_clock_event_hash,
                                             const Hash& neighbor_last_clock_event_hash) {
+  const bool neighbor_changed = neighbor.last_clock_event_hash != last_clock_event_hash;
   neighbor.last_clock_event_hash = last_clock_event_hash;
+  if (neighbor_changed && persistence_) persistence_->on_neighbor_changed(neighbor);
   if (auto idx = find_clock_event_index(neighbor_last_clock_event_hash)) {
     all_clock_events_[*idx].referencing_events.push_back(
         EventReference{neighbor.node_id, last_clock_event_hash});
+    if (persistence_) persistence_->on_clock_event_updated(all_clock_events_[*idx]);
   }
 }
 
@@ -535,7 +540,9 @@ const Event& Node::insert_event(Bytes data) {
   event.hash = hash::calculate_event_hash(event);
   event.signature = signer_.sign(event.hash);
   all_events_.push_back(std::move(event));
-  return all_events_.back();
+  const Event& stored = all_events_.back();
+  if (persistence_) persistence_->on_event_appended(stored);
+  return stored;
 }
 
 const LocalClockEvent& Node::insert_clock_event() {
@@ -557,7 +564,9 @@ const LocalClockEvent& Node::insert_clock_event() {
   clock_event.hash = hash::calculate_clock_event_hash(clock_event);
   clock_event.signature = signer_.sign(clock_event.hash);
   all_clock_events_.push_back(std::move(clock_event));
-  return all_clock_events_.back();
+  const LocalClockEvent& stored = all_clock_events_.back();
+  if (persistence_) persistence_->on_clock_event_appended(stored);
+  return stored;
 }
 
 std::optional<std::size_t> Node::find_clock_event_index(const Hash& hash) const {

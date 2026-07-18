@@ -128,20 +128,22 @@ Work in the dedicated `lmdb-store` worktree at `../loti-lmdb-store`, not the mai
   round-trips byte-identically (now via `load`); (b) a harness-built DAG persisted record-by-record into
   an LMDB store and loaded into a fresh Node yields a **byte-identical** `snapshot()`. Full core suite
   green (111 assertions).
-- [ ] **Step 4 — Node persistence listener.** There is **no** general Node observer to reuse:
-  `ChainCallback`/`BoundsCallback`/`OrderCallback` (`src/core/node.hpp:27-45`) are per-discovery result
-  callbacks the daemon passes into `discover_*`, not lifecycle hooks. So add a dedicated
-  `PersistenceListener` interface (`on_event_appended(const Event&)`,
-  `on_clock_event_appended(const LocalClockEvent&)`, `on_neighbor_changed`, `on_route_changed`) plus a
-  nullable `Node` pointer set via a setter by the daemon (null in the sim → **zero sim change**). Call
-  it from the private append choke points `insert_event`/`insert_clock_event`
-  (`src/core/node.hpp:153-154`) and the `add_neighbor`/`learn_route` mutators so it catches appends from
-  every trigger (app publish, the internal clock timer, network intake).
-- [ ] **Step 5 — Swap the daemon onto LmdbStore.** Replace `FileStore store_` with `LmdbStore`;
-  `restore_from_store()` → `replay()`; the daemon's hook impls drive the write path;
-  **retire the 5-s full-snapshot timer** (replace with a periodic `mdb_env_sync` flush, or drop it if
-  committing durably per batch). Rework `db_stat()` (report env size via `mdb_env_stat`/`mdb_stat`
-  instead of `snapshot().size()`).
+- [x] **Step 4 — Node persistence listener.** Added `PersistenceListener` (`src/core/node.hpp`) with
+  `on_event_appended`, `on_clock_event_appended`, `on_clock_event_updated`, `on_neighbor_changed`,
+  `on_route_changed`, plus a nullable `Node` pointer + `set_persistence_listener()` (null in the sim →
+  **zero sim change**). Fired from the five persisted-state mutation sites: `insert_event`,
+  `insert_clock_event`, `add_neighbor` (only when it actually inserts — a duplicate must not clobber a
+  learned hash), `learn_route`, and `process_clock_event_notification`. The last needed **two** hooks —
+  the neighbor-hash update *and* (the extra one found here) the reverse cross-link that mutates an
+  already-appended clock event's `referencing_events`, hence `on_clock_event_updated`. Not fired during
+  `load()`/`restore()`. doctest: a recording listener sees exactly the expected records; an 8-round
+  gossip drives the neighbor + clock-event-update hooks. All 33 core cases green (118 assertions).
+- [ ] **Step 5 — Swap the daemon onto LmdbStore.** Replace `FileStore store_` with `LmdbStore`. The
+  daemon implements `PersistenceListener`, accumulating changes into one `LmdbStore::Batch` per reactor
+  wakeup and committing durably; add `LmdbStore::Batch::update_clock_event` (upsert by hash, reusing the
+  existing `clock_index`) for the `on_clock_event_updated` hook. Startup: `node_->load(store_->load_*())`
+  instead of restore-from-blob, then install the listener **after** load. **Retire the 5-s full-snapshot
+  timer.** Rework `db_stat()` (report env size via `mdb_env_stat`/`mdb_stat` instead of `snapshot().size()`).
 - [ ] **Step 6 — Backup/restore + migration.** `db-backup` → `mdb_env_copy2(..., MDB_CP_COMPACT)`
   (consistent hot copy). `db-restore` → replace the env dir (or import). Keep `snapshot()`/`restore()`
   as a **portable blob export/import** format (this also gives a one-time importer for an existing
@@ -219,3 +221,9 @@ Work in the dedicated `lmdb-store` worktree at `../loti-lmdb-store`, not the mai
   (maxdbs 8→7), and `Node::load` rederives it from the clock events. This keeps the Step 4 listener
   trivial (no mutable-set mirror to clear per clock event). Snapshot round-trip stays byte-identical
   (109 assertions green).
+- **Step 4 done** — `PersistenceListener` interface + nullable Node pointer/setter, fired from the five
+  persisted-state mutation sites. Found a 6th call the plan hadn't anticipated:
+  `process_clock_event_notification` mutates an already-appended clock event's `referencing_events`, so
+  the listener needs `on_clock_event_updated` (the daemon will re-persist that clock event via a new
+  `LmdbStore::Batch::update_clock_event` in Step 5). Recording-listener + gossip tests pass; the sim is
+  unaffected (listener null). Full suite 118 assertions green.

@@ -7,6 +7,7 @@
 #include <filesystem>
 #include <string>
 #include <system_error>
+#include <utility>
 
 #include <unistd.h>
 
@@ -203,4 +204,55 @@ TEST_CASE("LmdbStore persists a Node's DAG and Node::load restores it byte-for-b
   n2.load(store.load_events(), store.load_clock_events(), store.load_neighbors(),
           store.load_routes());
   CHECK(n2.snapshot() == snap1);
+}
+
+namespace {
+struct RecordingPersistence final : loti::PersistenceListener {
+  std::vector<domain::EventHash> events;
+  std::vector<domain::EventHash> clock_appended;
+  std::vector<domain::EventHash> clock_updated;
+  std::vector<domain::NodeId> neighbors;
+  std::vector<std::pair<domain::NodeId, domain::NodeId>> routes;
+  void on_event_appended(const domain::Event& e) override { events.push_back(e.hash); }
+  void on_clock_event_appended(const domain::LocalClockEvent& c) override {
+    clock_appended.push_back(c.hash);
+  }
+  void on_clock_event_updated(const domain::LocalClockEvent& c) override {
+    clock_updated.push_back(c.hash);
+  }
+  void on_neighbor_changed(const domain::Neighbor& n) override { neighbors.push_back(n.node_id); }
+  void on_route_changed(domain::NodeId d, domain::NodeId nh) override { routes.emplace_back(d, nh); }
+};
+}  // namespace
+
+TEST_CASE("Node reports each durable state change to a PersistenceListener") {
+  harness::World w;
+  Node& n = w.add_node(1, NodeConfig{});
+  RecordingPersistence rec;
+  n.set_persistence_listener(&rec);
+
+  n.add_neighbor(2);
+  n.add_neighbor(2);  // already present → no second neighbor_changed
+  n.learn_route(3, 2);
+  const auto e = n.publish_event({0x01});
+  n.create_clock_event();
+
+  CHECK(rec.neighbors == std::vector<domain::NodeId>{2});
+  CHECK(rec.routes == std::vector<std::pair<domain::NodeId, domain::NodeId>>{{3, 2}});
+  REQUIRE(rec.events.size() == 1);
+  CHECK(rec.events[0] == e.hash);
+  REQUIRE(rec.clock_appended.size() == 1);
+  CHECK(rec.clock_updated.empty());  // no neighbor notifications processed yet
+}
+
+TEST_CASE("PersistenceListener sees neighbor and clock-event updates learned from gossip") {
+  harness::World w;
+  auto nodes = harness::build_path(w, 2);
+  RecordingPersistence rec;
+  nodes[1]->set_persistence_listener(&rec);  // attach AFTER build_path's add_neighbor/learn_route
+  harness::gossip(w, nodes, 8);
+
+  CHECK_FALSE(rec.clock_appended.empty());  // n2 created its own clock events
+  CHECK_FALSE(rec.neighbors.empty());       // n2 learned n1's latest clock-event hash
+  CHECK_FALSE(rec.clock_updated.empty());   // n1's notifications back-linked n2's clock events
 }

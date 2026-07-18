@@ -44,6 +44,22 @@ class OrderCallback {
   virtual void on_order_aborted(const domain::Event&, const domain::Event&) = 0;
 };
 
+// Persistence hook: the Node reports each durable state change so a host can mirror it
+// into a store incrementally. The simulation leaves this unset; only the production
+// daemon installs one. Deliberately NOT fired during load()/restore(), which set state
+// in bulk (the store is already the source of that state).
+class PersistenceListener {
+ public:
+  virtual ~PersistenceListener() = default;
+  virtual void on_event_appended(const domain::Event&) = 0;
+  virtual void on_clock_event_appended(const domain::LocalClockEvent&) = 0;
+  // An already-appended local clock event gained a learned reverse cross-link
+  // (its referencing_events changed) — the host should re-persist it.
+  virtual void on_clock_event_updated(const domain::LocalClockEvent&) = 0;
+  virtual void on_neighbor_changed(const domain::Neighbor&) = 0;
+  virtual void on_route_changed(domain::NodeId destination, domain::NodeId next_hop) = 0;
+};
+
 struct NodeConfig {
   domain::Duration clock_event_interval = 0;  // > 0 → auto-create clock events on a timer
   domain::Duration discovery_expiry = 0;      // > 0 → auto-purge stale discoveries
@@ -110,6 +126,11 @@ class Node final : private ChainCallback {
             std::map<domain::NodeId, domain::Neighbor> neighbors,
             std::map<domain::NodeId, domain::NodeId> routes);
 
+  // Install (or clear, with nullptr) the persistence hook. The daemon sets this at
+  // startup so every later state change is mirrored into its store; the sim leaves it
+  // unset. Not retroactive — call load()/restore() first, then install, then run.
+  void set_persistence_listener(PersistenceListener* listener) noexcept { persistence_ = listener; }
+
  private:
   using Hash = domain::EventHash;
 
@@ -175,6 +196,7 @@ class Node final : private ChainCallback {
   ports::Signer& signer_;
   ports::Telemetry& telemetry_;
   NodeConfig config_;
+  PersistenceListener* persistence_ = nullptr;  // set by the daemon; null in the sim
 
   // DAG state (kept in the Node in Stage 2; extracted behind a Store port in Stage 3).
   std::map<domain::NodeId, domain::Neighbor> neighbors_;
