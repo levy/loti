@@ -71,6 +71,18 @@ namespace {
 
 using namespace loti;
 
+// Parse an optional trailing "<lo> <hi>" discovery window (raw Timestamp ticks) from `args`
+// starting at index `at`; absent or unparsable → unconstrained (TimeRange::all()).
+domain::TimeRange parse_range(const std::vector<std::string>& args, std::size_t at) {
+  if (at + 1 >= args.size()) return domain::TimeRange::all();
+  try {
+    return domain::TimeRange{static_cast<domain::Timestamp>(std::stoll(args[at])),
+                             static_cast<domain::Timestamp>(std::stoll(args[at + 1]))};
+  } catch (const std::exception&) {
+    return domain::TimeRange::all();
+  }
+}
+
 std::vector<std::string> tokenize(const std::string& s) {
   std::vector<std::string> out;
   std::string cur;
@@ -473,7 +485,7 @@ class Lotid final : public ChainCallback, public BoundsCallback, public OrderCal
       const auto b = resolve_event(args[2]);
       if (!a || !b) return {kNotFound, false, "no such event", {}};
       if (reply_fd >= 0) pending_order_[std::make_pair(a->hash, b->hash)] = reply_fd;
-      node_->discover_event_order(*a, *b, domain::TimeRange::all(), *this);
+      node_->discover_event_order(*a, *b, parse_range(args, 3), *this);
       return reply_fd >= 0 ? Reply{kOk, true, "", {}} : Reply{kOk, false, "", {{"status", "started"}}};
     }
     if (args.size() < 2) return {kUsage, false, "usage: " + verb + " <event>", {}};
@@ -481,10 +493,10 @@ class Lotid final : public ChainCallback, public BoundsCallback, public OrderCal
     if (!e) return {kNotFound, false, "no such event", {}};
     if (verb == "bounds") {
       if (reply_fd >= 0) pending_bounds_.insert({e->hash, reply_fd});
-      node_->discover_event_bounds(*e, domain::TimeRange::all(), *this);
+      node_->discover_event_bounds(*e, parse_range(args, 2), *this);
     } else {  // chain
       if (reply_fd >= 0) pending_chain_.insert({e->hash, reply_fd});
-      node_->discover_event_chain(*e, domain::TimeRange::all(), *this);
+      node_->discover_event_chain(*e, parse_range(args, 2), *this);
     }
     return reply_fd >= 0 ? Reply{kOk, true, "", {}} : Reply{kOk, false, "", {{"status", "started"}}};
   }
@@ -505,8 +517,8 @@ class Lotid final : public ChainCallback, public BoundsCallback, public OrderCal
       const auto b = resolve_event(args[3]);
       if (!a || !b) return {kNotFound, false, "no such event", {}};
       order_proofs_.push_back(OrderProof{reply_fd, a->hash, b->hash, {}, {}});
-      node_->discover_event_chain(*a, domain::TimeRange::all(), *this);
-      node_->discover_event_chain(*b, domain::TimeRange::all(), *this);
+      node_->discover_event_chain(*a, parse_range(args, 4), *this);
+      node_->discover_event_chain(*b, parse_range(args, 4), *this);
       return {kOk, true, "", {}};
     }
     if (sub != "bounds" && sub != "chain")
@@ -516,7 +528,7 @@ class Lotid final : public ChainCallback, public BoundsCallback, public OrderCal
     if (!e) return {kNotFound, false, "no such event", {}};
     const proof::Kind kind = (sub == "chain") ? proof::Kind::chain : proof::Kind::bounds;
     pending_proof_.insert({e->hash, ProofRequest{reply_fd, kind}});
-    node_->discover_event_chain(*e, domain::TimeRange::all(), *this);
+    node_->discover_event_chain(*e, parse_range(args, 3), *this);
     return {kOk, true, "", {}};
   }
 

@@ -345,7 +345,7 @@ Json json_chain(const domain::EventChain& c) {
 
 // Map a CLI subcommand (argv after the globals) to a daemon request line.
 // Returns "" if the command is unknown/malformed (usage printed by the caller).
-std::string to_request(const std::vector<std::string>& a) {
+std::string to_request(const std::vector<std::string>& a, const std::string& range) {
   if (a.empty()) return "";
   auto join_from = [&](std::size_t i, const std::string& verb) {
     std::string r = verb;
@@ -356,9 +356,9 @@ std::string to_request(const std::vector<std::string>& a) {
   if (c == "status") return "status";
   if (c == "events") return "events";
   if (c == "publish" && a.size() >= 2) return join_from(1, "publish");
-  if (c == "bounds" && a.size() >= 2) return "bounds " + a[1];
-  if (c == "chain" && a.size() >= 2) return "chain " + a[1];
-  if (c == "order" && a.size() >= 3) return "order " + a[1] + " " + a[2];
+  if (c == "bounds" && a.size() >= 2) return "bounds " + a[1] + range;
+  if (c == "chain" && a.size() >= 2) return "chain " + a[1] + range;
+  if (c == "order" && a.size() >= 3) return "order " + a[1] + " " + a[2] + range;
   if (c == "key") return "key";
   if (c == "stop") return "quit";
   if (c == "event" && a.size() >= 3 && a[1] == "show") return "event " + a[2];
@@ -393,13 +393,14 @@ int do_init(const std::string& home) {
 // `loti prove <bounds|order|chain> <event> [event2] --out <file>` — ask the daemon
 // to run the discovery and serialize a proof, then write the artifact to --out.
 int do_prove(const std::vector<std::string>& args, const std::string& control,
-             const std::string& out, bool quiet) {
+             const std::string& out, bool quiet, const std::string& range) {
   if (out.empty()) {
     std::fprintf(stderr, "loti: prove requires --out <file>\n");
     return 2;
   }
   std::string request;
   for (std::size_t i = 0; i < args.size(); ++i) request += (i ? " " : "") + args[i];
+  request += range;  // optional " <from> <to>" time window
   const auto reply = os::control_request(control, request);
   if (!reply) {
     std::fprintf(stderr, "loti: cannot reach daemon at %s\n", control.c_str());
@@ -621,6 +622,7 @@ void print_help(const Style& s) {
   help_opt(s, "--quiet, -q", "suppress human output (exit code only)");
   help_opt(s, "--home <dir>", "home directory for `init` (default: $HOME/.loti)");
   help_opt(s, "--out <file>", "output file for `prove`");
+  help_opt(s, "--from <t> --to <t>", "discovery time window in clock ticks (bounds/chain/order/prove)");
   help_opt(s, "--trust <node>", "trusted reference node for `verify` (repeatable)");
   help_opt(s, "--help, -h", "show this help");
 
@@ -688,6 +690,7 @@ int main(int argc, char** argv) {
   std::string home = std::getenv("HOME") ? std::string(std::getenv("HOME")) + "/.loti" : ".loti";
   std::string out;
   std::vector<std::string> trust;
+  std::string range_from, range_to;  // optional discovery time window (raw clock ticks)
   bool json = false, quiet = false, help = false;
   std::vector<std::string> args;
 
@@ -700,8 +703,14 @@ int main(int argc, char** argv) {
     else if (a == "--home" && i + 1 < argc) home = argv[++i];
     else if (a == "--out" && i + 1 < argc) out = argv[++i];
     else if (a == "--trust" && i + 1 < argc) trust.push_back(argv[++i]);
+    else if (a == "--from" && i + 1 < argc) range_from = argv[++i];
+    else if (a == "--to" && i + 1 < argc) range_to = argv[++i];
     else args.push_back(a);
   }
+  // A discovery time window is supplied as a matched pair; either alone is ignored. The daemon
+  // treats an absent window as unconstrained (TimeRange::all()).
+  std::string range_suffix;
+  if (!range_from.empty() && !range_to.empty()) range_suffix = " " + range_from + " " + range_to;
 
   Style style;
   style.on = ::isatty(STDOUT_FILENO) && std::getenv("NO_COLOR") == nullptr;
@@ -716,12 +725,12 @@ int main(int argc, char** argv) {
     return 2;
   }
   if (args[0] == "init") return do_init(home);
-  if (args[0] == "prove") return do_prove(args, control, out, quiet);
+  if (args[0] == "prove") return do_prove(args, control, out, quiet, range_suffix);
   if (args[0] == "verify") return do_verify(args, trust, json);
   if (args[0] == "proof" && args.size() >= 2 && args[1] == "show") return do_proof_show(args, json);
   if (args[0] == "db") return do_db(args, control, out, json, quiet);
 
-  const std::string request = to_request(args);
+  const std::string request = to_request(args, range_suffix);
   if (request.empty()) {
     std::fprintf(stderr, "loti: unknown or malformed command\n");
     return 2;
