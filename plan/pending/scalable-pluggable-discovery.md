@@ -187,9 +187,9 @@ is a `NodeId` list **bounded by the hop limit**, so it adds bounded packet overh
 
 ## Scalability
 
-- **Neighbor history** is `O(neighbors × time_buckets)` — small, and inherits a hard bound once
-  the multi-resolution ring prune lands
-  ([plan/pending/multi-resolution-clock-chains.md](multi-resolution-clock-chains.md)).
+- **Neighbor history** is `O(neighbors × time_buckets)` — small, and inherits the hard bound
+  already provided by the multi-resolution ring prune
+  ([plan/done/multi-resolution-clock-chains.md](../done/multi-resolution-clock-chains.md), done).
 - **Routing table** is the pressure point: `O(destinations × time_buckets)`. Bound it by
   **coarse time buckets** (the multi-resolution epoch idea — fine for recent, coarse for old),
   **sparse fill** (only what a protocol actually learns), and the **fallback** (undirected walk
