@@ -55,11 +55,11 @@ Start here depending on what you want:
 
 Each host runs three co-located application modules; one helper module builds the overlay.
 
-- **[Daemon](src/Daemon.cc)** — the protocol engine (grows the local DAG, talks UDP to
+- **[Daemon](src/core/node.cpp)** — the protocol engine (grows the local DAG, talks UDP to
   neighbors on port 666, runs the discoveries and validation).
-- **[Publisher](src/Publisher.cc)** — periodically creates random-content events.
-- **[Browser](src/Browser.cc)** — periodically picks random event(s) and requests a discovery.
-- **[NetworkConfigurator](src/NetworkConfigurator.cc)** — builds the neighbor + next-hop
+- **[Publisher](src/app/sim/Publisher.cpp)** — periodically creates random-content events.
+- **[Browser](src/app/sim/Browser.cpp)** — periodically picks random event(s) and requests a discovery.
+- **[NetworkConfigurator](src/app/sim/NetworkConfigurator.cpp)** — builds the neighbor + next-hop
   overlay from the topology once at startup.
 
 The bundled example ([sim/](sim)) is a 57-node network on 1 Gbps / 1 µs links, simulated for
@@ -68,21 +68,20 @@ one hour. See [doc/simulation.md](doc/simulation.md) for the topology and result
 ## Repository layout
 
 ```
-src/            simulation model source
-  Daemon.*      protocol engine
-  Publisher.*   event-generating app
-  Browser.*     discovery-requesting app
-  NetworkConfigurator.*   overlay/routing setup
-  Data.msg, Type.msg, Packet.msg   data structures and wire messages
-  ResultFilter.*  custom statistic filters
-  picosha.h     bundled SHA-256 (header-only)
-  Callback.h    (vestigial / unused — see paper-vs-implementation.md)
+src/            LOTI source — see doc/architecture.md
+  core/         loti-core: pure protocol logic (DAG, discoveries, hashing, wire codec)
+  adapters/     port implementations — sim/ (OMNeT++) and os/ (real sockets/disk/crypto)
+  app/          frontends — sim/ (Daemon/Publisher/Browser/NetworkConfigurator + .ned),
+                lotid/ (node daemon), loti/ (CLI client)
 sim/            runnable example
   Network.ned   57-node topology + network-level statistics
   omnetpp.ini   parameters and per-discovery configurations
   Analysis.anf  result analysis skeleton
 doc/            documentation (this set) + the paper PDF + result charts
 bin/            wrapper scripts (loti, loti_dbg, loti_release)
+scripts/        build scripts (build-core.sh, build-sim.sh)
+test/           core/harness/acceptance test suites
+plan/           design/implementation plans
 ```
 
 ## Building and running

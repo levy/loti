@@ -10,12 +10,12 @@ out.
 
 | Paper concept | In the code |
 | --- | --- |
-| Events and clock events as hash-linked data structures | `Event`, `ClockEvent`, `LocalClockEvent` in [`Data.msg`](../src/Data.msg) |
+| Events and clock events as hash-linked data structures | `Event`, `ClockEvent`, `LocalClockEvent` in [`Data.msg`](../src/core/domain/types.hpp) |
 | Clock events carry a **local** timestamp; no global clock | `LocalClockEvent.timestamp = simTime()`; comparisons are always in the originator's local time |
 | Clock event references: previous local clock event, latest neighbor clock events, unreferenced local events | `Daemon::insertClockEvent` |
 | Events reference a recent local clock event | `Daemon::insertEvent` (references the last local clock event) |
 | Optional random salt | `generateSalt` (64 bits), hashed into every event/clock event |
-| SHA-256 hashing over a canonical serialization | `calculateEventHash` / `calculateClockEventHash` using [`picosha.h`](../src/picosha.h) |
+| SHA-256 hashing over a canonical serialization | `calculateEventHash` / `calculateClockEventHash` using [`picosha2.hpp`](../src/core/hash/picosha2.hpp) |
 | Broadcast clock-event **hashes** to neighbors; do not distribute events | `LT_CLOCK_EVENT_NOTIFICATION`; events never sent on the wire |
 | Ever-growing distributed clock-event DAG with cross-links | `referencedEvents` (forward) + `referencingEvents` (reverse) |
 | Proving order by exhibiting a hash chain | `EventChain` and `validateEventChain` |
@@ -54,12 +54,12 @@ out.
 
 ## Known issues and vestigial code
 
-- **[`Callback.h`](../src/Callback.h) is dead code.** It declares `IEventChainDiscoveryCallback`
+- **`Callback.h` is dead code.** It declares `IEventChainDiscoveryCallback`
   / `IEventBoundsDiscoveryCallback` / `IEventOrderDiscoveryCallback` with `...Failed` methods,
   but it is **not `#include`d anywhere**, references `Event`/`EventChain` without including
   their definitions (so it would not even compile if used), and is superseded by the
   identically named interfaces (with `...Aborted` methods) defined inline in
-  [`Daemon.h`](../src/Daemon.h). It can be deleted.
+  [`node.hpp`](../src/core/node.hpp). It can be deleted.
 - **`EventChainDiscoveryParticipation`** (in `Data.msg`) is declared but never used.
 - **Salt space.** The salt is 64 bits of `intuniform`-derived randomness — fine for a
   simulation, but a real deployment would want a cryptographically strong, larger nonce.

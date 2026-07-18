@@ -27,26 +27,38 @@ path in `setenv`. `makefrag` (no paths), `build-core.sh` (cmake resolves), and `
 
 ### Steps
 
-- [ ] **Move:** `git mv core src/core`, `git mv adapters src/adapters`, `git mv app src/app`.
-- [ ] **`CMakeLists.txt` (root):** `core/*.cpp → src/core/*.cpp`; `app/{lotid,loti}/*.cpp →
+- [x] **Move:** `git mv core src/core`, `git mv adapters src/adapters`, `git mv app src/app`.
+- [x] **`CMakeLists.txt` (root):** `core/*.cpp → src/core/*.cpp`; `app/{lotid,loti}/*.cpp →
       src/app/…`; `adapters/os/keystore.cpp → src/adapters/os/keystore.cpp`; include dirs
       `…/core → …/src/core` (loti_core PUBLIC) and `${CMAKE_CURRENT_SOURCE_DIR} → …/src`
       (lotid+loti PRIVATE, for `adapters/os/…`).
-- [ ] **`test/core/CMakeLists.txt`:** `…/adapters/os/keystore.cpp → …/src/adapters/os/…`;
+- [x] **`test/core/CMakeLists.txt`:** `…/adapters/os/keystore.cpp → …/src/adapters/os/…`;
       include `${CMAKE_SOURCE_DIR} → …/src` (test/doctest + test/ includes unchanged).
-- [ ] **`scripts/build-sim.sh`:** excludes `-X adapters/os -X app/lotid -X app/loti →
+- [x] **`scripts/build-sim.sh`:** excludes `-X adapters/os -X app/lotid -X app/loti →
       -X src/adapters/os -X src/app/lotid -X src/app/loti`; includes `-I. -Icore → -Isrc
       -Isrc/core`; update the header comment.
-- [ ] **`setenv`:** `-n $LOTI_ROOT/app/sim → $LOTI_ROOT/src/app/sim`.
-- [ ] **`.gitignore`:** update the descriptive comment (`core/…`, `app/…` → `src/…`); anchored
+- [x] **`setenv`:** `-n $LOTI_ROOT/app/sim → $LOTI_ROOT/src/app/sim`.
+- [x] **`.gitignore`:** update the descriptive comment (`core/…`, `app/…` → `src/…`); anchored
       `/loti*` patterns unaffected.
-- [ ] **`src/core/{node,wire/packets,domain/types}.hpp`:** the deferred "faithful port of
+- [x] **`src/core/{node,wire/packets,domain/types}.hpp`:** the deferred "faithful port of
       src/…" comments now dangle (old `src/` gone) — rewrite to say what the code is.
-- [ ] **Docs:** `README.md` (repo-layout + Simulation-model links), `doc/implementation.md`
+- [x] **Docs:** `README.md` (repo-layout + Simulation-model links), `doc/implementation.md`
       (path refs + the 14 old-src links), `doc/architecture.md` ("Proposed directory layout" +
       path refs), `doc/paper-vs-implementation.md` — retarget `core/`/`adapters/`/`app/` →
       `src/…` and clear the retired-`src/` references. `plan/done/` keeps its history.
 
-**Verify:** `scripts/build-core.sh` (core+lotid+loti+tests green); the OMNeT++ sim rebuilds
-(`build-sim.sh`) and `libloti.so` links; `test/acceptance/run.sh` 10/10.
-**Commit:** "reorg: consolidate C++ source under src/". Then offer to ff `master`.
+**Verify:** ✅ `build-core.sh` green (loti_core + lotid + loti + tests); the OMNeT++ sim
+rebuilds `libloti.so` from the same 9 `src/…` TUs (no production files swept in); `acceptance
+run.sh` 10/10. Done in two commits: `6d1ef6b` (move + build config + core comments) and the docs
+commit (path retargeting across README/cli/packet-format/architecture/implementation/
+paper-vs-implementation; layout blocks; removed-file de-linking; implementation.md banner — every
+link verified to resolve).
+
+**Caveat (separate follow-up):** `doc/architecture.md` (Migration section), `doc/implementation.md`,
+and `doc/paper-vs-implementation.md` carry **pre-refactor prose** from before M1–M4 — dated
+framing ("today these are OMNeT++ message classes", "the current `Daemon.cc`"), resolved-issue
+claims ("`Callback.h` … can be deleted" — already deleted), and old method names
+(`Daemon::insertClockEvent`). The reorg only retargeted their *links*; a proper rewrite/retirement
+of those three docs to the post-MVP architecture is its own task, not part of this structural move.
+
+**Commit:** `6d1ef6b` "reorg: consolidate C++ source under src/" + the docs commit.

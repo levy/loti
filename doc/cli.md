@@ -4,8 +4,8 @@ This document specifies the command-line interface for a **deployable LOTI node*
 that turns the [simulation model](implementation.md) into a viable product. It defines the full
 command surface, the daemon/client architecture, and the portable proof format.
 
-A **working subset is already implemented**: the [`lotid`](../app/lotid/lotid.cpp) daemon and
-[`loti`](../app/loti/loti.cpp) client cover `init`, the control-socket RPC, `peer add`/`peer ls`,
+A **working subset is already implemented**: the [`lotid`](../src/app/lotid/lotid.cpp) daemon and
+[`loti`](../src/app/loti/loti.cpp) client cover `init`, the control-socket RPC, `peer add`/`peer ls`,
 `publish`, `events`/`event show`/`event find`, the three discoveries (`bounds` / `chain` / `order`,
 including remote `<creator>:<hash>` addressing), Ed25519 identity and signing, snapshot persistence
 with `db stat`/`backup`/`restore`, and portable, offline-verifiable proofs (`prove` / `verify` /

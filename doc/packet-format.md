@@ -5,10 +5,10 @@ node** — the on-the-wire protocol spoken between running `lotid` daemons. It i
 reference: no knowledge of the simulator (or of OMNeT++) is required or assumed.
 
 A node sends exactly **three kinds of datagram**. Each is a flat, length-prefixed byte string
-built by the codec in [`core/wire/`](../core/wire/): the message grammar is in
-[`packets.hpp`](../core/wire/packets.hpp) / [`packets.cpp`](../core/wire/packets.cpp), and the
-primitive read/write rules in [`codec.hpp`](../core/wire/codec.hpp). The field types are the
-plain domain structs in [`core/domain/types.hpp`](../core/domain/types.hpp).
+built by the codec in [`src/core/wire/`](../src/core/wire/): the message grammar is in
+[`packets.hpp`](../src/core/wire/packets.hpp) / [`packets.cpp`](../src/core/wire/packets.cpp), and the
+primitive read/write rules in [`codec.hpp`](../src/core/wire/codec.hpp). The field types are the
+plain domain structs in [`src/core/domain/types.hpp`](../src/core/domain/types.hpp).
 
 > **One serializer, both runtimes.** These exact bytes are produced by `loti-core`. The
 > deployable daemon (`lotid`) puts them on a real UDP socket; the research simulator wraps the
@@ -49,7 +49,7 @@ All multi-byte integers are **big-endian (network byte order)**.
 | `blob` | `u32 length` then *length* raw bytes | Any variable-length byte string (hashes, content, signatures). A zero-length blob is 4 bytes (`length = 0`). |
 | `array<T>` | `u32 count` then *count* × `T` | Repeated elements, each encoded in turn. |
 
-The decoder ([`Reader`](../core/wire/codec.hpp)) validates every length against the remaining
+The decoder ([`Reader`](../src/core/wire/codec.hpp)) validates every length against the remaining
 buffer and throws `wire: truncated datagram` on underrun, so a short or malformed datagram is
 rejected rather than misread.
 
@@ -75,7 +75,7 @@ How each logical field type maps onto the primitives above:
 ## Datagram header
 
 **Every** datagram begins with the same 9-byte header (`write_header` in
-[`packets.cpp`](../core/wire/packets.cpp)):
+[`packets.cpp`](../src/core/wire/packets.cpp)):
 
 | Offset | Size | Field | Encoding | Meaning |
 | --- | --- | --- | --- | --- |
@@ -189,7 +189,7 @@ signature.
 ## Composite structures (inside a chain response)
 
 These structures appear only within `EventChain`. Field order below is the exact byte order the
-codec writes ([`codec.hpp`](../core/wire/codec.hpp)).
+codec writes ([`codec.hpp`](../src/core/wire/codec.hpp)).
 
 ### `EventReference` — 44 B (SHA-256, fixed)
 
@@ -216,7 +216,7 @@ count.
 
 > **The event content `data` is on the wire.** A chain response transmits the target event's
 > full payload, not just its hash. (Note: the separate *byte-accounting* helper used for
-> bandwidth statistics, `event_size_bytes` in [`core/hash/hashing.hpp`](../core/hash/hashing.hpp),
+> bandwidth statistics, `event_size_bytes` in [`src/core/hash/hashing.hpp`](../src/core/hash/hashing.hpp),
 > deliberately **excludes** `data` — that is a modeling choice for size statistics, not a claim
 > about the encoded bytes. The actual datagram includes it.)
 
@@ -272,7 +272,7 @@ adds 64 bytes per signed `Event`/`ClockEvent`.
 
 The `hash` in every event/clock event is a SHA-256 digest, and it is what the whole scheme
 hangs on. Importantly, the hash is computed over a **fixed canonical layout that is separate from
-the transport encoding above** (defined in [`core/hash/hashing.hpp`](../core/hash/hashing.hpp)) —
+the transport encoding above** (defined in [`src/core/hash/hashing.hpp`](../src/core/hash/hashing.hpp)) —
 so a node can recompute and verify any hash it receives:
 
 - **Event hash** = `SHA-256( data ‖ salt(u64 BE) ‖ for each referenced event: creator(u64 BE) ‖ hash bytes )`.
@@ -338,12 +338,12 @@ Notes:
 
 ## See also
 
-- [`core/wire/packets.hpp`](../core/wire/packets.hpp) · [`packets.cpp`](../core/wire/packets.cpp)
+- [`src/core/wire/packets.hpp`](../src/core/wire/packets.hpp) · [`packets.cpp`](../src/core/wire/packets.cpp)
   — the three datagram definitions and their encode/decode.
-- [`core/wire/codec.hpp`](../core/wire/codec.hpp) — the primitive `Writer`/`Reader` (big-endian
+- [`src/core/wire/codec.hpp`](../src/core/wire/codec.hpp) — the primitive `Writer`/`Reader` (big-endian
   ints, length-prefixed blobs/arrays).
-- [`core/domain/types.hpp`](../core/domain/types.hpp) — the field types.
-- [`core/hash/hashing.hpp`](../core/hash/hashing.hpp) — the canonical hashing layout and the
+- [`src/core/domain/types.hpp`](../src/core/domain/types.hpp) — the field types.
+- [`src/core/hash/hashing.hpp`](../src/core/hash/hashing.hpp) — the canonical hashing layout and the
   byte-accounting helpers.
 - [architecture.md](architecture.md) — how one core serializer feeds both the real daemon and
   the simulator.

@@ -15,9 +15,9 @@ the DAG grows, how the three discoveries route and build chains, and how chains 
 The architecture's whole job is to isolate the first set of concerns so the second can be
 written once.
 
-> **Status (MVP, 2026-07):** this architecture is **realized**. The pure core (`core/`, no
-> OMNeT++/INET/OS deps) runs behind six ports; the simulation drives it via `adapters/sim/` +
-> `app/sim/`, and the production node via `adapters/os/` + `app/lotid` + `app/loti`. Both targets
+> **Status (MVP, 2026-07):** this architecture is **realized**. The pure core (`src/core/`, no
+> OMNeT++/INET/OS deps) runs behind six ports; the simulation drives it via `src/adapters/sim/` +
+> `src/app/sim/`, and the production node via `src/adapters/os/` + `src/app/lotid` + `src/app/loti`. Both targets
 > are green: the OMNeT++ `SimpleNetwork` example runs on the core with unchanged statistics, and
 > the production node passes an end-to-end acceptance suite (restart survival, backup/restore,
 > and a multi-node offline-verifiable proof over real UDP —
@@ -79,10 +79,10 @@ the logic that is *identical* in both runtimes:
 
 - **Domain model** — `Event`, `ClockEvent`, `LocalClockEvent`, `EventReference`, `EventChain`,
   and the discovery records, as plain structs (today these are OMNeT++ message classes in
-  [`Data.msg`](../src/Data.msg); see [Migration](#migration-from-the-current-code)).
+  [`types.hpp`](../src/core/domain/types.hpp); see [Migration](#migration-from-the-current-code)).
 - **Hashing & canonical serialization** — SHA-256 over the fixed byte layout in
   `calculateEventHash` / `calculateClockEventHash`, using the already-portable header-only
-  [`picosha.h`](../src/picosha.h). The wire encoding of every packet lives here too, so both
+  [`picosha2.hpp`](../src/core/hash/picosha2.hpp). The wire encoding of every packet lives here too, so both
   transports carry identical bytes.
 - **DAG maintenance** — `insertEvent`, `insertClockEvent`, the neighbor cross-link bookkeeping
   (`referencedEvents` / `referencingEvents`), and the hash→index lookups.
@@ -100,7 +100,7 @@ singletons, no thread-locals, no `static` mutable data.
 
 ### Core public API
 
-The core exposes the same surface the current [`Daemon`](../src/Daemon.h) exposes to its
+The core exposes the same surface the current [`Daemon`](../src/core/node.hpp) exposes to its
 sibling modules, plus the peering hooks — this is what both frontends call:
 
 ```cpp
@@ -153,7 +153,7 @@ Notes:
   dies with the run, which is fine); production uses a persistent store that survives restarts
   and backs every future proof. The core's access pattern is identical.
 - **Neighbor/routing state** is core state fed through `addNeighbor` / `learnRoute`. The
-  simulation's [`NetworkConfigurator`](../src/NetworkConfigurator.cc) computes it once globally;
+  simulation's [`NetworkConfigurator`](../src/app/sim/NetworkConfigurator.cpp) computes it once globally;
   the production peering subsystem calls the same methods as peers come and go.
 
 ## Assembling the two runtimes
@@ -162,17 +162,17 @@ Notes:
 
 The existing OMNeT++ modules become **thin adapters**:
 
-- [`Daemon`](../src/Daemon.cc) shrinks to: own a `Node`, construct it with the simulation port
+- [`Daemon`](../src/app/sim/Daemon.cpp) shrinks to: own a `Node`, construct it with the simulation port
   bundle (`SimClock`, `SimScheduler`, `SimTransport`, `SimRng`, `InMemoryStore`, `StubSigner`,
   `NedConfig`, `SignalTelemetry`), forward `handleMessage` self-messages to `Node::onTimer`,
   forward `socketDataArrived` bytes to `Node::onPacketReceived`, and expose `Node`'s API to
   `Publisher`/`Browser`.
-- [`Publisher`](../src/Publisher.cc) / [`Browser`](../src/Browser.cc) keep their timers but call
+- [`Publisher`](../src/app/sim/Publisher.cpp) / [`Browser`](../src/app/sim/Browser.cpp) keep their timers but call
   the `Node` API (`publishEvent`, `discover*`) instead of protocol internals.
-- [`NetworkConfigurator`](../src/NetworkConfigurator.cc) calls `addNeighbor`/`learnRoute` on each
+- [`NetworkConfigurator`](../src/app/sim/NetworkConfigurator.cpp) calls `addNeighbor`/`learnRoute` on each
   node instead of writing private fields.
 - `SignalTelemetry` translates core telemetry hooks into the exact `@signal`/`@statistic`
-  declarations already in [`Daemon.ned`](../src/Daemon.ned) — so all existing charts keep
+  declarations already in [`Daemon.ned`](../src/app/sim/Daemon.ned) — so all existing charts keep
   working unchanged.
 
 Thousands of `Node` instances run in one process under the OMNeT++ scheduler; virtual time and
@@ -244,8 +244,9 @@ The core calls `Telemetry::record(...)` at fixed points — event created, clock
 each discovery started / aborted / completed, chain length/interval, discovery latency. One set
 of hook points, two sinks:
 
-- **Simulation:** `SignalTelemetry` emits the OMNeT++ signals in [`Daemon.ned`](../src/Daemon.ned)
-  and the derived quantities computed by the [result filters](../src/ResultFilter.cc); the
+- **Simulation:** `SignalTelemetry` emits the OMNeT++ signals in [`Daemon.ned`](../src/app/sim/Daemon.ned)
+  and the derived quantities computed by the result filters (removed — the sim now emits
+  precomputed scalar signals directly; see [`src/adapters/sim/telemetry.hpp`](../src/adapters/sim/telemetry.hpp)); the
   existing `.anf`/charts are unchanged.
 - **Production:** `LogMetricsTelemetry` writes structured logs and Prometheus counters/histograms
   (surfaced by `loti stats` / `loti metrics`).
@@ -271,21 +272,22 @@ rule is being honored.
 ## Proposed directory layout
 
 ```
-core/                    loti-core — pure protocol, no OMNeT++/OS deps
-  domain/                Event, ClockEvent, EventChain, … (plain structs)
-  hash/                  picosha.h + canonical serialization
-  dag/                   insertEvent/insertClockEvent, cross-links, indices
-  discovery/             chain/bounds/order + the four chain primitives
-  validate/              chain validation + proof build/verify
-  ports/                 Clock, Scheduler, Transport, Rng, Store, Signer, Config, Telemetry (abstract)
-  node.{h,cpp}           the Node API and orchestration
-adapters/
-  sim/                   OMNeT++ port implementations
-  os/                    wall-clock, reactor, UDP/QUIC, CSPRNG, persistent store, Ed25519, toml
-app/
-  sim/                   Daemon/Publisher/Browser/NetworkConfigurator (thin cSimpleModules) + .ned
-  lotid/                 the daemon main + RPC server
-  loti/                  the CLI client (+ offline verify)
+src/
+  core/                  loti-core — pure protocol, no OMNeT++/OS deps
+    domain/                Event, ClockEvent, EventChain, … (plain structs)
+    hash/                  picosha.h + canonical serialization
+    dag/                   insertEvent/insertClockEvent, cross-links, indices
+    discovery/             chain/bounds/order + the four chain primitives
+    validate/              chain validation + proof build/verify
+    ports/                 Clock, Scheduler, Transport, Rng, Store, Signer, Config, Telemetry (abstract)
+    node.{h,cpp}           the Node API and orchestration
+  adapters/
+    sim/                   OMNeT++ port implementations
+    os/                    wall-clock, reactor, UDP/QUIC, CSPRNG, persistent store, Ed25519, toml
+  app/
+    sim/                   Daemon/Publisher/Browser/NetworkConfigurator (thin cSimpleModules) + .ned
+    lotid/                 the daemon main + RPC server
+    loti/                  the CLI client (+ offline verify)
 sim/                     example networks, omnetpp.ini, Analysis.anf  (unchanged)
 test/
   core/                  fast unit tests of loti-core with fake ports
@@ -328,11 +330,11 @@ its port inputs. Two payoffs:
 
 ## Migration from the current code
 
-The current [`Daemon.cc`](../src/Daemon.cc) already isolates most protocol logic in private
+The current [`Daemon.cc`](../src/core/node.cpp) already isolates most protocol logic in private
 methods; it is coupled to OMNeT++ mainly at a handful of seams. An incremental path:
 
 1. **De-OMNeT++ the domain model.** Replace the `cObject`-derived types in
-   [`Data.msg`](../src/Data.msg) with plain structs in `core/domain/`, and move
+   [`Data.msg`](../src/core/domain/types.hpp) with plain structs in `src/core/domain/`, and move
    `calculateEventHash` / serialization off INET's `MemoryOutputStream` onto a core serializer
    (picosha stays). Keep the `.msg` packet types only as a thin sim-transport wrapper around the
    core's canonical bytes.
@@ -340,7 +342,7 @@ methods; it is coupled to OMNeT++ mainly at a handful of seams. An incremental p
    `scheduleAt`/self-messages → `Scheduler`, `socket`/`sendToNeighbor` → `Transport`,
    `generateSalt` → `Rng`, the member `vector`/`map`s → `Store`, `par(...)` → `Config`,
    `emit(...)` → `Telemetry`.
-3. **Extract `Node`.** Move the protocol methods verbatim into `core/node`, taking ports by
+3. **Extract `Node`.** Move the protocol methods verbatim into `src/core/node`, taking ports by
    reference; shrink `Daemon` to the adapter described above. This is mostly mechanical because
    the logic already lives in free-standing helpers.
 4. **Add the production adapters and `lotid`/`loti`**, plus persistence and signing (the
