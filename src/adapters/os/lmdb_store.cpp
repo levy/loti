@@ -341,7 +341,13 @@ void LmdbStore::reset() {
 }
 
 void LmdbStore::grow_map() {
-  map_size_ *= 2;
+  std::size_t next = map_size_ * 2;
+  if constexpr (kMaxMapSize != 0) {  // 32-bit: never grow past the address-space ceiling
+    if (map_size_ >= kMaxMapSize || next < map_size_)  // already at the cap, or would overflow
+      throw LmdbStoreFull();
+    if (next > kMaxMapSize) next = kMaxMapSize;  // one last step up to the ceiling
+  }
+  map_size_ = next;
   check(mdb_env_set_mapsize(env_, map_size_), "set_mapsize(grow)");
 }
 

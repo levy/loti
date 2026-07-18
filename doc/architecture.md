@@ -147,6 +147,15 @@ snapshot through the wire codec — the file-store adapter — remains the `db-b
 migration format.) Hashing is shared, not swapped — it must be identical everywhere; only signing
 differs (unsigned in the simulation, Ed25519 in production).
 
+The store's LMDB environment is sized by a mapsize (`--store-mapsize`, in GiB), which is virtual
+address space grown on demand. On a **64-bit** build it defaults to 16 GiB and grows without a
+practical cap. On a **32-bit** build (e.g. a Pi Zero / Zero W, ARMv6) the mmap must fit in the
+~2–3 GiB per-process address space, so the default is 1 GiB and both the flag and auto-grow are
+capped at ~1.5 GiB (`LmdbStore::kMaxMapSize`). Because an LMDB env can never exceed its mapsize,
+that ceiling also bounds a 32-bit node's **total stored DAG over its lifetime** (~1–2 years at the
+paper's GB/year) — the 64-bit Zero 2 W has no such ceiling and is the long-life target. See
+[`doc/embedded.md`](embedded.md).
+
 Neighbor/routing state is core state fed through `add_neighbor` / `learn_route`: the simulation's
 [`NetworkConfigurator`](../src/app/sim/NetworkConfigurator.cpp) computes it once globally; the
 production peering commands (`peer add`) call the same methods.

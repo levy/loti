@@ -28,12 +28,33 @@ struct LmdbMapFull : std::runtime_error {
   LmdbMapFull() : std::runtime_error("lmdb: map full (MDB_MAP_FULL)") {}
 };
 
+// Thrown by grow_map() when the environment cannot grow any further — on a 32-bit
+// build the mmap has reached the per-process address-space ceiling (kMaxMapSize).
+// Unlike LmdbMapFull (recoverable: grow and retry) this is terminal for the build's
+// word size; the caller should surface it, not retry.
+struct LmdbStoreFull : std::runtime_error {
+  LmdbStoreFull()
+      : std::runtime_error("lmdb: store full (32-bit address-space limit reached)") {}
+};
+
 class LmdbStore {
  public:
   // On-disk layout version, stamped in the `meta` sub-DB; bump only on a format change.
   static constexpr std::uint64_t kFormatVersion = 1;
+
+  // Hard ceiling on the env's mapsize. The map is virtual address space, so on 64-bit
+  // this is effectively unbounded and left at 0 = "no cap". On 32-bit the mmap must fit
+  // in the ~2–3 GiB per-process address space, so it is capped at 1.5 GiB — both
+  // --store-mapsize (clamped in lotid) and grow_map() honor it. NB: because an LMDB env
+  // can never exceed its mapsize, this also bounds a 32-bit node's *total* stored DAG.
+  static constexpr std::size_t kMaxMapSize =
+      sizeof(std::size_t) >= 8 ? std::size_t{0} : (std::size_t{3} << 29);  // 0 = none / 1.5 GiB
+
   // Default env size cap — virtual address space, backed only as used; grown on MDB_MAP_FULL.
-  static constexpr std::size_t kDefaultMapSize = std::size_t{16} << 30;  // 16 GiB
+  // Word-size-aware: on 32-bit `size_t{16} << 30` (2^34) wraps to 0, and 16 GiB can't be
+  // mmap'd anyway, so start at 1 GiB (safely under kMaxMapSize).
+  static constexpr std::size_t kDefaultMapSize =
+      sizeof(std::size_t) >= 8 ? (std::size_t{16} << 30) : (std::size_t{1} << 30);  // 16 / 1 GiB
 
   // Opens (creating if absent) the LMDB environment stored at the single file `path`
   // (LMDB keeps its lock file alongside as `<path>-lock`). Throws std::runtime_error on

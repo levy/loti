@@ -31,16 +31,20 @@ is `2^34`, which wraps to **0** in a 32-bit `size_t`. Even a correct 16 GiB can'
 ([src/app/lotid/lotid.cpp:820](../../src/app/lotid/lotid.cpp), `atof × 2³⁰` → `size_t`) also
 overflows for values ≥ 4 on 32-bit.
 
-- [ ] **A1.** Make `kDefaultMapSize` word-size-aware: `sizeof(std::size_t) >= 8 ? (16<<30) : (1<<30)`
-  (16 GiB on 64-bit, 1 GiB on 32-bit — safely under the 32-bit mmap ceiling).
-- [ ] **A2.** Validate/clamp `--store-mapsize`: compute in `double`, reject non-positive, and on 32-bit
+- [x] **A1.** Make `kDefaultMapSize` word-size-aware: `sizeof(std::size_t) >= 8 ? (16<<30) : (1<<30)`
+  (16 GiB on 64-bit, 1 GiB on 32-bit — safely under the 32-bit mmap ceiling). *Done: also added
+  `kMaxMapSize` (0 on 64-bit = uncapped, 1.5 GiB on 32-bit) as the single source of truth for the ceiling.*
+- [x] **A2.** Validate/clamp `--store-mapsize`: compute in `double`, reject non-positive, and on 32-bit
   clamp to a safe max (~1.5 GiB) with a clear warning; guard the `double → size_t` cast against overflow.
-- [ ] **A3.** Cap `grow_map()` on 32-bit: don't double past the safe ceiling; when the map cannot grow
+  *Done: `parse_mapsize_gib()` in lotid.cpp; clamps to `LmdbStore::kMaxMapSize`.*
+- [x] **A3.** Cap `grow_map()` on 32-bit: don't double past the safe ceiling; when the map cannot grow
   further, surface a clear "store full (32-bit address-space limit)" error instead of a raw LMDB code.
-- [ ] **A4.** Tests/docs: a doctest asserting the default is non-zero and `≤` a sane bound; document the
+  *Done: `grow_map()` throws `LmdbStoreFull`; on 64-bit (`kMaxMapSize==0`) behavior is unchanged.*
+- [x] **A4.** Tests/docs: a doctest asserting the default is non-zero and `≤` a sane bound; document the
   **32-bit lifetime ceiling** — an LMDB env is capped at the mmap size (~2 GiB on 32-bit), so a 32-bit
   node's *total* stored DAG is bounded (~1–2 years at the paper's GB/year). The Zero 2 W (64-bit) has no
-  such ceiling. *(Real 32-bit compile-and-run validation comes from Part B.)*
+  such ceiling. *(Real 32-bit compile-and-run validation comes from Part B.)* *Done: doctest +
+  note in doc/architecture.md.*
 
 **Risk:** low. Self-contained; no behavior change on 64-bit.
 

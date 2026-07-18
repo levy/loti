@@ -85,6 +85,20 @@ TEST_CASE("LmdbStore opens, stamps a version, and reopens") {
   }
 }
 
+TEST_CASE("LmdbStore default and max mapsize are word-size-consistent") {
+  // On 32-bit, `size_t{16} << 30` (2^34) would wrap to 0; the word-size-aware default
+  // must stay a real, mmappable size that fits under the address-space ceiling.
+  CHECK(LmdbStore::kDefaultMapSize > 0);
+  if constexpr (sizeof(std::size_t) >= 8) {
+    CHECK(LmdbStore::kMaxMapSize == 0);  // 64-bit: address space is effectively unbounded
+    CHECK(LmdbStore::kDefaultMapSize == (std::size_t{16} << 30));
+  } else {
+    CHECK(LmdbStore::kMaxMapSize > 0);                            // 32-bit: a real ceiling
+    CHECK(LmdbStore::kDefaultMapSize <= LmdbStore::kMaxMapSize);  // the default fits under it
+    CHECK(LmdbStore::kMaxMapSize <= (std::size_t{2} << 30));      // and under the ~2 GiB space
+  }
+}
+
 TEST_CASE("LmdbStore round-trips a committed batch") {
   TempEnv env("roundtrip");
 

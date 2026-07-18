@@ -41,6 +41,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <limits>
 #include <map>
 #include <memory>
 #include <optional>
@@ -788,6 +789,30 @@ class Lotid final : public ChainCallback, public BoundsCallback, public OrderCal
 
 double parse_seconds(const char* s) { return std::atof(s); }
 
+// Parse --store-mapsize (a value in GiB) into a byte count. Computed in double so the
+// GiB→bytes multiply can't overflow a 32-bit size_t the way `atof * 2^30 -> size_t`
+// does; a non-positive value is rejected; the result is clamped to what size_t can hold
+// and, on a 32-bit build, to the store's address-space ceiling (with a warning).
+std::size_t parse_mapsize_gib(const char* s) {
+  const double gib = std::atof(s);
+  if (!(gib > 0.0)) {
+    std::fprintf(stderr, "--store-mapsize must be a positive number of GiB\n");
+    std::exit(2);
+  }
+  double bytes = gib * 1073741824.0;
+  const double max_size_t = static_cast<double>(std::numeric_limits<std::size_t>::max());
+  if (bytes > max_size_t) bytes = max_size_t;  // never wrap the size_t cast
+  auto out = static_cast<std::size_t>(bytes);
+  if (os::LmdbStore::kMaxMapSize != 0 && out > os::LmdbStore::kMaxMapSize) {
+    std::fprintf(stderr,
+                 "[lotid] --store-mapsize %.2f GiB exceeds this build's %.2f GiB "
+                 "address-space limit; clamping\n",
+                 gib, os::LmdbStore::kMaxMapSize / 1073741824.0);
+    out = os::LmdbStore::kMaxMapSize;
+  }
+  return out;
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -816,8 +841,7 @@ int main(int argc, char** argv) {
     else if (a == "--clock-interval") clock_interval = parse_seconds(next("--clock-interval"));
     else if (a == "--expiry") expiry = parse_seconds(next("--expiry"));
     else if (a == "--store") store_path = next("--store");
-    else if (a == "--store-mapsize")
-      store_map_size = static_cast<std::size_t>(std::atof(next("--store-mapsize")) * 1073741824.0);
+    else if (a == "--store-mapsize") store_map_size = parse_mapsize_gib(next("--store-mapsize"));
     else if (a == "--key") key_path = next("--key");
     else if (a == "--control") control_path = next("--control");
     else if (a == "--verbose" || a == "-v") verbose = true;
