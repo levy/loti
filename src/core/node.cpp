@@ -81,6 +81,11 @@ void Node::create_clock_event(std::uint32_t chain) {
     store_.prune_chain(chain, config_.chains[chain].keep);
 }
 
+void Node::gc() {
+  for (std::uint32_t chain = 0; chain < config_.chains.size(); ++chain)
+    if (config_.chains[chain].keep > 0) store_.prune_chain(chain, config_.chains[chain].keep);
+}
+
 void Node::purge_discoveries() {
   const Timestamp limit = clock_.now() - config_.discovery_expiry;
   for (auto it = chain_discoveries_.begin(); it != chain_discoveries_.end();) {

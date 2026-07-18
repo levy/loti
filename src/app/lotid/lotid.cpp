@@ -211,6 +211,26 @@ struct Reply {
   os::ControlFields fields;
 };
 
+// The default multi-resolution clock schedule derived from the fast interval `clock_ns`:
+// kLevels geometrically spaced chains (each ×kFactor slower), each ring-pruned to kKeep clock
+// events — so total clock-event storage is bounded (~kLevels·kKeep) while an old event stays
+// orderable at a coarser resolution once the fast chain has pruned its era. A zero/negative
+// interval yields a single unbounded chain (no timer). See
+// plan/pending/multi-resolution-clock-chains.md.
+inline std::vector<ChainConfig> default_chain_schedule(domain::Duration clock_ns) {
+  if (clock_ns <= 0) return {ChainConfig{clock_ns, 0}};
+  constexpr int kLevels = 4;
+  constexpr domain::Duration kFactor = 8;
+  constexpr std::size_t kKeep = 4096;
+  std::vector<ChainConfig> chains;
+  domain::Duration interval = clock_ns;
+  for (int level = 0; level < kLevels; ++level) {
+    chains.push_back(ChainConfig{interval, kKeep});
+    interval *= kFactor;
+  }
+  return chains;
+}
+
 class Lotid final : public ChainCallback, public BoundsCallback, public OrderCallback {
  public:
   Lotid(domain::NodeId id, std::uint16_t port, domain::Duration clock_ns,
@@ -243,11 +263,9 @@ class Lotid final : public ChainCallback, public BoundsCallback, public OrderCal
       lmdb_ = lmdb.get();
       store_ = std::move(lmdb);
     }
-    // Single-chain schedule for now (behavior unchanged); the multi-resolution default
-    // schedule is adopted once ring pruning lands (see plan multi-resolution-clock-chains).
     node_ = std::make_unique<Node>(
         node_id_, NodePorts{clock_, scheduler_, transport_, rng_, *signer_, telemetry_, *store_},
-        NodeConfig{{ChainConfig{clock_ns, 0}}, expiry_ns});
+        NodeConfig{default_chain_schedule(clock_ns), expiry_ns});
   }
 
   domain::NodeId node_id() const { return node_id_; }
@@ -416,6 +434,11 @@ class Lotid final : public ChainCallback, public BoundsCallback, public OrderCal
       return {kOk, false, "", {{"store", lmdb_ ? lmdb_->path() : "(in-memory)"}}};
     }
     if (verb == "db-stat") return db_stat();
+    if (verb == "db-gc") {
+      node_->gc();  // ring-prune each chain to its keep (per-tick pruning already keeps it there)
+      return {kOk, false, "", {{"gc", "done"}, {"chains", std::to_string(node_->chain_count())},
+                               {"clockEvents", std::to_string(node_->clock_event_count())}}};
+    }
     if (verb == "db-backup") {
       if (args.size() < 2) return {kUsage, false, "usage: db-backup <path>", {}};
       os::FileStore(args[1]).save(node_->snapshot());
@@ -686,19 +709,22 @@ class Lotid final : public ChainCallback, public BoundsCallback, public OrderCal
     if (lmdb_) lmdb_->sync();
   }
 
-  // Store status: the retention invariant is that local events and the local clock
-  // chain are NEVER pruned (they are the node's only record and back every future
-  // proof), so the counts here only ever grow across a restart/backup/restore. The
-  // node keeps no expendable derived state to garbage-collect at MVP scale.
+  // Store status. Retention is now multi-resolution: the node runs one or more clock chains,
+  // each ring-pruned to its configured capacity. A pruned clock event never loses an event's
+  // ordering — it only widens the provable bounds to the next-coarser retained chain (events
+  // pin into every chain). With a single unbounded chain (the current default) nothing is
+  // dropped and the counts only grow.
   Reply db_stat() {
     const auto snapshot = node_->snapshot();
     Reply r{kOk, false, "", {}};
     r.fields.emplace_back("store", lmdb_ ? lmdb_->path() : "(in-memory)");
     r.fields.emplace_back("events", std::to_string(node_->event_count()));
     r.fields.emplace_back("clockEvents", std::to_string(node_->clock_event_count()));
+    r.fields.emplace_back("chains", std::to_string(node_->chain_count()));
     r.fields.emplace_back("peers", std::to_string(peers_.size()));
     r.fields.emplace_back("snapshotBytes", std::to_string(snapshot.size()));
-    r.fields.emplace_back("retention", "local events + clock chain never dropped");
+    r.fields.emplace_back("retention",
+                          "per-chain ring; events stay boundable at the coarsest retained chain");
     if (lmdb_) {
       struct stat st {};
       r.fields.emplace_back("diskBytes",

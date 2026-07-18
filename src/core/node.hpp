@@ -105,6 +105,10 @@ class Node final : private ChainCallback {
   // Number of clock chains this node runs (at least 1).
   [[nodiscard]] std::size_t chain_count() const noexcept { return num_chains_; }
 
+  // Prune every chain to its configured ring capacity — the manual form of the per-tick
+  // prune (backs `db gc`). A no-op for chains with keep == 0 (unbounded).
+  void gc();
+
   // Read access — the DAG lives in the store; these are thin reads through it.
   [[nodiscard]] domain::NodeId id() const noexcept { return id_; }
   [[nodiscard]] std::size_t event_count() const { return store_.event_count(); }

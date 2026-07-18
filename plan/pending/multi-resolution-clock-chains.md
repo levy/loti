@@ -248,7 +248,7 @@ seq / gap-tolerant storage is deferred to Part 3 (pruning), which is the first t
 **Risk:** medium — realized. Single-chain (`num_chains == 1`) is byte-for-byte the old behavior
 (all existing tests pass unchanged); `test_chains.cpp` drives 2 chains.
 
-### Part 3 — Conservative-pruning ring (the store) ✅ (3a/3b) · 3c/3d pending
+### Part 3 — Conservative-pruning ring (the store) ✅
 
 - [x] **3a.** Store is now **gap-tolerant**: clock events keyed by a monotonic seq (`std::map`
   in-memory; keyed record in LMDB) — pruning deletes records, leaving sparse seqs. Reads by live
@@ -260,9 +260,12 @@ seq / gap-tolerant storage is deferred to Part 3 (pruning), which is the first t
   when `keep > 0`. Conservative by construction (events pin into every chain), verified end-to-end
   by `test_chains.cpp`: after churning chain 0 past its ring, an old event is **still boundable via
   chain 1**, and the discovered enclosing chain is all chain 1.
-- [ ] **3c.** `db gc [--keep <dur>]` in `lotid` — run the per-chain ring prune.
-- [ ] **3d.** `db stat` retention string / `store.retain` config → the new invariant. Also switch
-  `lotid` to a default multi-resolution schedule (until now it runs a single unbounded chain).
+- [x] **3c.** `Node::gc()` prunes every chain to its `keep`; wired to the `db gc` control verb
+  (`loti db gc`). (With per-tick pruning it is normally a no-op — a manual re-assert.)
+- [x] **3d.** `db stat` reports `chains` and the new retention line; **`lotid` now runs a default
+  4-chain ×8 schedule** (`default_chain_schedule`, keep 4096/chain → bounded store). The full
+  acceptance suite (restart, backup/restore, multi-node notary proof over real UDP) passes 10/10
+  with the multi-chain default.
 
 **Risk:** medium — realized. Prune is a bounded delete; the reverse-index cleanup is what keeps
 discovery correct (a pruned ref resolves to nullopt and is skipped, selecting the finest survivor).

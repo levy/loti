@@ -437,13 +437,15 @@ int do_prove(const std::vector<std::string>& args, const std::string& control,
 int do_db(const std::vector<std::string>& args, const std::string& control, const std::string& out,
           bool json, bool quiet) {
   if (args.size() < 2) {
-    std::fprintf(stderr, "usage: loti db <stat | backup --out <file> | restore <file>>\n");
+    std::fprintf(stderr, "usage: loti db <stat | gc | backup --out <file> | restore <file>>\n");
     return 2;
   }
   const std::string& sub = args[1];
   std::string request;
   if (sub == "stat") {
     request = "db-stat";
+  } else if (sub == "gc") {
+    request = "db-gc";  // ring-prune each clock chain to its configured capacity
   } else if (sub == "backup") {
     if (out.empty()) {
       std::fprintf(stderr, "loti: db backup requires --out <file>\n");
