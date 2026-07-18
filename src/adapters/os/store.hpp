@@ -1,11 +1,12 @@
-// A durable blob store — the production persistence for a node's snapshot.
+// A portable snapshot-blob file — the export / backup and migration format.
 //
-// The Node serializes its whole DAG to an opaque blob (Node::snapshot()); this
-// adapter writes it to a file and reads it back, so a restarted lotid resumes with
-// all prior events and clock events. Writes go via a temp file + rename() so a
-// crash mid-write never corrupts the existing snapshot, and a backup is just a copy
-// of the file. Incremental/append-only storage (for the paper's GB/year scale) is a
-// later optimization; a periodic full snapshot is enough for MVP restart-survival.
+// The Node serializes its whole DAG to an opaque blob (Node::snapshot()); this adapter
+// writes it to a file and reads it back. It is NO LONGER the daemon's live store —
+// lotid persists incrementally to an LMDB environment (lmdb_store.hpp) — but it remains
+// the format for `db-backup` / `db-restore` and for migrating a pre-LMDB `state.snap`
+// (start on a fresh --store, then `loti db restore <old.snap>`). Writes go via a temp
+// file + rename() so a crash mid-write never corrupts the existing file, and a backup
+// is just a copy of the file.
 #pragma once
 
 #include <cstdio>

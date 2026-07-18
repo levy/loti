@@ -139,10 +139,13 @@ implementations (`Ports`), so swapping runtimes is swapping that bundle.
 | **Telemetry** | `Telemetry::record(...)` hooks | scalar `@statistic` signals | structured stderr log lines |
 
 The DAG state and configuration are **not** ports: the `Node` holds its events, clock chain, and
-indices directly, and takes a small config struct. Production makes that state durable by
-snapshotting the whole DAG through the wire codec (the file-store adapter); the simulation keeps
-it in RAM. Hashing is shared, not swapped — it must be identical everywhere; only signing differs
-(unsigned in the simulation, Ed25519 in production).
+indices directly, and takes a small config struct. Production makes that state durable by mirroring
+every change — event, clock event, neighbor, route — into an LMDB store
+([`lmdb_store.hpp`](../src/adapters/os/lmdb_store.hpp)) through a `PersistenceListener`, and reloading
+it with `Node::load` at startup; the simulation keeps it in RAM and never persists. (A portable
+snapshot through the wire codec — the file-store adapter — remains the `db-backup` / `db-restore` and
+migration format.) Hashing is shared, not swapped — it must be identical everywhere; only signing
+differs (unsigned in the simulation, Ed25519 in production).
 
 Neighbor/routing state is core state fed through `add_neighbor` / `learn_route`: the simulation's
 [`NetworkConfigurator`](../src/app/sim/NetworkConfigurator.cpp) computes it once globally; the

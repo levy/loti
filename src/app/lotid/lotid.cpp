@@ -2,8 +2,8 @@
 //
 // It hosts a single loti::Node and wires it to the wall clock, the epoll reactor
 // (scheduler), a real UDP socket (transport), a CSPRNG, a signer (an Ed25519
-// keystore with --key, else a null signer), a snapshot store (--store), and a
-// logging telemetry sink, then runs the reactor.
+// keystore with --key, else a null signer), an incremental LMDB store (--store), and
+// a logging telemetry sink, then runs the reactor.
 //
 // It exposes a local control socket (--control <path>) speaking the versioned line
 // protocol in adapters/os/control.hpp; the `loti` CLI is the client. The same
@@ -23,7 +23,7 @@
 //   peer-ls                   list neighbors
 //   status                    node id, counts, mode
 //   key                       node id + public key
-//   save                      write a snapshot now (if --store is set)
+//   save                      flush the store to disk now (if --store is set)
 //   db-stat                   store status (paths, counts, sizes, retention)
 //   db-backup <path>          write a snapshot copy to <path>
 //   db-restore <path>         load a snapshot from <path> into the running node

@@ -297,3 +297,25 @@ TEST_CASE("LmdbStore grows its map on MDB_MAP_FULL and keeps the data") {
   LmdbStore reopened(env.str());
   CHECK(reopened.event_count() == static_cast<std::size_t>(written));
 }
+
+TEST_CASE("LmdbStore keeps the committed prefix intact when a later write is abandoned") {
+  TempEnv env("crash");
+  const auto e0 = make_event(1, 40, "kept");
+  const auto e1 = make_event(1, 41, "kept-too");
+  {
+    LmdbStore store(env.str());
+    auto b = store.begin();
+    b.append_event(e0);
+    b.append_event(e1);
+    b.commit();  // durable
+
+    // A second batch starts but the "process crashes" before commit: ~Batch aborts it,
+    // and the store is destroyed without committing.
+    auto crashed = store.begin();
+    crashed.append_event(make_event(1, 42, "lost"));
+  }
+  // Reopen: exactly the committed prefix, fully readable, uncorrupted.
+  LmdbStore store(env.str());
+  CHECK(store.event_count() == 2);
+  CHECK(store.load_events() == std::vector<domain::Event>{e0, e1});
+}

@@ -164,10 +164,11 @@ Work in the dedicated `lmdb-store` worktree at `../loti-lmdb-store`, not the mai
   `grow_map()`s (doubles the mapsize), and retries the change once. `loti init` now suggests `state.lmdb`.
   doctest fills a 1 MiB map, auto-grows, and confirms the data survives reopen; a `--store-mapsize` smoke
   test and the acceptance suite pass.
-- [ ] **Step 8 — Tests + docs.** doctest: incremental round-trip, crash-consistency (truncate/kill
-  mid-batch → last committed state intact, no corruption), backup→restore equality, map-full growth.
-  Update `doc/architecture.md` Store row (`:140`) and the `src/adapters/os/store.hpp` header comment.
-  Move this plan to `plan/done/`.
+- [x] **Step 8 — Tests + docs.** doctest now covers the incremental round-trip, `Node::load`
+  byte-identical replay, the listener + gossip paths, map-full auto-grow, and crash-consistency (a
+  committed prefix survives while a later abandoned write leaves nothing). Backup/restore + real restart
+  are covered by `test/acceptance/run.sh` (10/10). Updated the `store.hpp` header (now the export/backup
+  format), the `lotid` header, and `doc/architecture.md`'s Storage row + note. Plan moved to `plan/done/`.
 
 ## Testing
 
@@ -251,3 +252,8 @@ Work in the dedicated `lmdb-store` worktree at `../loti-lmdb-store`, not the mai
 - **Step 7 done** — `--store-mapsize <GiB>` flag; `MDB_MAP_FULL` surfaces as a recoverable `LmdbMapFull`
   that the daemon retries after doubling the map (`grow_map`). `loti init` suggests `state.lmdb`. Growth
   doctest + `--store-mapsize` smoke + acceptance 10/10 green (122 assertions).
+- **Step 8 done** — crash-consistency doctest (committed prefix intact after an abandoned later write);
+  docs refreshed (`store.hpp` = export/backup format, `lotid` header, `architecture.md` Storage row +
+  note). **All steps complete**: full unit suite green (35 cases / 124 assertions) and the production
+  acceptance suite 10/10 on LMDB. The daemon persists incrementally to an LMDB store; the 5-s full
+  rewrite is gone; events + clock chain survive `kill -9`.
