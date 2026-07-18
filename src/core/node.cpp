@@ -1,6 +1,7 @@
 #include "node.hpp"
 
 #include <cassert>
+#include <set>
 #include <stdexcept>
 
 #include "hash/hashing.hpp"
@@ -617,36 +618,61 @@ Bytes Node::snapshot() const {
 }
 
 void Node::restore(const Bytes& blob) {
-  all_events_.clear();
-  all_clock_events_.clear();
-  unreferenced_events_.clear();
-  neighbors_.clear();
-  destination_to_next_hop_.clear();
-  event_hash_to_event_index_.clear();
-  event_hash_to_clock_event_index_.clear();
-  event_hash_to_referencing_event_index_.clear();
-
   wire::Reader r(blob);
   if (r.u64() != kSnapshotVersion) throw std::runtime_error("snapshot: unsupported version");
-  for (auto n = r.u64(); n > 0; --n) all_events_.push_back(r.event());
+
+  std::vector<Event> events;
+  for (auto n = r.u64(); n > 0; --n) events.push_back(r.event());
+
+  std::vector<LocalClockEvent> clock_events;
   for (auto n = r.u64(); n > 0; --n) {
     LocalClockEvent clock_event;
     static_cast<ClockEvent&>(clock_event) = r.clock_event();
     clock_event.referencing_events = r.refs();
-    all_clock_events_.push_back(std::move(clock_event));
+    clock_events.push_back(std::move(clock_event));
   }
-  for (auto n = r.u64(); n > 0; --n) unreferenced_events_.push_back(r.event());
+
+  // The snapshot stores each unreferenced event in full; load() only needs its hash.
+  std::vector<EventHash> unreferenced_hashes;
+  for (auto n = r.u64(); n > 0; --n) unreferenced_hashes.push_back(r.event().hash);
+
+  std::map<NodeId, Neighbor> neighbors;
   for (auto n = r.u64(); n > 0; --n) {
     Neighbor neighbor;
     neighbor.node_id = r.u64();
     neighbor.last_clock_event_hash = r.blob();
-    neighbors_[neighbor.node_id] = std::move(neighbor);
+    neighbors[neighbor.node_id] = std::move(neighbor);
   }
+
+  std::map<NodeId, NodeId> routes;
   for (auto n = r.u64(); n > 0; --n) {
     const auto dst = r.u64();
     const auto next_hop = r.u64();
-    destination_to_next_hop_[dst] = next_hop;
+    routes[dst] = next_hop;
   }
+
+  load(std::move(events), std::move(clock_events), unreferenced_hashes, std::move(neighbors),
+       std::move(routes));
+}
+
+void Node::load(std::vector<Event> events, std::vector<LocalClockEvent> clock_events,
+                const std::vector<EventHash>& unreferenced_hashes,
+                std::map<NodeId, Neighbor> neighbors, std::map<NodeId, NodeId> routes) {
+  neighbors_ = std::move(neighbors);
+  all_events_ = std::move(events);
+  all_clock_events_ = std::move(clock_events);
+  destination_to_next_hop_ = std::move(routes);
+
+  unreferenced_events_.clear();
+  event_hash_to_event_index_.clear();
+  event_hash_to_clock_event_index_.clear();
+  event_hash_to_referencing_event_index_.clear();
+
+  // Reconstruct the unreferenced-event set as the matching suffix of all_events_,
+  // preserving publish order — it is always the tail published since the last clock event.
+  const std::set<EventHash> unreferenced(unreferenced_hashes.begin(), unreferenced_hashes.end());
+  for (const auto& event : all_events_)
+    if (unreferenced.count(event.hash)) unreferenced_events_.push_back(event);
 
   // Rebuild the derived indices (same mapping publish_event / create_clock_event build).
   for (std::size_t i = 0; i < all_events_.size(); ++i)

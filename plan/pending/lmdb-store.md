@@ -120,12 +120,14 @@ Work in the dedicated `lmdb-store` worktree at `../loti-lmdb-store`, not the mai
   `event_count`/`clock_event_count`. doctest: committed round-trip (events, clock events, neighbor,
   route, unreferenced) survives reopen; aborted batch leaves nothing and no seq gap. (`remove_neighbor`
   skipped — the Node never removes a neighbor.)
-- [ ] **Step 3 — Node bulk-load from the store.** The store-side readers exist (Step 2). Add a `Node`
-  load API (e.g. `Node::load(events, clock_events, unreferenced_hashes, neighbors, routes)`) that
-  populates the same members `restore()` does and calls the **same private index rebuild**; reimplement
-  `restore(blob)` on top of it so behavior is provably identical. The daemon feeds it the `load_*`
-  results at startup. doctest: build a DAG, persist incrementally via a Batch, reopen, load into a
-  fresh Node → its `snapshot()` equals the original's.
+- [x] **Step 3 — Node bulk-load from the store.** Added `Node::load(events, clock_events,
+  unreferenced_hashes, neighbors, routes)` (`src/core/node.{hpp,cpp}`): moves the collections in,
+  reconstructs `unreferenced_events_` as the hash-matching suffix of `all_events_`, and rebuilds the
+  derived indices exactly as `restore()` did. `restore(blob)` now parses the snapshot and delegates to
+  `load()` — blob format unchanged, so existing `state.snap` files still load. doctest: (a) `restore()`
+  round-trips byte-identically (now via `load`); (b) a harness-built DAG persisted record-by-record into
+  an LMDB store and loaded into a fresh Node yields a **byte-identical** `snapshot()`. Full core suite
+  green (111 assertions).
 - [ ] **Step 4 — Node persistence listener.** There is **no** general Node observer to reuse:
   `ChainCallback`/`BoundsCallback`/`OrderCallback` (`src/core/node.hpp:27-45`) are per-discovery result
   callbacks the daemon passes into `discover_*`, not lifecycle hooks. So add a dedicated
@@ -208,3 +210,8 @@ Work in the dedicated `lmdb-store` worktree at `../loti-lmdb-store`, not the mai
   unreferenced set, neighbor/route upserts), seq counters that seed on open and advance only on
   commit, plus the `load_*` bulk readers and entry counts. Round-trip and abort-no-gap tests pass
   (21 assertions, no warnings). Step 3 narrowed to the Node-side load API since the readers now exist.
+- **Step 3 done** — `Node::load(...)` populates the DAG + rebuilds the derived indices; `restore(blob)`
+  now parses the blob and delegates to it (format unchanged, backward compatible). `unreferenced_events_`
+  reconstructed as the hash-matching suffix of `all_events_`. Two new tests (restore round-trip; harness
+  DAG → LMDB → load → byte-identical snapshot) pass; full core suite 111 assertions green, no warnings.
+  First change to `loti_core`; every pre-existing core test still passes.

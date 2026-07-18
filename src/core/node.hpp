@@ -101,6 +101,16 @@ class Node final : private ChainCallback {
   [[nodiscard]] domain::Bytes snapshot() const;
   void restore(const domain::Bytes& blob);
 
+  // Bulk-load persisted DAG state directly (the daemon's LMDB store feeds this at
+  // startup). Populates the DAG and rebuilds the derived indices exactly as restore()
+  // does; the unreferenced events are reconstructed from their hashes as the matching
+  // suffix of `events`. restore() is implemented on top of this.
+  void load(std::vector<domain::Event> events,
+            std::vector<domain::LocalClockEvent> clock_events,
+            const std::vector<domain::EventHash>& unreferenced_hashes,
+            std::map<domain::NodeId, domain::Neighbor> neighbors,
+            std::map<domain::NodeId, domain::NodeId> routes);
+
  private:
   using Hash = domain::EventHash;
 
