@@ -1,7 +1,6 @@
 #include "node.hpp"
 
 #include <cassert>
-#include <set>
 #include <stdexcept>
 
 #include "hash/hashing.hpp"
@@ -632,9 +631,9 @@ void Node::restore(const Bytes& blob) {
     clock_events.push_back(std::move(clock_event));
   }
 
-  // The snapshot stores each unreferenced event in full; load() only needs its hash.
-  std::vector<EventHash> unreferenced_hashes;
-  for (auto n = r.u64(); n > 0; --n) unreferenced_hashes.push_back(r.event().hash);
+  // The snapshot still stores the unreferenced events in full; skip past them —
+  // load() rederives the set from the clock events (kept for on-disk format compat).
+  for (auto n = r.u64(); n > 0; --n) r.event();
 
   std::map<NodeId, Neighbor> neighbors;
   for (auto n = r.u64(); n > 0; --n) {
@@ -651,12 +650,10 @@ void Node::restore(const Bytes& blob) {
     routes[dst] = next_hop;
   }
 
-  load(std::move(events), std::move(clock_events), unreferenced_hashes, std::move(neighbors),
-       std::move(routes));
+  load(std::move(events), std::move(clock_events), std::move(neighbors), std::move(routes));
 }
 
 void Node::load(std::vector<Event> events, std::vector<LocalClockEvent> clock_events,
-                const std::vector<EventHash>& unreferenced_hashes,
                 std::map<NodeId, Neighbor> neighbors, std::map<NodeId, NodeId> routes) {
   neighbors_ = std::move(neighbors);
   all_events_ = std::move(events);
@@ -668,12 +665,6 @@ void Node::load(std::vector<Event> events, std::vector<LocalClockEvent> clock_ev
   event_hash_to_clock_event_index_.clear();
   event_hash_to_referencing_event_index_.clear();
 
-  // Reconstruct the unreferenced-event set as the matching suffix of all_events_,
-  // preserving publish order — it is always the tail published since the last clock event.
-  const std::set<EventHash> unreferenced(unreferenced_hashes.begin(), unreferenced_hashes.end());
-  for (const auto& event : all_events_)
-    if (unreferenced.count(event.hash)) unreferenced_events_.push_back(event);
-
   // Rebuild the derived indices (same mapping publish_event / create_clock_event build).
   for (std::size_t i = 0; i < all_events_.size(); ++i)
     event_hash_to_event_index_[all_events_[i].hash] = i;
@@ -682,6 +673,14 @@ void Node::load(std::vector<Event> events, std::vector<LocalClockEvent> clock_ev
     for (const auto& ref : all_clock_events_[i].referenced_events)
       event_hash_to_referencing_event_index_.insert({ref.hash, i});
   }
+
+  // Rederive the unreferenced-event set: an event is unreferenced iff no clock event
+  // references it. Scanning all_events_ in order yields the same publish-ordered suffix
+  // that publish_event/create_clock_event maintain at runtime.
+  for (const auto& event : all_events_)
+    if (event_hash_to_referencing_event_index_.find(event.hash) ==
+        event_hash_to_referencing_event_index_.end())
+      unreferenced_events_.push_back(event);
 }
 
 }  // namespace loti

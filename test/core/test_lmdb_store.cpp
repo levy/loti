@@ -100,7 +100,6 @@ TEST_CASE("LmdbStore round-trips a committed batch") {
     CHECK(b.append_event(e1) == 1);
     CHECK(b.append_clock_event(c0) == 0);
     CHECK(b.append_clock_event(c1) == 1);
-    b.mark_unreferenced(e1.hash);
     b.put_neighbor(domain::Neighbor{7, hash_of(70)});
     b.put_route(9, 7);
     b.commit();
@@ -113,10 +112,6 @@ TEST_CASE("LmdbStore round-trips a committed batch") {
 
   CHECK(store.load_events() == std::vector<domain::Event>{e0, e1});
   CHECK(store.load_clock_events() == std::vector<domain::LocalClockEvent>{c0, c1});
-
-  const auto unref = store.load_unreferenced();
-  REQUIRE(unref.size() == 1);
-  CHECK(unref[0] == e1.hash);
 
   const auto neighbors = store.load_neighbors();
   REQUIRE(neighbors.count(7) == 1);
@@ -185,7 +180,7 @@ TEST_CASE("LmdbStore persists a Node's DAG and Node::load restores it byte-for-b
       c.referencing_events = r.refs();
       b.append_clock_event(c);
     }
-    for (auto n = r.u64(); n > 0; --n) b.mark_unreferenced(r.event().hash);
+    for (auto n = r.u64(); n > 0; --n) r.event();  // unreferenced section — derived on load
     for (auto n = r.u64(); n > 0; --n) {
       domain::Neighbor nb;
       nb.node_id = r.u64();
@@ -205,7 +200,7 @@ TEST_CASE("LmdbStore persists a Node's DAG and Node::load restores it byte-for-b
   LmdbStore store(env.str());
   harness::World w2;
   Node& n2 = w2.add_node(99, NodeConfig{});
-  n2.load(store.load_events(), store.load_clock_events(), store.load_unreferenced(),
-          store.load_neighbors(), store.load_routes());
+  n2.load(store.load_events(), store.load_clock_events(), store.load_neighbors(),
+          store.load_routes());
   CHECK(n2.snapshot() == snap1);
 }

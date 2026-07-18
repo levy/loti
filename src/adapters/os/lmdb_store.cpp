@@ -11,7 +11,7 @@ namespace loti::os {
 namespace {
 
 // Number of named sub-DBs the env must accommodate; keep in sync with the opens below.
-constexpr unsigned kMaxDbs = 8;
+constexpr unsigned kMaxDbs = 7;
 
 constexpr char kVersionKey[] = "version";  // key into the `meta` sub-DB
 
@@ -119,7 +119,6 @@ LmdbStore::LmdbStore(std::string path, std::size_t map_size) : path_(std::move(p
     open("event_index", event_index_);
     open("clock_events", clock_events_);
     open("clock_index", clock_index_);
-    open("unreferenced", unreferenced_);
     open("neighbors", neighbors_);
     open("routes", routes_);
 
@@ -216,18 +215,6 @@ std::uint64_t LmdbStore::Batch::append_clock_event(const domain::LocalClockEvent
   return seq;
 }
 
-void LmdbStore::Batch::mark_unreferenced(const domain::EventHash& hash) {
-  MDB_val k{hash.size(), const_cast<std::uint8_t*>(hash.data())};
-  MDB_val v{0, nullptr};
-  check(mdb_put(txn_, store_.unreferenced_, &k, &v, 0), "mark_unreferenced");
-}
-
-void LmdbStore::Batch::clear_unreferenced(const domain::EventHash& hash) {
-  MDB_val k{hash.size(), const_cast<std::uint8_t*>(hash.data())};
-  int rc = mdb_del(txn_, store_.unreferenced_, &k, nullptr);
-  if (rc != MDB_SUCCESS && rc != MDB_NOTFOUND) fail_rc("clear_unreferenced", rc);
-}
-
 void LmdbStore::Batch::put_neighbor(const domain::Neighbor& n) {
   unsigned char kbuf[8];
   put_u64_be(kbuf, n.node_id);
@@ -279,14 +266,6 @@ std::vector<domain::LocalClockEvent> LmdbStore::load_clock_events() const {
     static_cast<domain::ClockEvent&>(c) = r.clock_event();
     c.referencing_events = r.refs();
     out.push_back(std::move(c));
-  });
-  return out;
-}
-
-std::vector<domain::EventHash> LmdbStore::load_unreferenced() const {
-  std::vector<domain::EventHash> out;
-  for_each(env_, unreferenced_, [&](const MDB_val& k, const MDB_val&) {
-    out.push_back(to_bytes(k));
   });
   return out;
 }

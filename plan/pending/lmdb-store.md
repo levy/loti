@@ -74,19 +74,19 @@ today). See Step 4 for why a new listener is needed rather than an existing inte
 | `event_index` | 32-byte hash (raw) | `u64` seq | get-by-hash → seq |
 | `clock_events` | `u64` seq, big-endian | `clock_event(c)` + `refs(c.referencing_events)` | mirrors `snapshot()` encoding |
 | `clock_index` | 32-byte hash (raw) | `u64` seq | |
-| `unreferenced` | 32-byte hash (raw) | (empty / `u8`) | set membership; deleted when an event gets referenced |
 | `neighbors` | `NodeId` u64 BE | `blob(last_clock_event_hash)` | mutable upsert |
 | `routes` | `NodeId` dst u64 BE | `NodeId` next_hop u64 BE | mutable upsert |
 
 Keying the logs by monotonic seq (not the random hash) keeps inserts sequential → minimal write
 amplification. Big-endian keys make LMDB's default lexicographic compare match numeric order for
-cursor iteration.
+cursor iteration. The **unreferenced-event set is not persisted** — like the hash indices it is
+derived state (an event is unreferenced iff no clock event references it) and is rederived by
+`Node::load` from the clock events.
 
 ### Write path
 
 Each logical append is **one durable write txn** that atomically writes the record + its hash-index
-entry (+ referencing back-links / unreferenced-set edits). LMDB gives cross-sub-DB atomicity for
-free. Neighbor/route changes are small upserts.
+entry. LMDB gives cross-sub-DB atomicity for free. Neighbor/route changes are small upserts.
 
 **Durability policy (recommended):** batch all appends produced within one reactor wakeup into a
 single txn (amortizes the fsync), committed durably (default LMDB sync). This is stronger *and*
@@ -114,16 +114,16 @@ Work in the dedicated `lmdb-store` worktree at `../loti-lmdb-store`, not the mai
   it back. Wired into the test target (links `loti_lmdb`).
 - [x] **Step 2 — Write path + read-back.** `LmdbStore::Batch` groups mutations into one durable
   commit: `append_event`/`append_clock_event` (assign a monotonic seq, write record + hash→seq index
-  atomically, reusing the wire codec), `mark/clear_unreferenced`, `put_neighbor`, `put_route`. Seq
-  counters seed from the logs on open and advance only on commit (aborted batch = no gap). Added the
-  bulk readers `load_events`/`load_clock_events`/`load_unreferenced`/`load_neighbors`/`load_routes` +
-  `event_count`/`clock_event_count`. doctest: committed round-trip (events, clock events, neighbor,
-  route, unreferenced) survives reopen; aborted batch leaves nothing and no seq gap. (`remove_neighbor`
-  skipped — the Node never removes a neighbor.)
-- [x] **Step 3 — Node bulk-load from the store.** Added `Node::load(events, clock_events,
-  unreferenced_hashes, neighbors, routes)` (`src/core/node.{hpp,cpp}`): moves the collections in,
-  reconstructs `unreferenced_events_` as the hash-matching suffix of `all_events_`, and rebuilds the
-  derived indices exactly as `restore()` did. `restore(blob)` now parses the snapshot and delegates to
+  atomically, reusing the wire codec), `put_neighbor`, `put_route`. Seq counters seed from the logs on
+  open and advance only on commit (aborted batch = no gap). Added the bulk readers
+  `load_events`/`load_clock_events`/`load_neighbors`/`load_routes` + `event_count`/`clock_event_count`.
+  doctest: committed round-trip (events, clock events, neighbor, route) survives reopen; aborted batch
+  leaves nothing and no seq gap. (`remove_neighbor` skipped — the Node never removes a neighbor. The
+  `unreferenced` sub-DB added here was dropped in a follow-up simplification — it is derived state.)
+- [x] **Step 3 — Node bulk-load from the store.** Added `Node::load(events, clock_events, neighbors,
+  routes)` (`src/core/node.{hpp,cpp}`): moves the collections in, rebuilds the derived indices exactly
+  as `restore()` did, and rederives `unreferenced_events_` from the clock events (an event is
+  unreferenced iff no clock event references it). `restore(blob)` now parses the snapshot and delegates to
   `load()` — blob format unchanged, so existing `state.snap` files still load. doctest: (a) `restore()`
   round-trips byte-identically (now via `load`); (b) a harness-built DAG persisted record-by-record into
   an LMDB store and loaded into a fresh Node yields a **byte-identical** `snapshot()`. Full core suite
@@ -211,7 +211,11 @@ Work in the dedicated `lmdb-store` worktree at `../loti-lmdb-store`, not the mai
   commit, plus the `load_*` bulk readers and entry counts. Round-trip and abort-no-gap tests pass
   (21 assertions, no warnings). Step 3 narrowed to the Node-side load API since the readers now exist.
 - **Step 3 done** — `Node::load(...)` populates the DAG + rebuilds the derived indices; `restore(blob)`
-  now parses the blob and delegates to it (format unchanged, backward compatible). `unreferenced_events_`
-  reconstructed as the hash-matching suffix of `all_events_`. Two new tests (restore round-trip; harness
-  DAG → LMDB → load → byte-identical snapshot) pass; full core suite 111 assertions green, no warnings.
-  First change to `loti_core`; every pre-existing core test still passes.
+  now parses the blob and delegates to it (format unchanged, backward compatible). Two new tests (restore
+  round-trip; harness DAG → LMDB → load → byte-identical snapshot) pass; full core suite green, no
+  warnings. First change to `loti_core`; every pre-existing core test still passes.
+- **Simplification (before Step 4)** — the `unreferenced` set is derived state, so it is no longer
+  persisted: `LmdbStore` dropped the `unreferenced` sub-DB + `mark/clear_unreferenced` + `load_unreferenced`
+  (maxdbs 8→7), and `Node::load` rederives it from the clock events. This keeps the Step 4 listener
+  trivial (no mutable-set mirror to clear per clock event). Snapshot round-trip stays byte-identical
+  (109 assertions green).

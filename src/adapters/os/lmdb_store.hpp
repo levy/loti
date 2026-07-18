@@ -1,8 +1,8 @@
 // An LMDB-backed durable store for a Node's DAG — the production persistence that
 // replaces the full-overwrite FileStore (store.hpp). One LMDB environment holds
-// several named sub-databases (events, clock events, their hash indices, the
-// unreferenced-event set, neighbors, routes) plus a `meta` record with the on-disk
-// format version. See plan/pending/lmdb-store.md for the schema and rationale.
+// several named sub-databases (events, clock events, their hash indices, neighbors,
+// routes) plus a `meta` record with the on-disk format version. See
+// plan/pending/lmdb-store.md for the schema and rationale.
 //
 // Stage 1: the store owns the durable records; the Node keeps its in-RAM DAG and is
 // fed from here at startup. Linked into the daemon (and tests) only — loti_core and
@@ -53,10 +53,6 @@ class LmdbStore {
     std::uint64_t append_event(const domain::Event&);
     std::uint64_t append_clock_event(const domain::LocalClockEvent&);
 
-    // Set/clear an event's membership in the unreferenced-event set (keyed by hash).
-    void mark_unreferenced(const domain::EventHash&);
-    void clear_unreferenced(const domain::EventHash&);
-
     // Upsert overlay state.
     void put_neighbor(const domain::Neighbor&);
     void put_route(domain::NodeId destination, domain::NodeId next_hop);
@@ -78,10 +74,10 @@ class LmdbStore {
   [[nodiscard]] Batch begin();
 
   // Bulk read-back for startup replay. Events and clock events come back in sequence
-  // order; neighbors/routes keyed by node id; unreferenced as the set of event hashes.
+  // order; neighbors/routes keyed by node id. (The unreferenced set is not stored — the
+  // Node rederives it from the clock events on load.)
   [[nodiscard]] std::vector<domain::Event> load_events() const;
   [[nodiscard]] std::vector<domain::LocalClockEvent> load_clock_events() const;
-  [[nodiscard]] std::vector<domain::EventHash> load_unreferenced() const;
   [[nodiscard]] std::map<domain::NodeId, domain::Neighbor> load_neighbors() const;
   [[nodiscard]] std::map<domain::NodeId, domain::NodeId> load_routes() const;
 
@@ -101,7 +97,6 @@ class LmdbStore {
   MDB_dbi event_index_ = 0;
   MDB_dbi clock_events_ = 0;
   MDB_dbi clock_index_ = 0;
-  MDB_dbi unreferenced_ = 0;
   MDB_dbi neighbors_ = 0;
   MDB_dbi routes_ = 0;
 
