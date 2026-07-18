@@ -375,7 +375,7 @@ int do_init(const std::string& home) {
   const std::string keypath = home + "/key";
   os::Ed25519KeyStore ks;
   ks.load_or_generate(keypath);
-  const std::string store = home + "/state.snap";
+  const std::string store = home + "/state.lmdb";
   const std::string control = home + "/control.sock";
   if (FILE* f = std::fopen((home + "/config").c_str(), "w")) {
     std::fprintf(f, "# lotid config written by `loti init`\nport=7000\nkey=%s\nstore=%s\ncontrol=%s\n",

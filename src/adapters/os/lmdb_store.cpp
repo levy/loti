@@ -22,6 +22,10 @@ constexpr char kVersionKey[] = "version";  // key into the `meta` sub-DB
 void check(int rc, const char* what) {
   if (rc != MDB_SUCCESS) fail_rc(what, rc);
 }
+void check_write(int rc, const char* what) {
+  if (rc == MDB_MAP_FULL) throw LmdbMapFull();  // recoverable: grow the map and retry
+  if (rc != MDB_SUCCESS) fail_rc(what, rc);
+}
 
 void put_u64_be(unsigned char out[8], std::uint64_t v) {
   for (int i = 7; i >= 0; --i) { out[i] = static_cast<unsigned char>(v & 0xFF); v >>= 8; }
@@ -92,7 +96,8 @@ domain::Bytes to_bytes(const MDB_val& v) {
 // open / close
 // ---------------------------------------------------------------------------
 
-LmdbStore::LmdbStore(std::string path, std::size_t map_size) : path_(std::move(path)) {
+LmdbStore::LmdbStore(std::string path, std::size_t map_size)
+    : path_(std::move(path)), map_size_(map_size) {
   check(mdb_env_create(&env_), "env_create");
 
   // maxdbs and mapsize must both be set before the env is opened.
@@ -191,13 +196,13 @@ std::uint64_t LmdbStore::Batch::append_event(const domain::Event& e) {
   put_u64_be(kbuf, seq);
   MDB_val k{sizeof(kbuf), kbuf};
   MDB_val v{w.bytes().size(), const_cast<std::uint8_t*>(w.bytes().data())};
-  check(mdb_put(txn_, store_.events_, &k, &v, 0), "put event");
+  check_write(mdb_put(txn_, store_.events_, &k, &v, 0), "put event");
 
   unsigned char sbuf[8];
   put_u64_be(sbuf, seq);
   MDB_val ik{e.hash.size(), const_cast<std::uint8_t*>(e.hash.data())};
   MDB_val iv{sizeof(sbuf), sbuf};
-  check(mdb_put(txn_, store_.event_index_, &ik, &iv, 0), "put event_index");
+  check_write(mdb_put(txn_, store_.event_index_, &ik, &iv, 0), "put event_index");
 
   return seq;
 }
@@ -212,13 +217,13 @@ std::uint64_t LmdbStore::Batch::append_clock_event(const domain::LocalClockEvent
   put_u64_be(kbuf, seq);
   MDB_val k{sizeof(kbuf), kbuf};
   MDB_val v{w.bytes().size(), const_cast<std::uint8_t*>(w.bytes().data())};
-  check(mdb_put(txn_, store_.clock_events_, &k, &v, 0), "put clock_event");
+  check_write(mdb_put(txn_, store_.clock_events_, &k, &v, 0), "put clock_event");
 
   unsigned char sbuf[8];
   put_u64_be(sbuf, seq);
   MDB_val ik{c.hash.size(), const_cast<std::uint8_t*>(c.hash.data())};
   MDB_val iv{sizeof(sbuf), sbuf};
-  check(mdb_put(txn_, store_.clock_index_, &ik, &iv, 0), "put clock_index");
+  check_write(mdb_put(txn_, store_.clock_index_, &ik, &iv, 0), "put clock_index");
 
   return seq;
 }
@@ -238,7 +243,7 @@ void LmdbStore::Batch::update_clock_event(const domain::LocalClockEvent& c) {
   w.refs(c.referencing_events);
   MDB_val k{sizeof(kbuf), kbuf};
   MDB_val v{w.bytes().size(), const_cast<std::uint8_t*>(w.bytes().data())};
-  check(mdb_put(txn_, store_.clock_events_, &k, &v, 0), "update clock_event");
+  check_write(mdb_put(txn_, store_.clock_events_, &k, &v, 0), "update clock_event");
 }
 
 void LmdbStore::Batch::put_neighbor(const domain::Neighbor& n) {
@@ -247,7 +252,7 @@ void LmdbStore::Batch::put_neighbor(const domain::Neighbor& n) {
   MDB_val k{sizeof(kbuf), kbuf};
   MDB_val v{n.last_clock_event_hash.size(),
             const_cast<std::uint8_t*>(n.last_clock_event_hash.data())};
-  check(mdb_put(txn_, store_.neighbors_, &k, &v, 0), "put_neighbor");
+  check_write(mdb_put(txn_, store_.neighbors_, &k, &v, 0), "put_neighbor");
 }
 
 void LmdbStore::Batch::put_route(domain::NodeId destination, domain::NodeId next_hop) {
@@ -257,14 +262,14 @@ void LmdbStore::Batch::put_route(domain::NodeId destination, domain::NodeId next
   put_u64_be(vbuf, next_hop);
   MDB_val k{sizeof(kbuf), kbuf};
   MDB_val v{sizeof(vbuf), vbuf};
-  check(mdb_put(txn_, store_.routes_, &k, &v, 0), "put_route");
+  check_write(mdb_put(txn_, store_.routes_, &k, &v, 0), "put_route");
 }
 
 void LmdbStore::Batch::commit() {
   if (!txn_) return;
   MDB_txn* t = txn_;
   txn_ = nullptr;                        // consumed by commit regardless of outcome
-  check(mdb_txn_commit(t), "txn_commit");
+  check_write(mdb_txn_commit(t), "txn_commit");
   store_.next_event_seq_ = event_seq_;   // advance only after a durable commit
   store_.next_clock_seq_ = clock_seq_;
 }
@@ -333,6 +338,11 @@ void LmdbStore::reset() {
   check(mdb_txn_commit(txn), "txn_commit");
   next_event_seq_ = 0;
   next_clock_seq_ = 0;
+}
+
+void LmdbStore::grow_map() {
+  map_size_ *= 2;
+  check(mdb_env_set_mapsize(env_, map_size_), "set_mapsize(grow)");
 }
 
 }  // namespace loti::os

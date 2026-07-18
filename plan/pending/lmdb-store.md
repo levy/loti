@@ -158,10 +158,12 @@ Work in the dedicated `lmdb-store` worktree at `../loti-lmdb-store`, not the mai
   procedure (MDB_INVALID → migration message). **Verified**: the production acceptance suite passes 10/10
   on LMDB — restart survival, backup→diverge→restore reverts, and multi-node UDP notary proof (which
   live-exercises the neighbor + clock-update persistence hooks).
-- [ ] **Step 7 — Config & robustness.** `--store` now names an **LMDB env directory** (or use
-  `MDB_NOSUBDIR` for a single file to keep the flag's file-path shape). Add `--store-mapsize`
-  (default e.g. 16 GiB — virtual only, backed as used). Handle `MDB_MAP_FULL` by growing (reopen with
-  a larger mapsize). Update the `loti init` suggestion line and the generated `store=` hint.
+- [x] **Step 7 — Config & robustness.** `--store` stays a single file (`MDB_NOSUBDIR`, keeping the old
+  flag's shape). Added `--store-mapsize <GiB>` (default 16 GiB — virtual, backed as used). `MDB_MAP_FULL`
+  is now recoverable: writes throw `LmdbMapFull`, and the daemon's `StorePersistence` catches it,
+  `grow_map()`s (doubles the mapsize), and retries the change once. `loti init` now suggests `state.lmdb`.
+  doctest fills a 1 MiB map, auto-grows, and confirms the data survives reopen; a `--store-mapsize` smoke
+  test and the acceptance suite pass.
 - [ ] **Step 8 — Tests + docs.** doctest: incremental round-trip, crash-consistency (truncate/kill
   mid-batch → last committed state intact, no corruption), backup→restore equality, map-full growth.
   Update `doc/architecture.md` Store row (`:140`) and the `src/adapters/os/store.hpp` header comment.
@@ -246,3 +248,6 @@ Work in the dedicated `lmdb-store` worktree at `../loti-lmdb-store`, not the mai
   copy; old `state.snap` files migrate via `db restore`). Daemon gives a migration hint when `--store`
   points at a non-LMDB file. Production acceptance suite 10/10 green on LMDB (restart, backup/restore,
   multi-node notary).
+- **Step 7 done** — `--store-mapsize <GiB>` flag; `MDB_MAP_FULL` surfaces as a recoverable `LmdbMapFull`
+  that the daemon retries after doubling the map (`grow_map`). `loti init` suggests `state.lmdb`. Growth
+  doctest + `--store-mapsize` smoke + acceptance 10/10 green (122 assertions).

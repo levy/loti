@@ -12,6 +12,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <map>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -20,6 +21,12 @@
 #include "domain/types.hpp"
 
 namespace loti::os {
+
+// Thrown by a write when the environment hits its mapsize cap (MDB_MAP_FULL). The
+// caller can grow_map() and retry — the failed transaction leaves no state behind.
+struct LmdbMapFull : std::runtime_error {
+  LmdbMapFull() : std::runtime_error("lmdb: map full (MDB_MAP_FULL)") {}
+};
 
 class LmdbStore {
  public:
@@ -95,11 +102,18 @@ class LmdbStore {
   // db-restore before rewriting the store from a snapshot.
   void reset();
 
+  // Double the environment's mapsize. Call after catching LmdbMapFull, with no live
+  // transaction, then retry the write. The map is virtual — only backed as used.
+  void grow_map();
+
+  [[nodiscard]] std::size_t map_size() const noexcept { return map_size_; }
+
   [[nodiscard]] const std::string& path() const noexcept { return path_; }
   [[nodiscard]] std::uint64_t format_version() const noexcept { return format_version_; }
 
  private:
   std::string path_;
+  std::size_t map_size_ = 0;
   MDB_env* env_ = nullptr;
 
   // Named sub-databases (opened once; the handles stay valid for the life of the env).

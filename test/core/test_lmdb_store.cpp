@@ -256,3 +256,44 @@ TEST_CASE("PersistenceListener sees neighbor and clock-event updates learned fro
   CHECK_FALSE(rec.neighbors.empty());       // n2 learned n1's latest clock-event hash
   CHECK_FALSE(rec.clock_updated.empty());   // n1's notifications back-linked n2's clock events
 }
+
+TEST_CASE("LmdbStore grows its map on MDB_MAP_FULL and keeps the data") {
+  TempEnv env("grow");
+  constexpr std::size_t kStart = std::size_t{1} << 20;  // 1 MiB — small enough to fill
+
+  auto big_event = [](int seq) {
+    domain::Event e;
+    e.creator = 1;
+    e.hash.resize(32);  // unique hash from the sequence number
+    for (int k = 0; k < 4; ++k) e.hash[k] = static_cast<std::uint8_t>(seq >> (8 * k));
+    e.data = domain::Bytes(600, 'x');
+    return e;
+  };
+
+  int written = 0;
+  bool grew = false;
+  {
+    LmdbStore store(env.str(), kStart);
+    for (int chunk = 0; chunk < 40; ++chunk) {   // 4000 * ~640 B ≈ 2.5 MiB > the 1 MiB map
+      for (;;) {
+        try {
+          auto b = store.begin();
+          for (int i = 0; i < 100; ++i) b.append_event(big_event(chunk * 100 + i));
+          b.commit();
+          written += 100;
+          break;
+        } catch (const loti::os::LmdbMapFull&) {
+          store.grow_map();  // aborted txn consumed no seqs; retry the chunk
+          grew = true;
+        }
+      }
+    }
+    CHECK(grew);                       // the small map really filled
+    CHECK(store.map_size() > kStart);  // and was grown
+    CHECK(store.event_count() == static_cast<std::size_t>(written));
+  }
+
+  // The grown data survives a reopen (the default mapsize covers it).
+  LmdbStore reopened(env.str());
+  CHECK(reopened.event_count() == static_cast<std::size_t>(written));
+}

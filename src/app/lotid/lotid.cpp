@@ -74,22 +74,37 @@ class StorePersistence final : public PersistenceListener {
  public:
   explicit StorePersistence(os::LmdbStore& store) : store_(store) {}
   void on_event_appended(const domain::Event& e) override {
-    auto b = store_.begin(); b.append_event(e); b.commit();
+    durable([&](os::LmdbStore::Batch& b) { b.append_event(e); });
   }
   void on_clock_event_appended(const domain::LocalClockEvent& c) override {
-    auto b = store_.begin(); b.append_clock_event(c); b.commit();
+    durable([&](os::LmdbStore::Batch& b) { b.append_clock_event(c); });
   }
   void on_clock_event_updated(const domain::LocalClockEvent& c) override {
-    auto b = store_.begin(); b.update_clock_event(c); b.commit();
+    durable([&](os::LmdbStore::Batch& b) { b.update_clock_event(c); });
   }
   void on_neighbor_changed(const domain::Neighbor& n) override {
-    auto b = store_.begin(); b.put_neighbor(n); b.commit();
+    durable([&](os::LmdbStore::Batch& b) { b.put_neighbor(n); });
   }
   void on_route_changed(domain::NodeId dst, domain::NodeId next_hop) override {
-    auto b = store_.begin(); b.put_route(dst, next_hop); b.commit();
+    durable([&](os::LmdbStore::Batch& b) { b.put_route(dst, next_hop); });
   }
 
  private:
+  // One change = one durable txn. On MDB_MAP_FULL, grow the map once and retry (the
+  // failed txn was aborted, so no state and no sequence numbers were consumed).
+  template <class Op>
+  void durable(Op&& op) {
+    try {
+      auto b = store_.begin();
+      op(b);
+      b.commit();
+    } catch (const os::LmdbMapFull&) {
+      store_.grow_map();
+      auto b = store_.begin();
+      op(b);
+      b.commit();
+    }
+  }
   os::LmdbStore& store_;
 };
 
@@ -266,8 +281,8 @@ struct Reply {
 class Lotid final : public ChainCallback, public BoundsCallback, public OrderCallback {
  public:
   Lotid(domain::NodeId id, std::uint16_t port, domain::Duration clock_ns,
-        domain::Duration expiry_ns, bool verbose, std::string store_path, const std::string& key_path,
-        std::string control_path)
+        domain::Duration expiry_ns, bool verbose, std::string store_path, std::size_t store_map_size,
+        const std::string& key_path, std::string control_path)
       : transport_(port),
         scheduler_(reactor_, clock_),
         telemetry_(verbose),
@@ -285,7 +300,7 @@ class Lotid final : public ChainCallback, public BoundsCallback, public OrderCal
     node_ = std::make_unique<Node>(
         node_id_, NodePorts{clock_, scheduler_, transport_, rng_, *signer_, telemetry_},
         NodeConfig{clock_ns, expiry_ns});
-    if (!store_path.empty()) store_.emplace(std::move(store_path));
+    if (!store_path.empty()) store_.emplace(std::move(store_path), store_map_size);
   }
 
   domain::NodeId node_id() const { return node_id_; }
@@ -782,6 +797,7 @@ int main(int argc, char** argv) {
   double expiry = 5.0;
   bool verbose = false;
   std::string store_path, key_path, control_path;
+  std::size_t store_map_size = loti::os::LmdbStore::kDefaultMapSize;
   std::vector<std::string> peers, routes;
 
   for (int i = 1; i < argc; ++i) {
@@ -800,6 +816,8 @@ int main(int argc, char** argv) {
     else if (a == "--clock-interval") clock_interval = parse_seconds(next("--clock-interval"));
     else if (a == "--expiry") expiry = parse_seconds(next("--expiry"));
     else if (a == "--store") store_path = next("--store");
+    else if (a == "--store-mapsize")
+      store_map_size = static_cast<std::size_t>(std::atof(next("--store-mapsize")) * 1073741824.0);
     else if (a == "--key") key_path = next("--key");
     else if (a == "--control") control_path = next("--control");
     else if (a == "--verbose" || a == "-v") verbose = true;
@@ -812,7 +830,7 @@ int main(int argc, char** argv) {
     std::fprintf(stderr,
                  "usage: lotid --port <p> {--id <n> | --key <path>} [--peer id:ip:port]... "
                  "[--route dst:nexthop]... [--clock-interval s] [--expiry s] [--store <path>] "
-                 "[--control <path>] [--verbose]\n");
+                 "[--store-mapsize <GiB>] [--control <path>] [--verbose]\n");
     return 2;
   }
 
@@ -822,7 +840,7 @@ int main(int argc, char** argv) {
 
   try {
     Lotid daemon(id.value_or(0), port, to_ns(clock_interval), to_ns(expiry), verbose, store_path,
-                 key_path, control_path);
+                 store_map_size, key_path, control_path);
     daemon.restore_from_store();
     for (const auto& p : peers) {
       auto f = split(p, ':');
