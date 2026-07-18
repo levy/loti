@@ -202,10 +202,9 @@ protocol-visible behavior change, not an internal optimization.
 Two consequences to document:
 
 - **Forward-only.** Skip-safe pinning is a property of clock events *at creation*; hash links
-  cannot be added retroactively. Only clock events created after this ships get the multi-chain
-  structure. A pre-existing single-chain store keeps its old eras at fast resolution until they
-  age out (then they are lost — or kept as a legacy tail); coarse chains cannot be
-  reconstructed for the past.
+  cannot be added retroactively, so coarse chains only ever cover clock events created once the
+  node is running the schedule. (No existing stores to carry forward — migration is out of
+  scope.)
 - **Schedule is a network convention.** Cross-node coarse discovery works best when neighbors
   share `(I, s, C, L)`. The per-clock-event level tag lets mismatched schedules degrade rather
   than fail.
@@ -216,6 +215,10 @@ Two consequences to document:
 
 Ordered, each step a commit. File paths are post-reorg (`src/…`).
 
+> **Back-compat / migration are out of scope** — there are no deployed nodes yet. The on-disk
+> store format and the wire packets may change freely; a format mismatch just re-creates the
+> store (no migration code, no dual-format readers, no packet versioning).
+
 ### Part 1 — Domain model: chains & level tags
 
 - [ ] **1a.** `ClockEvent` gains a **chain/level id** ([src/core/domain/types.hpp:53](../../src/core/domain/types.hpp)).
@@ -225,9 +228,10 @@ Ordered, each step a commit. File paths are post-reorg (`src/…`).
 - [ ] **1c.** `NodeConfig` replaces the single `clock_event_interval`
   ([src/core/node.hpp:49](../../src/core/node.hpp)) with a **chain schedule**:
   `[(interval, keep_count)]` per chain (default = the table above).
-- [ ] **1d.** Format-version bump in the store `meta` sub-DB; migration path (Part 3).
+- [ ] **1d.** Bump the store `meta` format-version constant to the new schema (no migration — an
+  old store is simply re-created).
 
-**Risk:** low–medium (touches the core domain type; format version). Forward-only by design.
+**Risk:** low–medium (touches the core domain type). Forward-only by design.
 
 ### Part 2 — Multi-chain clock-event creation
 
@@ -258,8 +262,6 @@ primitives so the sim and tests exercise it.
 - [ ] **3d.** Rewrite the `db stat` retention string and `store.retain` config to the new
   invariant ([src/app/lotid/lotid.cpp](../../src/app/lotid/lotid.cpp),
   [doc/cli.md:433](../../doc/cli.md)).
-- [ ] **3e.** Migration: a pre-feature single-chain store opens as fast-chain-only; coarse chains
-  start empty and fill forward (no back-fill — forward-only).
 
 **Risk:** medium. Prune is a bounded range-delete; the invariant check is the safety net.
 
@@ -286,7 +288,7 @@ primitives so the sim and tests exercise it.
 - [ ] **5c.** Receiver buckets incoming tips into `Neighbor`'s per-chain slots (Part 1b).
 
 **Risk:** medium — a genuine on-the-wire format touch (the one place the "no format break"
-story does not hold). Version the packet.
+story does not hold). No versioning needed (back-compat out of scope).
 
 ### Part 6 — Simulation & statistics
 
@@ -353,8 +355,6 @@ accuracy) is acceptable.
 - **Firehose × long reach** — the `R·reach` ref cost; Part 7 is the mitigation.
 - **Schedule agreement** — cross-node coarse discovery assumes a shared `(I, s, C, L)`; the
   level tag degrades mismatches but does not fully fix them.
-- **Migration** — forward-only means a long-running node has a fast-only legacy tail until it
-  ages out; decide keep-vs-drop for that tail.
 - **Per-event durability opt-in** — a node wanting *specific* old events locally
   upper-boundable regardless of the network can give them a direct coarse pin (few events, so
   bounded storage). Deferred; noted for completeness.
