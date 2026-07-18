@@ -58,6 +58,10 @@ void Node::learn_route(NodeId destination, NodeId next_hop) {
   store_.put_route(destination, next_hop);
 }
 
+void Node::learn_route_at(NodeId destination, NodeId next_hop, TimeRange validity) {
+  timed_routes_[destination].push_back(routing::TimedRoute{validity, {next_hop}});
+}
+
 // ---------------------------------------------------------------------------
 // timers
 // ---------------------------------------------------------------------------

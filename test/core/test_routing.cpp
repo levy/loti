@@ -42,3 +42,44 @@ TEST_CASE("NeighborHistoryRouter returns the neighbors cross-linked within the w
     CHECK(hops == std::vector<domain::NodeId>{1});  // n3 cross-linked but not a known neighbor
   }
 }
+
+TEST_CASE("RoutingTableRouter directs on a hit and falls back on a miss") {
+  harness::World w;
+  auto nodes = harness::build_path(w, 4);  // n1 — n2 — n3 — n4; n4 is >1 hop from n2
+  Node& n2 = *nodes[1];
+  harness::gossip(w, nodes, 6);            // n2 cross-links with n1 and n3
+
+  std::map<domain::NodeId, domain::Neighbor> neighbors{{1, domain::Neighbor{1, {}}},
+                                                       {3, domain::Neighbor{3, {}}}};
+  routing::NeighborHistoryRouter history(n2.id(), w.store_of(n2.id()), neighbors);
+
+  routing::TimedRouteTable table;
+  table[4].push_back(routing::TimedRoute{domain::TimeRange::all(), {3}});  // toward n4, go via n3
+  routing::RoutingTableRouter router(table, history);
+  routing::RouteContext ctx;  // range = all()
+
+  SUBCASE("hit → the directed next hop (which is also cross-linked)") {
+    CHECK(router.next_hops(/*destination=*/4, ctx) == std::vector<domain::NodeId>{3});
+  }
+  SUBCASE("no route learned → undirected neighbor-history fallback") {
+    const auto hops = router.next_hops(/*destination=*/1, ctx);
+    const std::set<domain::NodeId> got(hops.begin(), hops.end());
+    CHECK(got == std::set<domain::NodeId>{1, 3});
+  }
+  SUBCASE("directed hop not cross-linked in-window → fallback") {
+    routing::TimedRouteTable bad;
+    bad[4].push_back(routing::TimedRoute{domain::TimeRange::all(), {99}});  // 99 never cross-linked
+    routing::RoutingTableRouter r(bad, history);
+    const auto hops = r.next_hops(4, ctx);
+    const std::set<domain::NodeId> got(hops.begin(), hops.end());
+    CHECK(got == std::set<domain::NodeId>{1, 3});
+  }
+  SUBCASE("route validity outside the query window → identical to pure fallback") {
+    routing::TimedRouteTable future;
+    future[4].push_back(routing::TimedRoute{domain::TimeRange{100000, 200000}, {3}});
+    routing::RoutingTableRouter r(future, history);
+    routing::RouteContext narrow;
+    narrow.range = domain::TimeRange{1, 100};
+    CHECK(r.next_hops(4, narrow) == history.next_hops(4, narrow));
+  }
+}

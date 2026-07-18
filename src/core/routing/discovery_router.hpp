@@ -13,6 +13,7 @@
 // time-dependent and probabilistic routers are added in later parts.
 #pragma once
 
+#include <algorithm>
 #include <map>
 #include <set>
 #include <vector>
@@ -104,6 +105,54 @@ class NeighborHistoryRouter final : public DiscoveryRouter {
   domain::NodeId self_;
   const ports::Store& store_;
   const std::map<domain::NodeId, domain::Neighbor>& neighbors_;
+};
+
+// A single time-scoped routing hint: during `validity`, these are the ordered next hops
+// (shortest first) toward some far destination. Not derivable from the DAG (multi-hop direction
+// is a global property); filled by a routing protocol or static config — out of scope here. The
+// router only consumes it.
+struct TimedRoute {
+  domain::TimeRange validity;
+  std::vector<domain::NodeId> next_hops;
+};
+
+// destination → the time-scoped routes learned toward it.
+using TimedRouteTable = std::map<domain::NodeId, std::vector<TimedRoute>>;
+
+// The directional, time-dependent router. On a **hit** — a route toward `destination` whose
+// validity overlaps `ctx.range` — it returns those next hops (shortest first) **intersected with
+// the neighbor history**, so every hop is one this node actually cross-linked with in the window
+// (otherwise the chain could not close through it). On a **miss**, or when no directed hop is
+// cross-linked, it degrades to the fallback — the undirected NeighborHistory flood. The table is
+// "either filled or not" (routing protocols come later); the fallback covers every gap.
+class RoutingTableRouter final : public DiscoveryRouter {
+ public:
+  RoutingTableRouter(const TimedRouteTable& table, const DiscoveryRouter& fallback)
+      : table_(table), fallback_(fallback) {}
+
+  [[nodiscard]] std::vector<domain::NodeId> next_hops(
+      domain::NodeId destination, const RouteContext& ctx) const override {
+    const std::vector<domain::NodeId> crosslinked = fallback_.next_hops(destination, ctx);
+    auto it = table_.find(destination);
+    if (it == table_.end()) return crosslinked;  // no route learned → undirected fallback
+    std::vector<domain::NodeId> directed;
+    std::set<domain::NodeId> added;
+    for (const auto& route : it->second) {
+      if (!overlaps(route.validity, ctx.range)) continue;
+      for (domain::NodeId hop : route.next_hops)
+        if (std::find(crosslinked.begin(), crosslinked.end(), hop) != crosslinked.end() &&
+            added.insert(hop).second)
+          directed.push_back(hop);
+    }
+    return directed.empty() ? crosslinked : directed;  // no usable directed hop → fallback
+  }
+
+ private:
+  [[nodiscard]] static bool overlaps(const domain::TimeRange& a, const domain::TimeRange& b) {
+    return a.lo <= b.hi && b.lo <= a.hi;
+  }
+  const TimedRouteTable& table_;
+  const DiscoveryRouter& fallback_;
 };
 
 }  // namespace loti::routing

@@ -91,6 +91,11 @@ class Node final : private ChainCallback {
   // Overlay, filled in by the configurator (sim) or peering subsystem (prod).
   void add_neighbor(domain::NodeId neighbor);
   void learn_route(domain::NodeId destination, domain::NodeId next_hop);
+  // A time-scoped overlay route toward `destination`, valid during `validity` — consumed by the
+  // RoutingTableRouter. Additive (multiple calls accumulate, shortest first). Filled by a future
+  // routing protocol / static config; the network does not compute it here. In-RAM only for now.
+  void learn_route_at(domain::NodeId destination, domain::NodeId next_hop,
+                      domain::TimeRange validity);
 
   // Application API. `range` is the querying party's estimated time window for the target
   // event — a required input the network cannot infer; forwarding routes over the overlay
@@ -227,6 +232,10 @@ class Node final : private ChainCallback {
   std::map<domain::NodeId, domain::Neighbor> neighbors_;
   std::vector<std::vector<domain::Event>> unreferenced_per_chain_;
   std::map<domain::NodeId, domain::NodeId> destination_to_next_hop_;
+
+  // Time-dependent routing table (destination → time-scoped next hops), consumed by the
+  // RoutingTableRouter. In-RAM only for now; filled by learn_route_at (a future routing protocol).
+  routing::TimedRouteTable timed_routes_;
 
   // Forwarding policy — the "where do we forward a discovery" seam. Holds const
   // references to the two overlay tables above, so it is declared after them (and thus

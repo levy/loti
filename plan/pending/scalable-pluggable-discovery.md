@@ -292,14 +292,23 @@ OMNeT++/INET in this environment) — unverified until an OMNeT++ build (Part 6)
 **Risk:** medium. **Done** — `O(retained clock events)` scan per call (a compact time-indexed
 adjacency is a later optimization); core builds clean + green.
 
-### Part 4 — Time-dependent routing table + `RoutingTableRouter`
-- [ ] `(destination, time_bucket) → [next hop, shortest first]`; `learn_route` gains a time bucket.
-- [ ] `RoutingTableRouter` with fallback to `NeighborHistoryRouter` on a miss; intersect next hops
-  with the neighbor history so every hop is past-cross-linked.
-- [ ] Coarse time buckets; **provider seam only** — filling it from an overlay routing protocol is
-  **out of scope** (config/static fill is enough to exercise the directed path).
+### Part 4 — Time-dependent routing table + `RoutingTableRouter` — **DONE**
+- [x] `TimedRouteTable` = `destination → [TimedRoute{validity, next_hops}]`, an in-RAM structure
+  ([routing/discovery_router.hpp](../../src/core/routing/discovery_router.hpp)). **Decision:** rather
+  than break `learn_route`'s signature (which would ripple through `NetworkConfigurator`,
+  `build_path`, and `lotid`), a new `Node::learn_route_at(dest, next_hop, validity)` feeds it; the
+  static table + its callers are untouched. Uses an explicit **validity `TimeRange`** per route
+  rather than a fixed epoch — a superset of coarse buckets and simpler to reason about.
+- [x] `RoutingTableRouter(table, fallback)`: on a hit (a route toward `destination` whose validity
+  overlaps `ctx.range`) it returns those next hops **intersected with the fallback's cross-linked
+  set**, so every directed hop is one we can actually close through; on a miss — or when no directed
+  hop is cross-linked in-window — it degrades to the fallback (the `NeighborHistoryRouter` flood).
+- [x] **Provider seam only** — `learn_route_at` is the fill point; an actual overlay routing protocol
+  is out of scope. In-RAM (not persisted) for now, since nothing fills it yet. Unit-tested
+  ([test_routing.cpp](../../test/core/test_routing.cpp)): hit→directed, no-entry→fallback,
+  hop-not-cross-linked→fallback, window-miss→identical to pure fallback.
 
-**Risk:** medium.
+**Risk:** medium. **Done** — core builds clean + green.
 
 ### Part 5 — Bounded probabilistic fan-out (the flood controls)
 - [ ] `ProbabilisticRouter`: width `k`, temperature `τ`, hop limit, visited-node set (dedup).
