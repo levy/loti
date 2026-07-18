@@ -12,11 +12,13 @@
 #include <utility>
 #include <vector>
 
+#include "adapters/sim/in_memory_store.hpp"
 #include "node.hpp"
 #include "ports/clock.hpp"
 #include "ports/rng.hpp"
 #include "ports/scheduler.hpp"
 #include "ports/signer.hpp"
+#include "ports/store.hpp"
 #include "ports/telemetry.hpp"
 #include "ports/transport.hpp"
 
@@ -108,11 +110,16 @@ class World {
   World& operator=(const World&) = delete;
 
   Node& add_node(domain::NodeId id, NodeConfig cfg) {
-    owned_.push_back(std::make_unique<Node>(id, ports(), cfg));
+    stores_.push_back(std::make_unique<sim::InMemoryStore>());  // one DAG store per node
+    node_stores_[id] = stores_.back().get();
+    owned_.push_back(std::make_unique<Node>(id, ports(*stores_.back()), cfg));
     Node* p = owned_.back().get();
     nodes_[id] = p;
     return *p;
   }
+
+  // The DAG store backing a node (for tests that assert on persisted state directly).
+  [[nodiscard]] sim::InMemoryStore& store_of(domain::NodeId id) { return *node_stores_.at(id); }
 
   // Deliver queued datagrams until the network is quiet (each delivery may enqueue more).
   void pump() {
@@ -132,7 +139,9 @@ class World {
   }
 
  private:
-  NodePorts ports() { return NodePorts{clock_, scheduler_, transport_, rng_, signer_, telemetry_}; }
+  NodePorts ports(ports::Store& store) {
+    return NodePorts{clock_, scheduler_, transport_, rng_, signer_, telemetry_, store};
+  }
 
   domain::Timestamp now_ = 0;
   FakeClock clock_{now_};
@@ -142,6 +151,8 @@ class World {
   NullSigner signer_;
   ports::NoopTelemetry telemetry_;
   std::map<domain::NodeId, Node*> nodes_;
+  std::map<domain::NodeId, sim::InMemoryStore*> node_stores_;
+  std::vector<std::unique_ptr<sim::InMemoryStore>> stores_;
   std::vector<std::unique_ptr<Node>> owned_;
 };
 

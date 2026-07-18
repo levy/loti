@@ -46,7 +46,8 @@ void Daemon::initialize(int stage)
         simtime_t expiry(par("discoveryExpiryTime").doubleValue());
         config.discovery_expiry = expiry.raw();
         node_ = std::make_unique<Node>(
-            nodeId_, NodePorts{clock_, scheduler_, transport_, rng_, signer_, telemetry_}, config);
+            nodeId_, NodePorts{clock_, scheduler_, transport_, rng_, signer_, telemetry_, store_},
+            config);
         createClockEventTimer_.setName("CreateClockEventTimer");
         scheduleCreateClockEventTimer();
         node_->start();
@@ -85,7 +86,7 @@ void Daemon::scheduleCreateClockEventTimer()
     scheduleAt(simTime() + par("createClockEventInterval"), &createClockEventTimer_);
 }
 
-const domain::Event& Daemon::publishEvent(const domain::Bytes& data)
+domain::Event Daemon::publishEvent(const domain::Bytes& data)
 {
     Enter_Method_Silent();
     return node_->publish_event(data);

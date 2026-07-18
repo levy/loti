@@ -19,7 +19,10 @@ Node::Node(NodeId id, NodePorts ports, NodeConfig config)
       rng_(ports.rng),
       signer_(ports.signer),
       telemetry_(ports.telemetry),
-      config_(config) {}
+      store_(ports.store),
+      config_(config) {
+  hydrate_working_state();  // recover overlay + unreferenced tail from the store (empty if fresh)
+}
 
 Node::~Node() {
   scheduler_.cancel(clock_timer_);
@@ -33,12 +36,12 @@ void Node::start() {
 
 void Node::add_neighbor(NodeId neighbor) {
   auto [it, inserted] = neighbors_.try_emplace(neighbor, Neighbor{neighbor, {}});
-  if (inserted && persistence_) persistence_->on_neighbor_changed(it->second);
+  if (inserted) store_.put_neighbor(it->second);
 }
 
 void Node::learn_route(NodeId destination, NodeId next_hop) {
   destination_to_next_hop_[destination] = next_hop;
-  if (persistence_) persistence_->on_route_changed(destination, next_hop);
+  store_.put_route(destination, next_hop);
 }
 
 // ---------------------------------------------------------------------------
@@ -59,12 +62,10 @@ void Node::schedule_purge_timer() {
 }
 
 void Node::create_clock_event() {
-  const auto index = all_clock_events_.size();
-  const auto& clock_event = insert_clock_event();
-  event_hash_to_clock_event_index_[clock_event.hash] = index;
-  for (const auto& referenced : clock_event.referenced_events)
-    event_hash_to_referencing_event_index_.insert({referenced.hash, index});
-  unreferenced_events_.clear();
+  // insert_clock_event() appends to the store, which also records the reverse index
+  // (each referenced hash → this clock event's seq) that used to be an in-RAM multimap.
+  const LocalClockEvent clock_event = insert_clock_event();
+  unreferenced_events_.clear();  // this clock event referenced them all
   telemetry_.on_clock_event_created(clock_event);
   for (const auto& [nid, neighbor] : neighbors_) send_clock_event_notification(neighbor, clock_event);
 }
@@ -129,11 +130,11 @@ void Node::process_clock_event_notification(Neighbor& neighbor, const Hash& last
                                             const Hash& neighbor_last_clock_event_hash) {
   const bool neighbor_changed = neighbor.last_clock_event_hash != last_clock_event_hash;
   neighbor.last_clock_event_hash = last_clock_event_hash;
-  if (neighbor_changed && persistence_) persistence_->on_neighbor_changed(neighbor);
-  if (auto idx = find_clock_event_index(neighbor_last_clock_event_hash)) {
-    all_clock_events_[*idx].referencing_events.push_back(
-        EventReference{neighbor.node_id, last_clock_event_hash});
-    if (persistence_) persistence_->on_clock_event_updated(all_clock_events_[*idx]);
+  if (neighbor_changed) store_.put_neighbor(neighbor);
+  // Record the learned reverse cross-link on our clock event the neighbor referenced.
+  if (auto local = store_.clock_event_by_hash(neighbor_last_clock_event_hash)) {
+    local->referencing_events.push_back(EventReference{neighbor.node_id, last_clock_event_hash});
+    store_.update_clock_event(*local);
   }
 }
 
@@ -146,10 +147,10 @@ void Node::send_chain_request(NodeId originator, const Neighbor& neighbor,
 void Node::process_chain_request(NodeId originator, const Neighbor& neighbor,
                                  const EventReference& event) {
   if (event.creator == id_) {
-    auto idx = find_event_index(event.hash);
-    if (!idx) return;
+    auto local = store_.event_by_hash(event.hash);
+    if (!local) return;
     EventChain chain;
-    chain.event = all_events_[*idx];
+    chain.event = *local;
     if (!add_local_lower_bound(chain)) return;
     if (!add_local_upper_bound(chain)) return;
     if (!extend_lower_bound_for_neighbor(neighbor, chain)) return;
@@ -198,11 +199,9 @@ void Node::process_chain_response(NodeId originator, const Neighbor& neighbor,
 // ---------------------------------------------------------------------------
 // application API
 // ---------------------------------------------------------------------------
-const Event& Node::publish_event(Bytes data) {
-  const auto index = all_events_.size();
-  const auto& event = insert_event(std::move(data));
-  event_hash_to_event_index_[event.hash] = index;
-  unreferenced_events_.push_back(event);
+Event Node::publish_event(Bytes data) {
+  const Event event = insert_event(std::move(data));  // appended to the store (indexed by hash)
+  unreferenced_events_.push_back(event);              // tail until the next clock event
   telemetry_.on_event_created(event);
   return event;
 }
@@ -423,8 +422,8 @@ bool Node::add_local_lower_bound(EventChain& chain) const {
                                                : chain.lower_bound.front().referenced_events;
   for (const auto& ref : refs) {
     if (ref.creator == id_) {
-      if (auto idx = find_clock_event_index(ref.hash)) {
-        chain.lower_bound.push_front(all_clock_events_[*idx]);  // slice LocalClockEvent -> ClockEvent
+      if (auto ce = store_.clock_event_by_hash(ref.hash)) {
+        chain.lower_bound.push_front(*ce);  // slice LocalClockEvent -> ClockEvent
         return true;
       }
     }
@@ -435,37 +434,42 @@ bool Node::add_local_lower_bound(EventChain& chain) const {
 bool Node::add_local_upper_bound(EventChain& chain) const {
   const Hash& referenced =
       chain.upper_bound.empty() ? chain.event.hash : chain.upper_bound.back().hash;
-  auto range = event_hash_to_referencing_event_index_.equal_range(referenced);
-  for (auto it = range.first; it != range.second; ++it) {
-    chain.upper_bound.push_back(all_clock_events_[it->second]);
-    return true;  // first local clock event that references it (mirrors Daemon)
-  }
-  return false;
+  const auto seqs = store_.clock_events_referencing(referenced);
+  if (seqs.empty()) return false;
+  chain.upper_bound.push_back(store_.clock_event_by_seq(seqs.front()));  // lowest seq (mirrors Daemon)
+  return true;
 }
 
 bool Node::extend_lower_bound_for_neighbor(const Neighbor& neighbor, EventChain& chain) const {
   assert(chain.lower_bound.front().creator == id_);
-  std::size_t index = get_clock_event_index(chain.lower_bound.front().hash);
+  auto seq = store_.clock_event_seq(chain.lower_bound.front().hash);
+  assert(seq.has_value());
+  std::uint64_t index = *seq;
+  LocalClockEvent current = store_.clock_event_by_seq(index);
   while (true) {
-    const auto& current = all_clock_events_[index];
     for (const auto& ref : current.referenced_events)
       if (ref.creator == neighbor.node_id) return true;
     if (index == 0) return false;
     --index;
-    chain.lower_bound.push_front(all_clock_events_[index]);
+    current = store_.clock_event_by_seq(index);
+    chain.lower_bound.push_front(current);
   }
 }
 
 bool Node::extend_upper_bound_for_neighbor(const Neighbor& neighbor, EventChain& chain) const {
   assert(chain.upper_bound.back().creator == id_);
-  std::size_t index = get_clock_event_index(chain.upper_bound.back().hash);
+  auto seq = store_.clock_event_seq(chain.upper_bound.back().hash);
+  assert(seq.has_value());
+  std::uint64_t index = *seq;
+  const std::uint64_t last = store_.clock_event_count() - 1;
+  LocalClockEvent current = store_.clock_event_by_seq(index);
   while (true) {
-    const auto& current = all_clock_events_[index];
     for (const auto& ref : current.referencing_events)
       if (ref.creator == neighbor.node_id) return true;
-    if (index == all_clock_events_.size() - 1) return false;
+    if (index == last) return false;
     ++index;
-    chain.upper_bound.push_back(all_clock_events_[index]);
+    current = store_.clock_event_by_seq(index);
+    chain.upper_bound.push_back(current);
   }
 }
 
@@ -528,32 +532,26 @@ void Node::validate_chain_discovery_result(const EventChainDiscovery& discovery)
 // ---------------------------------------------------------------------------
 // DAG mutation / lookup
 // ---------------------------------------------------------------------------
-const Event& Node::insert_event(Bytes data) {
+Event Node::insert_event(Bytes data) {
   Event event;
   event.data = std::move(data);
   event.creator = id_;
   event.salt = rng_.next_salt();
-  if (!all_clock_events_.empty()) {
-    const auto& last = all_clock_events_.back();
-    event.referenced_events.push_back(EventReference{last.creator, last.hash});
-  }
+  if (auto last = store_.latest_clock_event())
+    event.referenced_events.push_back(EventReference{last->creator, last->hash});
   event.hash = hash::calculate_event_hash(event);
   event.signature = signer_.sign(event.hash);
-  all_events_.push_back(std::move(event));
-  const Event& stored = all_events_.back();
-  if (persistence_) persistence_->on_event_appended(stored);
-  return stored;
+  store_.append_event(event);
+  return event;
 }
 
-const LocalClockEvent& Node::insert_clock_event() {
+LocalClockEvent Node::insert_clock_event() {
   LocalClockEvent clock_event;
   clock_event.timestamp = clock_.now();
   clock_event.creator = id_;
   clock_event.salt = rng_.next_salt();
-  if (!all_clock_events_.empty()) {
-    const auto& last = all_clock_events_.back();
-    clock_event.referenced_events.push_back(EventReference{last.creator, last.hash});
-  }
+  if (auto last = store_.latest_clock_event())
+    clock_event.referenced_events.push_back(EventReference{last->creator, last->hash});
   for (const auto& [nid, neighbor] : neighbors_) {
     if (!neighbor.last_clock_event_hash.empty())
       clock_event.referenced_events.push_back(
@@ -563,27 +561,8 @@ const LocalClockEvent& Node::insert_clock_event() {
     clock_event.referenced_events.push_back(EventReference{event.creator, event.hash});
   clock_event.hash = hash::calculate_clock_event_hash(clock_event);
   clock_event.signature = signer_.sign(clock_event.hash);
-  all_clock_events_.push_back(std::move(clock_event));
-  const LocalClockEvent& stored = all_clock_events_.back();
-  if (persistence_) persistence_->on_clock_event_appended(stored);
-  return stored;
-}
-
-std::optional<std::size_t> Node::find_clock_event_index(const Hash& hash) const {
-  auto it = event_hash_to_clock_event_index_.find(hash);
-  if (it == event_hash_to_clock_event_index_.end()) return std::nullopt;
-  return it->second;
-}
-
-std::size_t Node::get_clock_event_index(const Hash& hash) const {
-  if (auto idx = find_clock_event_index(hash)) return *idx;
-  throw std::runtime_error("cannot find clock event");
-}
-
-std::optional<std::size_t> Node::find_event_index(const Hash& hash) const {
-  auto it = event_hash_to_event_index_.find(hash);
-  if (it == event_hash_to_event_index_.end()) return std::nullopt;
-  return it->second;
+  store_.append_clock_event(clock_event);  // also records the reverse index
+  return clock_event;
 }
 
 const Neighbor* Node::find_next_hop_neighbor(NodeId node) const {
@@ -603,11 +582,14 @@ constexpr std::uint64_t kSnapshotVersion = 1;
 Bytes Node::snapshot() const {
   wire::Writer w;
   w.u64(kSnapshotVersion);
-  w.u64(all_events_.size());
-  for (const auto& e : all_events_) w.event(e);
-  w.u64(all_clock_events_.size());
-  for (const auto& c : all_clock_events_) {
-    w.clock_event(c);            // the ClockEvent part
+  const std::size_t event_count = store_.event_count();
+  w.u64(event_count);
+  for (std::size_t i = 0; i < event_count; ++i) w.event(store_.event_by_seq(i));
+  const std::size_t clock_count = store_.clock_event_count();
+  w.u64(clock_count);
+  for (std::size_t i = 0; i < clock_count; ++i) {
+    const LocalClockEvent c = store_.clock_event_by_seq(i);
+    w.clock_event(c);              // the ClockEvent part
     w.refs(c.referencing_events);  // the learned back-references (LocalClockEvent extra)
   }
   w.u64(unreferenced_events_.size());
@@ -664,32 +646,33 @@ void Node::restore(const Bytes& blob) {
 
 void Node::load(std::vector<Event> events, std::vector<LocalClockEvent> clock_events,
                 std::map<NodeId, Neighbor> neighbors, std::map<NodeId, NodeId> routes) {
-  neighbors_ = std::move(neighbors);
-  all_events_ = std::move(events);
-  all_clock_events_ = std::move(clock_events);
-  destination_to_next_hop_ = std::move(routes);
+  // Import the DAG into the store (replacing whatever it held) — append_clock_event also
+  // rebuilds the reverse index — then rehydrate the working set from it.
+  store_.clear();
+  for (const auto& e : events) store_.append_event(e);
+  for (const auto& c : clock_events) store_.append_clock_event(c);
+  for (const auto& [id, n] : neighbors) store_.put_neighbor(n);
+  for (const auto& [dst, next_hop] : routes) store_.put_route(dst, next_hop);
+  hydrate_working_state();
+}
 
+void Node::hydrate_working_state() {
+  neighbors_ = store_.load_neighbors();
+  destination_to_next_hop_ = store_.load_routes();
+
+  // Rederive the unreferenced-event tail: an event is unreferenced iff no clock event
+  // references it, and (by construction — each clock event references and clears the whole
+  // then-current set) the unreferenced events are exactly the suffix published after the
+  // last clock event. Walk events newest-first until one is referenced; a bounded scan.
   unreferenced_events_.clear();
-  event_hash_to_event_index_.clear();
-  event_hash_to_clock_event_index_.clear();
-  event_hash_to_referencing_event_index_.clear();
-
-  // Rebuild the derived indices (same mapping publish_event / create_clock_event build).
-  for (std::size_t i = 0; i < all_events_.size(); ++i)
-    event_hash_to_event_index_[all_events_[i].hash] = i;
-  for (std::size_t i = 0; i < all_clock_events_.size(); ++i) {
-    event_hash_to_clock_event_index_[all_clock_events_[i].hash] = i;
-    for (const auto& ref : all_clock_events_[i].referenced_events)
-      event_hash_to_referencing_event_index_.insert({ref.hash, i});
+  std::vector<Event> tail;
+  for (std::size_t k = store_.event_count(); k-- > 0;) {
+    Event e = store_.event_by_seq(k);
+    if (!store_.clock_events_referencing(e.hash).empty()) break;  // reached the referenced prefix
+    tail.push_back(std::move(e));
   }
-
-  // Rederive the unreferenced-event set: an event is unreferenced iff no clock event
-  // references it. Scanning all_events_ in order yields the same publish-ordered suffix
-  // that publish_event/create_clock_event maintain at runtime.
-  for (const auto& event : all_events_)
-    if (event_hash_to_referencing_event_index_.find(event.hash) ==
-        event_hash_to_referencing_event_index_.end())
-      unreferenced_events_.push_back(event);
+  for (auto it = tail.rbegin(); it != tail.rend(); ++it)  // restore publish order
+    unreferenced_events_.push_back(std::move(*it));
 }
 
 }  // namespace loti

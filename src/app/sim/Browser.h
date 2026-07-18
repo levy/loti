@@ -18,6 +18,8 @@
 #ifndef _LOTI_APP_SIM_BROWSER_H_
 #define _LOTI_APP_SIM_BROWSER_H_
 
+#include <optional>
+
 #include <omnetpp.h>
 
 #include "Daemon.h"
@@ -50,7 +52,7 @@ class Browser : public cSimpleModule, public ChainCallback, public BoundsCallbac
     void processDiscoverEventBoundsTimer();
     void scheduleDiscoverEventOrderTimer();
     void processDiscoverEventOrderTimer();
-    const domain::Event *findRandomEvent();
+    std::optional<domain::Event> findRandomEvent();
 
   public:
     ~Browser() override;

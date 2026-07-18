@@ -180,9 +180,10 @@ TEST_CASE("a real Ed25519-signed proof verifies, and a signature tamper is caugh
   harness::SeededRng rng{1};
   os::Ed25519KeyStore signer;  // ephemeral key; id == fingerprint(pubkey)
   ports::NoopTelemetry telemetry;
+  sim::InMemoryStore store;
 
   const domain::NodeId id = signer.node_id();
-  Node node(id, NodePorts{clock, sched, transport, rng, signer, telemetry}, NodeConfig{});
+  Node node(id, NodePorts{clock, sched, transport, rng, signer, telemetry, store}, NodeConfig{});
 
   proof::Proof p;
   p.kind = proof::Kind::bounds;

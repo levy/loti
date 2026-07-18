@@ -61,84 +61,15 @@
 #include "adapters/os/store.hpp"
 #include "adapters/os/telemetry.hpp"
 #include "adapters/os/transport.hpp"
+#include "adapters/sim/in_memory_store.hpp"
 #include "node.hpp"
+#include "ports/store.hpp"
 #include "proof/proof.hpp"
 #include "wire/codec.hpp"
 
 namespace {
 
 using namespace loti;
-
-// Mirrors every Node state change into the LMDB store. Each change is its own small
-// durable transaction (autocommit) — correct and durable before the daemon replies;
-// batching per reactor wakeup is a later optimization.
-class StorePersistence final : public PersistenceListener {
- public:
-  explicit StorePersistence(os::LmdbStore& store) : store_(store) {}
-  void on_event_appended(const domain::Event& e) override {
-    durable([&](os::LmdbStore::Batch& b) { b.append_event(e); });
-  }
-  void on_clock_event_appended(const domain::LocalClockEvent& c) override {
-    durable([&](os::LmdbStore::Batch& b) { b.append_clock_event(c); });
-  }
-  void on_clock_event_updated(const domain::LocalClockEvent& c) override {
-    durable([&](os::LmdbStore::Batch& b) { b.update_clock_event(c); });
-  }
-  void on_neighbor_changed(const domain::Neighbor& n) override {
-    durable([&](os::LmdbStore::Batch& b) { b.put_neighbor(n); });
-  }
-  void on_route_changed(domain::NodeId dst, domain::NodeId next_hop) override {
-    durable([&](os::LmdbStore::Batch& b) { b.put_route(dst, next_hop); });
-  }
-
- private:
-  // One change = one durable txn. On MDB_MAP_FULL, grow the map once and retry (the
-  // failed txn was aborted, so no state and no sequence numbers were consumed).
-  template <class Op>
-  void durable(Op&& op) {
-    try {
-      auto b = store_.begin();
-      op(b);
-      b.commit();
-    } catch (const os::LmdbMapFull&) {
-      store_.grow_map();
-      auto b = store_.begin();
-      op(b);
-      b.commit();
-    }
-  }
-  os::LmdbStore& store_;
-};
-
-// Rewrite `store` to mirror a node snapshot blob (used by db-restore). Parses the
-// snapshot's events / clock events / neighbors / routes (the unreferenced section is
-// derived, so it is skipped) into a freshly-reset store.
-void rebuild_store(os::LmdbStore& store, const domain::Bytes& blob) {
-  store.reset();
-  auto b = store.begin();
-  wire::Reader r(blob);
-  if (r.u64() != 1) throw std::runtime_error("db-restore: unsupported snapshot version");
-  for (auto n = r.u64(); n > 0; --n) b.append_event(r.event());
-  for (auto n = r.u64(); n > 0; --n) {
-    domain::LocalClockEvent c;
-    static_cast<domain::ClockEvent&>(c) = r.clock_event();
-    c.referencing_events = r.refs();
-    b.append_clock_event(c);
-  }
-  for (auto n = r.u64(); n > 0; --n) r.event();  // unreferenced — derived on load
-  for (auto n = r.u64(); n > 0; --n) {
-    domain::Neighbor nb;
-    nb.node_id = r.u64();
-    nb.last_clock_event_hash = r.blob();
-    b.put_neighbor(nb);
-  }
-  for (auto n = r.u64(); n > 0; --n) {
-    const auto dst = r.u64();
-    const auto next_hop = r.u64();
-    b.put_route(dst, next_hop);
-  }
-  b.commit();
-}
 
 std::vector<std::string> tokenize(const std::string& s) {
   std::vector<std::string> out;
@@ -300,14 +231,21 @@ class Lotid final : public ChainCallback, public BoundsCallback, public OrderCal
       signed_ = true;
       signer_ = std::move(keystore);
     }
-    node_ = std::make_unique<Node>(
-        node_id_, NodePorts{clock_, scheduler_, transport_, rng_, *signer_, telemetry_},
-        NodeConfig{clock_ns, expiry_ns});
-    if (!store_path.empty()) {
+    // Build the DAG store first — the Node reads and writes the DAG through it. With
+    // --store it is LMDB (durable, page-cache-bounded RAM); without, an in-memory store
+    // (state lives only for the run, like the simulation).
+    if (store_path.empty()) {
+      store_ = std::make_unique<sim::InMemoryStore>();
+    } else {
       const auto policy = store_sync_interval_ns_ > 0 ? os::LmdbStore::SyncPolicy::lazy
                                                       : os::LmdbStore::SyncPolicy::safe;
-      store_.emplace(std::move(store_path), store_map_size, policy);
+      auto lmdb = std::make_unique<os::LmdbStore>(std::move(store_path), store_map_size, policy);
+      lmdb_ = lmdb.get();
+      store_ = std::move(lmdb);
     }
+    node_ = std::make_unique<Node>(
+        node_id_, NodePorts{clock_, scheduler_, transport_, rng_, *signer_, telemetry_, *store_},
+        NodeConfig{clock_ns, expiry_ns});
   }
 
   domain::NodeId node_id() const { return node_id_; }
@@ -321,15 +259,12 @@ class Lotid final : public ChainCallback, public BoundsCallback, public OrderCal
   }
   void learn_route(domain::NodeId dst, domain::NodeId next_hop) { node_->learn_route(dst, next_hop); }
 
+  // The Node hydrated its working set from the store in its constructor, so restart
+  // recovery is already done; just report what a persistent store carried over.
   void restore_from_store() {
-    if (!store_) return;
-    node_->load(store_->load_events(), store_->load_clock_events(), store_->load_neighbors(),
-                store_->load_routes());
+    if (!lmdb_) return;
     std::fprintf(stderr, "[lotid] loaded %zu events, %zu clock events from %s\n",
-                 node_->event_count(), node_->clock_event_count(), store_->path().c_str());
-    // From here on, every state change is mirrored into the store incrementally.
-    persistence_.emplace(*store_);
-    node_->set_persistence_listener(&*persistence_);
+                 node_->event_count(), node_->clock_event_count(), lmdb_->path().c_str());
   }
 
   void run() {
@@ -346,16 +281,16 @@ class Lotid final : public ChainCallback, public BoundsCallback, public OrderCal
     setup_control();
     reactor_.run();
     if (!control_path_.empty()) ::unlink(control_path_.c_str());
-    if (store_) store_->sync();  // flush on a clean shutdown (writes are already durable)
+    if (lmdb_) lmdb_->sync();  // flush on a clean shutdown (writes are already durable)
   }
 
-  // In lazy sync mode the store skips per-commit fsyncs, so a repeating reactor timer
+  // In lazy sync mode the LMDB store skips per-commit fsyncs, so a repeating reactor timer
   // forces committed pages out every interval. Bounds the crash-loss window to one
-  // interval; a no-op (never armed) in safe mode or without a store.
+  // interval; a no-op (never armed) in safe mode or with the in-memory store.
   void schedule_store_sync() {
-    if (store_sync_interval_ns_ == 0 || !store_) return;
+    if (store_sync_interval_ns_ == 0 || !lmdb_) return;
     scheduler_.after(store_sync_interval_ns_, [this] {
-      if (store_) store_->sync();
+      if (lmdb_) lmdb_->sync();
       schedule_store_sync();  // re-arm
     });
   }
@@ -414,7 +349,7 @@ class Lotid final : public ChainCallback, public BoundsCallback, public OrderCal
     }
     if (verb == "event") {
       if (args.size() < 2) return {kUsage, false, "usage: event <hash|last>", {}};
-      const auto* e = find_event(args[1]);
+      const auto e = find_event(args[1]);
       if (!e) return {kNotFound, false, "no such event", {}};
       return {kOk, false, "", {{"event", hex(e->hash)}, {"creator", hex_id(e->creator)},
                                {"content", printable(e->data)},
@@ -476,7 +411,7 @@ class Lotid final : public ChainCallback, public BoundsCallback, public OrderCal
     }
     if (verb == "save") {
       sync_store();
-      return {kOk, false, "", {{"store", store_ ? store_->path() : "(none)"}}};
+      return {kOk, false, "", {{"store", lmdb_ ? lmdb_->path() : "(in-memory)"}}};
     }
     if (verb == "db-stat") return db_stat();
     if (verb == "db-backup") {
@@ -491,8 +426,7 @@ class Lotid final : public ChainCallback, public BoundsCallback, public OrderCal
       const auto blob = os::FileStore(args[1]).load();
       if (!blob) return {kNotFound, false, "cannot read snapshot", {}};
       try {
-        node_->restore(*blob);
-        if (store_) rebuild_store(*store_, node_->snapshot());
+        node_->restore(*blob);  // clears the store, imports the snapshot, rehydrates
       } catch (const std::exception& e) {
         return {kInvalidResult, false, std::string("invalid snapshot: ") + e.what(), {}};
       }
@@ -717,8 +651,8 @@ class Lotid final : public ChainCallback, public BoundsCallback, public OrderCal
   }
 
   // ---- events / snapshots -------------------------------------------------
-  const domain::Event* find_event(const std::string& ref) {
-    if (ref == "last") return last_event_.empty() ? nullptr : find_by_hash_prefix(hex(last_event_));
+  std::optional<domain::Event> find_event(const std::string& ref) {
+    if (ref == "last") return last_event_.empty() ? std::nullopt : find_by_hash_prefix(hex(last_event_));
     return find_by_hash_prefix(ref);
   }
   // Resolve an event argument to an Event to run a discovery on. A local reference
@@ -736,16 +670,18 @@ class Lotid final : public ChainCallback, public BoundsCallback, public OrderCal
       e.hash = *hash;
       return e;
     }
-    if (const auto* e = find_event(ref)) return *e;
+    return find_event(ref);
+  }
+  // The DAG lives in the store now, so events come back by value (a hash-prefix scan).
+  std::optional<domain::Event> find_by_hash_prefix(const std::string& prefix) {
+    for (std::size_t i = 0; i < node_->event_count(); ++i) {
+      domain::Event e = node_->event_at(i);
+      if (hex(e.hash).rfind(prefix, 0) == 0) return e;
+    }
     return std::nullopt;
   }
-  const domain::Event* find_by_hash_prefix(const std::string& prefix) {
-    for (std::size_t i = 0; i < node_->event_count(); ++i)
-      if (hex(node_->event_at(i).hash).rfind(prefix, 0) == 0) return &node_->event_at(i);
-    return nullptr;
-  }
   void sync_store() {
-    if (store_) store_->sync();
+    if (lmdb_) lmdb_->sync();
   }
 
   // Store status: the retention invariant is that local events and the local clock
@@ -755,16 +691,16 @@ class Lotid final : public ChainCallback, public BoundsCallback, public OrderCal
   Reply db_stat() {
     const auto snapshot = node_->snapshot();
     Reply r{kOk, false, "", {}};
-    r.fields.emplace_back("store", store_ ? store_->path() : "(none)");
+    r.fields.emplace_back("store", lmdb_ ? lmdb_->path() : "(in-memory)");
     r.fields.emplace_back("events", std::to_string(node_->event_count()));
     r.fields.emplace_back("clockEvents", std::to_string(node_->clock_event_count()));
     r.fields.emplace_back("peers", std::to_string(peers_.size()));
     r.fields.emplace_back("snapshotBytes", std::to_string(snapshot.size()));
     r.fields.emplace_back("retention", "local events + clock chain never dropped");
-    if (store_) {
+    if (lmdb_) {
       struct stat st {};
       r.fields.emplace_back("diskBytes",
-                            std::to_string(::stat(store_->path().c_str(), &st) == 0 ? st.st_size : 0));
+                            std::to_string(::stat(lmdb_->path().c_str(), &st) == 0 ? st.st_size : 0));
     }
     return r;
   }
@@ -781,8 +717,8 @@ class Lotid final : public ChainCallback, public BoundsCallback, public OrderCal
   bool signed_ = false;
   domain::EventHash last_event_;
   std::string stdin_buf_;
-  std::optional<os::LmdbStore> store_;
-  std::optional<StorePersistence> persistence_;  // installed after load; mirrors changes
+  std::unique_ptr<ports::Store> store_;          // the DAG store (LMDB or in-memory)
+  os::LmdbStore* lmdb_ = nullptr;                // non-null iff store_ is LMDB-backed
   domain::Duration store_sync_interval_ns_ = 0;  // >0 → lazy store + periodic sync() timer
   std::vector<std::tuple<domain::NodeId, std::string, std::uint16_t>> peers_;
 

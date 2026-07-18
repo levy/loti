@@ -12,7 +12,7 @@ namespace loti::os {
 namespace {
 
 // Number of named sub-DBs the env must accommodate; keep in sync with the opens below.
-constexpr unsigned kMaxDbs = 7;
+constexpr unsigned kMaxDbs = 8;
 
 constexpr char kVersionKey[] = "version";  // key into the `meta` sub-DB
 
@@ -92,6 +92,26 @@ domain::Bytes to_bytes(const MDB_val& v) {
 
 }  // namespace
 
+// A single-record write as its own durable transaction: begin, apply, commit; on
+// MDB_MAP_FULL grow the map once and retry (the aborted txn consumed no state or seqs).
+// This is what makes LmdbStore satisfy the ports::Store write contract directly, so the
+// Node no longer needs the PersistenceListener seam.
+namespace {
+template <class Op>
+void durable(LmdbStore& store, Op&& op) {
+  try {
+    auto b = store.begin();
+    op(b);
+    b.commit();
+  } catch (const LmdbMapFull&) {
+    store.grow_map();
+    auto b = store.begin();
+    op(b);
+    b.commit();
+  }
+}
+}  // namespace
+
 // ---------------------------------------------------------------------------
 // open / close
 // ---------------------------------------------------------------------------
@@ -139,24 +159,37 @@ LmdbStore::LmdbStore(std::string path, std::size_t map_size, SyncPolicy sync)
     open("clock_index", clock_index_);
     open("neighbors", neighbors_);
     open("routes", routes_);
+    // The reverse index is DUPSORT: one key (a referenced hash) maps to many seq values,
+    // kept sorted so a lookup yields the referencing clock events in ascending seq order.
+    check(mdb_dbi_open(txn, "referencing", MDB_CREATE | MDB_DUPSORT, &referencing_), "referencing");
 
     MDB_val key{sizeof(kVersionKey) - 1, const_cast<char*>(kVersionKey)};
     MDB_val val{};
     int rc = mdb_get(txn, meta_, &key, &val);
-    if (rc == MDB_NOTFOUND) {
+    auto stamp_version = [&](std::uint64_t v) {
       unsigned char buf[8];
-      put_u64_be(buf, kFormatVersion);
-      MDB_val v{sizeof(buf), buf};
-      check(mdb_put(txn, meta_, &key, &v, 0), "put version");
+      put_u64_be(buf, v);
+      MDB_val vv{sizeof(buf), buf};
+      check(mdb_put(txn, meta_, &key, &vv, 0), "put version");
+    };
+    if (rc == MDB_NOTFOUND) {  // fresh env
+      stamp_version(kFormatVersion);
       format_version_ = kFormatVersion;
     } else {
       check(rc, "get version");
       if (val.mv_size != sizeof(std::uint64_t))
         throw std::runtime_error("lmdb: meta 'version' record has an unexpected size");
       format_version_ = get_u64_be(static_cast<const unsigned char*>(val.mv_data));
-      if (format_version_ != kFormatVersion)
+      if (format_version_ == 1) {
+        // v1 → v2: the `referencing` sub-DB did not exist. Rebuild it from the clock
+        // events, then stamp the new version — all in this open transaction.
+        rebuild_referencing_index(txn);
+        stamp_version(kFormatVersion);
+        format_version_ = kFormatVersion;
+      } else if (format_version_ != kFormatVersion) {
         throw std::runtime_error("lmdb: unsupported store format version " +
                                  std::to_string(format_version_));
+      }
     }
 
     next_event_seq_ = next_seq(txn, events_);
@@ -229,6 +262,14 @@ std::uint64_t LmdbStore::Batch::append_clock_event(const domain::LocalClockEvent
   MDB_val ik{c.hash.size(), const_cast<std::uint8_t*>(c.hash.data())};
   MDB_val iv{sizeof(sbuf), sbuf};
   check_write(mdb_put(txn_, store_.clock_index_, &ik, &iv, 0), "put clock_index");
+
+  // Reverse index (DUPSORT): each hash this clock event references -> its seq. Backs
+  // clock_events_referencing() so upper-bound extension needs no in-RAM multimap.
+  for (const auto& ref : c.referenced_events) {
+    MDB_val rk{ref.hash.size(), const_cast<std::uint8_t*>(ref.hash.data())};
+    MDB_val rv{sizeof(sbuf), sbuf};
+    check_write(mdb_put(txn_, store_.referencing_, &rk, &rv, 0), "put referencing");
+  }
 
   return seq;
 }
@@ -329,12 +370,151 @@ std::map<domain::NodeId, domain::NodeId> LmdbStore::load_routes() const {
 std::size_t LmdbStore::event_count() const { return entry_count(env_, events_); }
 std::size_t LmdbStore::clock_event_count() const { return entry_count(env_, clock_events_); }
 
+// ---------------------------------------------------------------------------
+// ports::Store — direct single-record writes (autocommit) and by-key/by-seq reads
+// ---------------------------------------------------------------------------
+
+std::uint64_t LmdbStore::append_event(const domain::Event& e) {
+  std::uint64_t seq = 0;
+  durable(*this, [&](Batch& b) { seq = b.append_event(e); });
+  return seq;
+}
+
+std::uint64_t LmdbStore::append_clock_event(const domain::LocalClockEvent& c) {
+  std::uint64_t seq = 0;
+  durable(*this, [&](Batch& b) { seq = b.append_clock_event(c); });
+  return seq;
+}
+
+void LmdbStore::update_clock_event(const domain::LocalClockEvent& c) {
+  durable(*this, [&](Batch& b) { b.update_clock_event(c); });
+}
+
+void LmdbStore::put_neighbor(const domain::Neighbor& n) {
+  durable(*this, [&](Batch& b) { b.put_neighbor(n); });
+}
+
+void LmdbStore::put_route(domain::NodeId destination, domain::NodeId next_hop) {
+  durable(*this, [&](Batch& b) { b.put_route(destination, next_hop); });
+}
+
+std::optional<domain::Bytes> LmdbStore::get_bytes(MDB_dbi dbi, const void* key,
+                                                  std::size_t key_len) const {
+  MDB_txn* txn = nullptr;
+  check(mdb_txn_begin(env_, nullptr, MDB_RDONLY, &txn), "rtxn_begin");
+  MDB_val k{key_len, const_cast<void*>(key)};
+  MDB_val v{};
+  int rc = mdb_get(txn, dbi, &k, &v);
+  std::optional<domain::Bytes> out;
+  if (rc == MDB_SUCCESS) out = to_bytes(v);  // copied out before the txn is aborted
+  mdb_txn_abort(txn);
+  if (rc != MDB_SUCCESS && rc != MDB_NOTFOUND) fail_rc("get", rc);
+  return out;
+}
+
+std::optional<std::uint64_t> LmdbStore::seq_of(MDB_dbi index, const domain::EventHash& hash) const {
+  auto bytes = get_bytes(index, hash.data(), hash.size());
+  if (!bytes) return std::nullopt;
+  if (bytes->size() != sizeof(std::uint64_t))
+    throw std::runtime_error("lmdb: index value has an unexpected size");
+  return get_u64_be(bytes->data());
+}
+
+std::optional<domain::Event> LmdbStore::event_by_hash(const domain::EventHash& hash) const {
+  auto seq = seq_of(event_index_, hash);
+  if (!seq) return std::nullopt;
+  return event_by_seq(*seq);
+}
+
+domain::Event LmdbStore::event_by_seq(std::uint64_t seq) const {
+  unsigned char kbuf[8];
+  put_u64_be(kbuf, seq);
+  auto bytes = get_bytes(events_, kbuf, sizeof(kbuf));
+  if (!bytes) throw std::runtime_error("lmdb: event seq out of range");
+  wire::Reader r(*bytes);
+  return r.event();
+}
+
+std::optional<domain::LocalClockEvent> LmdbStore::clock_event_by_hash(
+    const domain::EventHash& hash) const {
+  auto seq = seq_of(clock_index_, hash);
+  if (!seq) return std::nullopt;
+  return clock_event_by_seq(*seq);
+}
+
+domain::LocalClockEvent LmdbStore::clock_event_by_seq(std::uint64_t seq) const {
+  unsigned char kbuf[8];
+  put_u64_be(kbuf, seq);
+  auto bytes = get_bytes(clock_events_, kbuf, sizeof(kbuf));
+  if (!bytes) throw std::runtime_error("lmdb: clock event seq out of range");
+  wire::Reader r(*bytes);
+  domain::LocalClockEvent c;
+  static_cast<domain::ClockEvent&>(c) = r.clock_event();
+  c.referencing_events = r.refs();
+  return c;
+}
+
+std::optional<std::uint64_t> LmdbStore::clock_event_seq(const domain::EventHash& hash) const {
+  return seq_of(clock_index_, hash);
+}
+
+std::vector<std::uint64_t> LmdbStore::clock_events_referencing(const domain::EventHash& hash) const {
+  std::vector<std::uint64_t> out;
+  MDB_txn* txn = nullptr;
+  check(mdb_txn_begin(env_, nullptr, MDB_RDONLY, &txn), "rtxn_begin");
+  MDB_cursor* cur = nullptr;
+  if (int rc = mdb_cursor_open(txn, referencing_, &cur); rc != MDB_SUCCESS) {
+    mdb_txn_abort(txn);
+    fail_rc("cursor_open", rc);
+  }
+  MDB_val k{hash.size(), const_cast<std::uint8_t*>(hash.data())};
+  MDB_val v{};
+  int rc = mdb_cursor_get(cur, &k, &v, MDB_SET_KEY);  // first dup for the key (lowest seq)
+  while (rc == MDB_SUCCESS) {
+    out.push_back(get_u64_be(static_cast<const unsigned char*>(v.mv_data)));
+    rc = mdb_cursor_get(cur, &k, &v, MDB_NEXT_DUP);  // dups are seq-sorted → ascending
+  }
+  mdb_cursor_close(cur);
+  mdb_txn_abort(txn);
+  if (rc != MDB_NOTFOUND) fail_rc("cursor_next_dup", rc);
+  return out;
+}
+
+std::optional<domain::LocalClockEvent> LmdbStore::latest_clock_event() const {
+  const std::size_t n = clock_event_count();
+  if (n == 0) return std::nullopt;
+  return clock_event_by_seq(n - 1);
+}
+
+void LmdbStore::rebuild_referencing_index(MDB_txn* txn) {
+  MDB_cursor* cur = nullptr;
+  check(mdb_cursor_open(txn, clock_events_, &cur), "cursor_open(migrate)");
+  MDB_val ck{}, cv{};
+  int rc = mdb_cursor_get(cur, &ck, &cv, MDB_FIRST);
+  while (rc == MDB_SUCCESS) {
+    unsigned char sbuf[8];
+    std::memcpy(sbuf, ck.mv_data, sizeof(sbuf));  // the clock-event seq, reused as the value
+    domain::Bytes bytes = to_bytes(cv);
+    wire::Reader r(bytes);
+    const domain::ClockEvent ce = r.clock_event();  // referencing_events after are irrelevant here
+    for (const auto& ref : ce.referenced_events) {
+      MDB_val rk{ref.hash.size(), const_cast<std::uint8_t*>(ref.hash.data())};
+      MDB_val rv{sizeof(sbuf), sbuf};
+      check(mdb_put(txn, referencing_, &rk, &rv, 0), "put referencing(migrate)");
+    }
+    rc = mdb_cursor_get(cur, &ck, &cv, MDB_NEXT);
+  }
+  mdb_cursor_close(cur);
+  if (rc != MDB_NOTFOUND) fail_rc("cursor_next(migrate)", rc);
+}
+
 void LmdbStore::sync() { check(mdb_env_sync(env_, 1), "env_sync"); }
 
 void LmdbStore::reset() {
   MDB_txn* txn = nullptr;
   check(mdb_txn_begin(env_, nullptr, 0, &txn), "txn_begin");
-  for (MDB_dbi dbi : {events_, event_index_, clock_events_, clock_index_, neighbors_, routes_}) {
+  for (MDB_dbi dbi :
+       {events_, event_index_, clock_events_, clock_index_, referencing_, neighbors_, routes_}) {
     if (int rc = mdb_drop(txn, dbi, 0); rc != MDB_SUCCESS) {  // del=0: empty but keep the DB
       mdb_txn_abort(txn);
       fail_rc("drop", rc);

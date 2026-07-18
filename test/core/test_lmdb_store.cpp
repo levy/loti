@@ -4,10 +4,13 @@
 // reopens cleanly. The write/replay round-trips arrive with later steps.
 #include "adapters/os/lmdb_store.hpp"
 
+#include <array>
 #include <filesystem>
+#include <optional>
 #include <string>
 #include <system_error>
 #include <utility>
+#include <vector>
 
 #include <unistd.h>
 
@@ -220,55 +223,41 @@ TEST_CASE("LmdbStore persists a Node's DAG and Node::load restores it byte-for-b
   CHECK(n2.snapshot() == snap1);
 }
 
-namespace {
-struct RecordingPersistence final : loti::PersistenceListener {
-  std::vector<domain::EventHash> events;
-  std::vector<domain::EventHash> clock_appended;
-  std::vector<domain::EventHash> clock_updated;
-  std::vector<domain::NodeId> neighbors;
-  std::vector<std::pair<domain::NodeId, domain::NodeId>> routes;
-  void on_event_appended(const domain::Event& e) override { events.push_back(e.hash); }
-  void on_clock_event_appended(const domain::LocalClockEvent& c) override {
-    clock_appended.push_back(c.hash);
-  }
-  void on_clock_event_updated(const domain::LocalClockEvent& c) override {
-    clock_updated.push_back(c.hash);
-  }
-  void on_neighbor_changed(const domain::Neighbor& n) override { neighbors.push_back(n.node_id); }
-  void on_route_changed(domain::NodeId d, domain::NodeId nh) override { routes.emplace_back(d, nh); }
-};
-}  // namespace
-
-TEST_CASE("Node reports each durable state change to a PersistenceListener") {
+TEST_CASE("Node writes each durable state change through its Store") {
   harness::World w;
   Node& n = w.add_node(1, NodeConfig{});
-  RecordingPersistence rec;
-  n.set_persistence_listener(&rec);
+  auto& store = w.store_of(1);  // the DAG store backing this node
 
   n.add_neighbor(2);
-  n.add_neighbor(2);  // already present → no second neighbor_changed
+  n.add_neighbor(2);  // already present → no second write
   n.learn_route(3, 2);
   const auto e = n.publish_event({0x01});
   n.create_clock_event();
 
-  CHECK(rec.neighbors == std::vector<domain::NodeId>{2});
-  CHECK(rec.routes == std::vector<std::pair<domain::NodeId, domain::NodeId>>{{3, 2}});
-  REQUIRE(rec.events.size() == 1);
-  CHECK(rec.events[0] == e.hash);
-  REQUIRE(rec.clock_appended.size() == 1);
-  CHECK(rec.clock_updated.empty());  // no neighbor notifications processed yet
+  CHECK(store.load_neighbors().count(2) == 1);
+  CHECK(store.load_routes() == std::map<domain::NodeId, domain::NodeId>{{3, 2}});
+  REQUIRE(store.event_count() == 1);
+  CHECK(store.event_by_seq(0).hash == e.hash);
+  REQUIRE(store.clock_event_count() == 1);
+  CHECK(store.clock_event_by_seq(0).referencing_events.empty());  // no notifications processed yet
 }
 
-TEST_CASE("PersistenceListener sees neighbor and clock-event updates learned from gossip") {
+TEST_CASE("Node persists neighbor and clock-event updates learned from gossip") {
   harness::World w;
   auto nodes = harness::build_path(w, 2);
-  RecordingPersistence rec;
-  nodes[1]->set_persistence_listener(&rec);  // attach AFTER build_path's add_neighbor/learn_route
   harness::gossip(w, nodes, 8);
+  auto& store = w.store_of(nodes[1]->id());
 
-  CHECK_FALSE(rec.clock_appended.empty());  // n2 created its own clock events
-  CHECK_FALSE(rec.neighbors.empty());       // n2 learned n1's latest clock-event hash
-  CHECK_FALSE(rec.clock_updated.empty());   // n1's notifications back-linked n2's clock events
+  CHECK(store.clock_event_count() > 0);         // n2 created its own clock events
+  CHECK_FALSE(store.load_neighbors().empty());  // n2 learned n1's latest clock-event hash
+  // n1's notifications back-linked at least one of n2's clock events (referencing_events).
+  bool any_referencing = false;
+  for (std::size_t i = 0; i < store.clock_event_count(); ++i)
+    if (!store.clock_event_by_seq(i).referencing_events.empty()) {
+      any_referencing = true;
+      break;
+    }
+  CHECK(any_referencing);
 }
 
 TEST_CASE("LmdbStore grows its map on MDB_MAP_FULL and keeps the data") {
@@ -353,4 +342,126 @@ TEST_CASE("LmdbStore keeps the committed prefix intact when a later write is aba
   LmdbStore store(env.str());
   CHECK(store.event_count() == 2);
   CHECK(store.load_events() == std::vector<domain::Event>{e0, e1});
+}
+
+// ---- ports::Store read API (by hash, by seq, reverse index) -----------------
+
+TEST_CASE("LmdbStore serves the Store read API by hash and by seq") {
+  TempEnv env("readapi");
+  const auto e0 = make_event(1, 10, "e-zero");
+  const auto e1 = make_event(1, 11, "e-one");
+  const auto c0 = make_clock(1, 20, 1000);
+  const auto c1 = make_clock(1, 21, 2000);
+  {
+    LmdbStore store(env.str());
+    auto b = store.begin();
+    b.append_event(e0);
+    b.append_event(e1);
+    b.append_clock_event(c0);
+    b.append_clock_event(c1);
+    b.commit();
+  }
+  LmdbStore store(env.str());
+  // by dense seq
+  CHECK(store.event_by_seq(0) == e0);
+  CHECK(store.event_by_seq(1) == e1);
+  CHECK(store.clock_event_by_seq(0) == c0);
+  CHECK(store.clock_event_by_seq(1) == c1);
+  // by hash (nullopt for an unknown hash)
+  REQUIRE(store.event_by_hash(e1.hash).has_value());
+  CHECK(*store.event_by_hash(e1.hash) == e1);
+  CHECK_FALSE(store.event_by_hash(hash_of(200)).has_value());
+  REQUIRE(store.clock_event_by_hash(c0.hash).has_value());
+  CHECK(*store.clock_event_by_hash(c0.hash) == c0);
+  // seq lookup + latest tip
+  CHECK(store.clock_event_seq(c1.hash) == std::optional<std::uint64_t>{1});
+  CHECK_FALSE(store.clock_event_seq(hash_of(200)).has_value());
+  REQUIRE(store.latest_clock_event().has_value());
+  CHECK(*store.latest_clock_event() == c1);
+}
+
+TEST_CASE("LmdbStore's referencing index maps a referenced hash to its clock events") {
+  TempEnv env("revidx");
+  // make_clock(tag) already references hash_of(tag+100); add a hash both clock events share.
+  domain::LocalClockEvent a = make_clock(1, 30, 100);
+  domain::LocalClockEvent b = make_clock(1, 31, 200);
+  const domain::EventHash shared = hash_of(250);
+  a.referenced_events.push_back({1, shared});
+  b.referenced_events.push_back({1, shared});
+  {
+    LmdbStore store(env.str());
+    auto batch = store.begin();
+    CHECK(batch.append_clock_event(a) == 0);
+    CHECK(batch.append_clock_event(b) == 1);
+    batch.commit();
+  }
+  LmdbStore store(env.str());
+  // Both reference `shared`, returned in ascending seq order.
+  CHECK(store.clock_events_referencing(shared) == std::vector<std::uint64_t>{0, 1});
+  // Each also references its own make_clock target, only from its own seq.
+  CHECK(store.clock_events_referencing(hash_of(130)) == std::vector<std::uint64_t>{0});
+  CHECK(store.clock_events_referencing(hash_of(131)) == std::vector<std::uint64_t>{1});
+  // An unreferenced hash yields nothing.
+  CHECK(store.clock_events_referencing(hash_of(199)).empty());
+}
+
+TEST_CASE("LmdbStore migrates a v1 store by rebuilding the referencing index") {
+  TempEnv env("migrate");
+  // A clock event (seq 0) referencing two event hashes — as a pre-v2 store would hold it,
+  // with no `referencing` sub-DB. Opening it with the current LmdbStore must add the index.
+  domain::LocalClockEvent c = make_clock(5, 60, 123);
+  c.referenced_events.clear();
+  c.referenced_events.push_back({5, hash_of(61)});
+  c.referenced_events.push_back({5, hash_of(62)});
+
+  auto be8 = [](std::uint64_t v) {
+    std::array<unsigned char, 8> out{};
+    for (int i = 7; i >= 0; --i) {
+      out[i] = static_cast<unsigned char>(v & 0xFF);
+      v >>= 8;
+    }
+    return out;
+  };
+
+  {  // hand-write a v1-format env: v1's 7 sub-DBs (no `referencing`), version = 1, one clock event
+    MDB_env* e = nullptr;
+    REQUIRE(mdb_env_create(&e) == MDB_SUCCESS);
+    REQUIRE(mdb_env_set_maxdbs(e, 7) == MDB_SUCCESS);
+    REQUIRE(mdb_env_set_mapsize(e, std::size_t{1} << 20) == MDB_SUCCESS);
+    REQUIRE(mdb_env_open(e, env.str().c_str(), MDB_NOSUBDIR, 0644) == MDB_SUCCESS);
+    MDB_txn* t = nullptr;
+    REQUIRE(mdb_txn_begin(e, nullptr, 0, &t) == MDB_SUCCESS);
+    MDB_dbi meta = 0, events = 0, event_index = 0, clock_events = 0, clock_index = 0, neighbors = 0,
+            routes = 0;
+    struct {
+      const char* name;
+      MDB_dbi* dbi;
+    } subs[] = {{"meta", &meta},         {"events", &events},         {"event_index", &event_index},
+                {"clock_events", &clock_events}, {"clock_index", &clock_index},
+                {"neighbors", &neighbors},  {"routes", &routes}};
+    for (auto& s : subs) REQUIRE(mdb_dbi_open(t, s.name, MDB_CREATE, s.dbi) == MDB_SUCCESS);
+    const char* vk = "version";
+    auto ver = be8(1);
+    MDB_val vkey{7, const_cast<char*>(vk)}, vval{ver.size(), ver.data()};
+    REQUIRE(mdb_put(t, meta, &vkey, &vval, 0) == MDB_SUCCESS);
+
+    wire::Writer w;
+    w.clock_event(c);
+    w.refs(c.referencing_events);
+    auto seq0 = be8(0);
+    MDB_val ck{seq0.size(), seq0.data()};
+    MDB_val cv{w.bytes().size(), const_cast<std::uint8_t*>(w.bytes().data())};
+    REQUIRE(mdb_put(t, clock_events, &ck, &cv, 0) == MDB_SUCCESS);
+    MDB_val ik{c.hash.size(), c.hash.data()}, iv{seq0.size(), seq0.data()};
+    REQUIRE(mdb_put(t, clock_index, &ik, &iv, 0) == MDB_SUCCESS);
+    REQUIRE(mdb_txn_commit(t) == MDB_SUCCESS);
+    mdb_env_close(e);
+  }
+
+  LmdbStore store(env.str());
+  CHECK(store.format_version() == LmdbStore::kFormatVersion);  // bumped to v2
+  CHECK(store.clock_event_count() == 1);
+  // The reverse index, absent on disk, was rebuilt from the clock event on open.
+  CHECK(store.clock_events_referencing(hash_of(61)) == std::vector<std::uint64_t>{0});
+  CHECK(store.clock_events_referencing(hash_of(62)) == std::vector<std::uint64_t>{0});
 }

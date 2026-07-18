@@ -26,6 +26,7 @@
 #include "inet/transportlayer/contract/udp/UdpSocket.h"
 
 #include "adapters/sim/clock.hpp"
+#include "adapters/sim/in_memory_store.hpp"
 #include "adapters/sim/rng.hpp"
 #include "adapters/sim/scheduler.hpp"
 #include "adapters/sim/signer.hpp"
@@ -54,6 +55,7 @@ class Daemon : public cSimpleModule, public UdpSocket::ICallback
     sim::SimRng rng_;
     sim::NullSigner signer_;
     sim::SimTelemetry telemetry_;
+    sim::InMemoryStore store_;  // the DAG store — in RAM, dies with the run (no persistence)
 
     domain::NodeId nodeId_ = 0;
     cMessage createClockEventTimer_;
@@ -66,15 +68,16 @@ class Daemon : public cSimpleModule, public UdpSocket::ICallback
     Daemon();
     ~Daemon() override;
 
-    // Application API used by the Publisher/Browser modules.
-    const domain::Event& publishEvent(const domain::Bytes& data);
+    // Application API used by the Publisher/Browser modules. Events come back by value —
+    // the DAG lives in the store now, so there is no stable in-RAM Event to reference.
+    domain::Event publishEvent(const domain::Bytes& data);
     void discoverEventChain(const domain::Event& event, ChainCallback& callback);
     void discoverEventBounds(const domain::Event& event, BoundsCallback& callback);
     void discoverEventOrder(const domain::Event& event1, const domain::Event& event2,
                             OrderCallback& callback);
 
     int getNumEvents() const { return static_cast<int>(node_->event_count()); }
-    const domain::Event& getEvent(int index) const { return node_->event_at(index); }
+    domain::Event getEvent(int index) const { return node_->event_at(index); }
 
     // Overlay wiring, filled in by the NetworkConfigurator.
     domain::NodeId nodeId() const { return nodeId_; }

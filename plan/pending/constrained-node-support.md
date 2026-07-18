@@ -128,34 +128,45 @@ Read sites to reroute (from `node.cpp`): `find_clock_event_index`→`all_clock_e
 the `event_hash_to_referencing_event_index_.equal_range` reverse lookup, and `.back()` for the latest.
 Access is by-hash, by **dense seq** (seqs are gap-free), and a reverse range — all serviceable by LMDB.
 
-- [ ] **D1.** Persist the **reverse index**: an `MDB_DUPSORT` sub-DB `referencing` (key = referenced hash,
+- [x] **D1.** Persist the **reverse index**: an `MDB_DUPSORT` sub-DB `referencing` (key = referenced hash,
   values = clock-event seqs), maintained in `append_clock_event`. Replaces the in-RAM
-  `event_hash_to_referencing_event_index_` multimap. (maxdbs 7 → 8; format-version bump.)
-- [ ] **D2.** Define an abstract `Store` **port** in `src/core/ports/store.hpp` (keeps `loti_core` pure):
+  `event_hash_to_referencing_event_index_` multimap. (maxdbs 7 → 8; format-version bump.) *Done:
+  `referencing` DUPSORT (seqs ascending), `kFormatVersion` 1 → 2, `kMaxDbs` 8.*
+- [x] **D2.** Define an abstract `Store` **port** in `src/core/ports/store.hpp` (keeps `loti_core` pure):
   writes (`append_event`, `append_clock_event`, `update_clock_event`, `put_neighbor`, `put_route`) + reads
   (`event_by_hash`/`_by_seq`, `clock_event_by_hash`/`_by_seq`, `clock_events_referencing(hash)`,
-  `event_count`, `clock_event_count`, latest).
-- [ ] **D3.** Implement the port in `LmdbStore` (adapters/os) — most reads exist; add by-seq getters + the
-  reverse-range query (D1).
-- [ ] **D4.** Implement an `InMemoryStore` (adapters/sim or shared) for the simulation — the DAG vectors/maps
-  move here; state still dies with the run.
-- [ ] **D5.** Rework the `Node`: add `Store&` to `NodePorts`; drop `all_events_`/`all_clock_events_`/the three
+  `event_count`, `clock_event_count`, latest). *Done; also `clock_event_seq`, `latest_clock_event`,
+  `load_neighbors`/`load_routes`, `clear`.*
+- [x] **D3.** Implement the port in `LmdbStore` (adapters/os) — most reads exist; add by-seq getters + the
+  reverse-range query (D1). *Done: LmdbStore `: public ports::Store`; direct writes autocommit (grow-retry).*
+- [x] **D4.** Implement an `InMemoryStore` (adapters/sim or shared) for the simulation — the DAG vectors/maps
+  move here; state still dies with the run. *Done: `src/adapters/sim/in_memory_store.hpp` (header-only).*
+- [x] **D5.** Rework the `Node`: add `Store&` to `NodePorts`; drop `all_events_`/`all_clock_events_`/the three
   index maps; reroute every read site through the port; the `referencing_events` update becomes a store
   read-modify-write (`update_clock_event`). Keep only small working state (neighbors/routes/unreferenced
   tail — or move those too). Update all `NodePorts` construction sites (daemon, sim `Daemon`,
-  `test/harness/world.hpp`).
-- [ ] **D6.** Retire the `PersistenceListener` seam (LMDB-plan Step 4) — writes now flow through the `Store`
-  port; the daemon injects `LmdbStore`, the sim injects `InMemoryStore`.
-- [ ] **D7.** Migration: an old on-disk store lacks the `referencing` sub-DB → on first open of a pre-D
-  format, rebuild the reverse index by scanning `clock_events` (guard by the format-version bump).
-- [ ] **D8.** Tests: store read-API + reverse-index unit tests; the existing discovery/chain tests pass
+  `test/harness/world.hpp`). *Done: kept neighbors/routes/unreferenced tail in RAM; `hydrate_working_state()`
+  rederives the tail from the store on construction. All 4 NodePorts sites updated (lotid, sim Daemon,
+  harness, test_proof). lotid falls back to an InMemoryStore when no `--store` is given.*
+- [x] **D6.** Retire the `PersistenceListener` seam (LMDB-plan Step 4) — writes now flow through the `Store`
+  port; the daemon injects `LmdbStore`, the sim injects `InMemoryStore`. *Done: `PersistenceListener`,
+  `set_persistence_listener`, `StorePersistence`, and `rebuild_store` all removed.*
+- [x] **D7.** Migration: an old on-disk store lacks the `referencing` sub-DB → on first open of a pre-D
+  format, rebuild the reverse index by scanning `clock_events` (guard by the format-version bump). *Done:
+  `rebuild_referencing_index()` runs when the stored version is 1, then stamps 2; unit-tested.*
+- [x] **D8.** Tests: store read-API + reverse-index unit tests; the existing discovery/chain tests pass
   unchanged (now store-backed); acceptance suite green; a **RAM-bound soak** (large N, assert RSS stays
-  bounded while the DB grows) — ideally run on the Pi.
+  bounded while the DB grows) — ideally run on the Pi. *Done: read-API + reverse-index + v1→v2 migration
+  doctests; all 40 core test cases (169 assertions) green, discovery/chain/order unchanged; daemon smoke
+  (restart persistence, db-backup/restore, clock-event persistence) verified. RAM-bound soak DEFERRED —
+  best run on the Pi (measured figures land in Part E once measured on hardware).*
 
 **Risk:** **high** — touches `loti_core` (new port), the simulation (new `InMemoryStore`, `NodePorts`
 change), reworks the persistence seam built in the LMDB plan, and changes on-disk format (migration).
 Cold reads page-fault from SD (slow for *old*-event discoveries only; hot path stays in page cache).
-Consider doing D as its own follow-up plan once A–C land.
+Consider doing D as its own follow-up plan once A–C land. *(Done in this plan; the OMNeT++ sim build
+could not be compiled in-sandbox — no `opp_makemake` — but every construction site was updated and the
+core/daemon are fully built and tested.)*
 
 **32-bit caveat (ties to A):** even RAM-bounded, a 32-bit node's LMDB env is mmap-capped at ~2 GiB, so
 its *total* DAG lifetime is bounded regardless of RAM. The Zero 2 W (64-bit) is the real long-life target.

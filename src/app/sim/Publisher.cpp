@@ -56,7 +56,7 @@ void Publisher::processCreateEventTimer()
     createEvent();
 }
 
-const domain::Event& Publisher::createEvent()
+domain::Event Publisher::createEvent()
 {
     domain::Bytes data;
     int contentLength = par("contentLength");

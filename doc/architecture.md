@@ -138,14 +138,16 @@ implementations (`Ports`), so swapping runtimes is swapping that bundle.
 | **Signing** | `Signer::sign/verify` | `NullSigner` (unsigned) | Ed25519 keystore (OpenSSL) |
 | **Telemetry** | `Telemetry::record(...)` hooks | scalar `@statistic` signals | structured stderr log lines |
 
-The DAG state and configuration are **not** ports: the `Node` holds its events, clock chain, and
-indices directly, and takes a small config struct. Production makes that state durable by mirroring
-every change — event, clock event, neighbor, route — into an LMDB store
-([`lmdb_store.hpp`](../src/adapters/os/lmdb_store.hpp)) through a `PersistenceListener`, and reloading
-it with `Node::load` at startup; the simulation keeps it in RAM and never persists. (A portable
-snapshot through the wire codec — the file-store adapter — remains the `db-backup` / `db-restore` and
-migration format.) Hashing is shared, not swapped — it must be identical everywhere; only signing
-differs (unsigned in the simulation, Ed25519 in production).
+The DAG **is** a port. The `Node` holds no copy of the event/clock-event log in RAM — it reads *and*
+writes the whole DAG through a `Store` port ([`ports/store.hpp`](../src/core/ports/store.hpp)), keeping
+only a small working set (neighbors, routes, the unreferenced-event tail) that it rehydrates from the
+store on construction. Production injects the LMDB store
+([`lmdb_store.hpp`](../src/adapters/os/lmdb_store.hpp)): its mmap is backed by the OS page cache, so a
+node's resident memory stays bounded as the DAG grows on disk (cold pages evict, hot pages stay, reads
+are zero-copy). The simulation injects an `InMemoryStore` ([`in_memory_store.hpp`](../src/adapters/sim/in_memory_store.hpp))
+whose state lives only for the run. (A portable snapshot through the wire codec — the file-store adapter
+— remains the `db-backup` / `db-restore` and migration format.) Hashing is shared, not swapped — it must
+be identical everywhere; only signing differs (unsigned in the simulation, Ed25519 in production).
 
 The store's LMDB environment is sized by a mapsize (`--store-mapsize`, in GiB), which is virtual
 address space grown on demand. On a **64-bit** build it defaults to 16 GiB and grows without a

@@ -12,6 +12,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <map>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -19,6 +20,7 @@
 #include <lmdb.h>
 
 #include "domain/types.hpp"
+#include "ports/store.hpp"
 
 namespace loti::os {
 
@@ -37,7 +39,7 @@ struct LmdbStoreFull : std::runtime_error {
       : std::runtime_error("lmdb: store full (32-bit address-space limit reached)") {}
 };
 
-class LmdbStore {
+class LmdbStore final : public ports::Store {
  public:
   // How durably a commit reaches disk. `safe` fsyncs on every commit (each change is
   // durable before the daemon replies). `lazy` opens the env with MDB_NOSYNC: LMDB skips
@@ -48,7 +50,8 @@ class LmdbStore {
   enum class SyncPolicy { safe, lazy };
 
   // On-disk layout version, stamped in the `meta` sub-DB; bump only on a format change.
-  static constexpr std::uint64_t kFormatVersion = 1;
+  // v2 added the `referencing` reverse-index sub-DB (a v1 store is migrated on first open).
+  static constexpr std::uint64_t kFormatVersion = 2;
 
   // Hard ceiling on the env's mapsize. The map is virtual address space, so on 64-bit
   // this is effectively unbounded and left at 0 = "no cap". On 32-bit the mmap must fit
@@ -115,23 +118,44 @@ class LmdbStore {
   // Begin a write transaction. Throws if a batch cannot be started.
   [[nodiscard]] Batch begin();
 
+  // ---- ports::Store: single-record writes (each its own durable txn; grows the map and
+  // retries once on MDB_MAP_FULL). The Node writes the DAG exclusively through these.
+  std::uint64_t append_event(const domain::Event&) override;
+  std::uint64_t append_clock_event(const domain::LocalClockEvent&) override;
+  void update_clock_event(const domain::LocalClockEvent&) override;
+  void put_neighbor(const domain::Neighbor&) override;
+  void put_route(domain::NodeId destination, domain::NodeId next_hop) override;
+
+  // ---- ports::Store: reads (each in its own read txn; the mmap keeps them zero-copy) ----
+  [[nodiscard]] std::optional<domain::Event> event_by_hash(const domain::EventHash&) const override;
+  [[nodiscard]] domain::Event event_by_seq(std::uint64_t seq) const override;
+  [[nodiscard]] std::optional<domain::LocalClockEvent> clock_event_by_hash(
+      const domain::EventHash&) const override;
+  [[nodiscard]] domain::LocalClockEvent clock_event_by_seq(std::uint64_t seq) const override;
+  [[nodiscard]] std::optional<std::uint64_t> clock_event_seq(
+      const domain::EventHash&) const override;
+  [[nodiscard]] std::vector<std::uint64_t> clock_events_referencing(
+      const domain::EventHash&) const override;
+  [[nodiscard]] std::optional<domain::LocalClockEvent> latest_clock_event() const override;
+
   // Bulk read-back for startup replay. Events and clock events come back in sequence
   // order; neighbors/routes keyed by node id. (The unreferenced set is not stored — the
   // Node rederives it from the clock events on load.)
   [[nodiscard]] std::vector<domain::Event> load_events() const;
   [[nodiscard]] std::vector<domain::LocalClockEvent> load_clock_events() const;
-  [[nodiscard]] std::map<domain::NodeId, domain::Neighbor> load_neighbors() const;
-  [[nodiscard]] std::map<domain::NodeId, domain::NodeId> load_routes() const;
+  [[nodiscard]] std::map<domain::NodeId, domain::Neighbor> load_neighbors() const override;
+  [[nodiscard]] std::map<domain::NodeId, domain::NodeId> load_routes() const override;
 
-  [[nodiscard]] std::size_t event_count() const;
-  [[nodiscard]] std::size_t clock_event_count() const;
+  [[nodiscard]] std::size_t event_count() const override;
+  [[nodiscard]] std::size_t clock_event_count() const override;
 
   // Force all committed data to stable storage (backs the `save` control command).
   void sync();
 
   // Empty every data sub-DB (keeps `meta`) and reset the sequence counters. Used by
-  // db-restore before rewriting the store from a snapshot.
+  // db-restore before rewriting the store from a snapshot. clear() is the port alias.
   void reset();
+  void clear() override { reset(); }
 
   // Double the environment's mapsize. Call after catching LmdbMapFull, with no live
   // transaction, then retry the write. The map is virtual — only backed as used.
@@ -144,6 +168,16 @@ class LmdbStore {
   [[nodiscard]] std::uint64_t format_version() const noexcept { return format_version_; }
 
  private:
+  // Migration (v1 → v2): populate the `referencing` reverse index by scanning every
+  // clock event's referenced_events, within the caller's open write transaction.
+  void rebuild_referencing_index(MDB_txn* txn);
+
+  // Fetch a single record's bytes within a read txn; nullopt if the key is absent.
+  [[nodiscard]] std::optional<domain::Bytes> get_bytes(MDB_dbi dbi, const void* key,
+                                                       std::size_t key_len) const;
+  // The seq stored under a hash key in an index sub-DB (event_index / clock_index).
+  [[nodiscard]] std::optional<std::uint64_t> seq_of(MDB_dbi index, const domain::EventHash&) const;
+
   std::string path_;
   std::size_t map_size_ = 0;
   SyncPolicy sync_policy_ = SyncPolicy::safe;
@@ -155,6 +189,7 @@ class LmdbStore {
   MDB_dbi event_index_ = 0;
   MDB_dbi clock_events_ = 0;
   MDB_dbi clock_index_ = 0;
+  MDB_dbi referencing_ = 0;  // DUPSORT: referenced hash -> seqs of clock events referencing it
   MDB_dbi neighbors_ = 0;
   MDB_dbi routes_ = 0;
 

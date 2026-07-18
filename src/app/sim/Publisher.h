@@ -38,7 +38,7 @@ class Publisher : public cSimpleModule
   private:
     void scheduleCreateEventTimer();
     void processCreateEventTimer();
-    const domain::Event& createEvent();
+    domain::Event createEvent();
 
   public:
     ~Publisher() override;

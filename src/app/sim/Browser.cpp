@@ -71,7 +71,7 @@ void Browser::scheduleDiscoverEventChainTimer()
 void Browser::processDiscoverEventChainTimer()
 {
     auto event = findRandomEvent();
-    if (event != nullptr)
+    if (event)
         daemon->discoverEventChain(*event, *this);
     else
         EV_WARN << "No event found for event chain discovery" << endl;
@@ -87,7 +87,7 @@ void Browser::scheduleDiscoverEventBoundsTimer()
 void Browser::processDiscoverEventBoundsTimer()
 {
     auto event = findRandomEvent();
-    if (event != nullptr)
+    if (event)
         daemon->discoverEventBounds(*event, *this);
     else
         EV_WARN << "No event found for event bounds discovery" << endl;
@@ -104,13 +104,13 @@ void Browser::processDiscoverEventOrderTimer()
 {
     auto event1 = findRandomEvent();
     auto event2 = findRandomEvent();
-    if (event1 != nullptr && event2 != nullptr)
+    if (event1 && event2)
         daemon->discoverEventOrder(*event1, *event2, *this);
     else
         EV_WARN << "No events found for event order discovery" << endl;
 }
 
-const domain::Event *Browser::findRandomEvent()
+std::optional<domain::Event> Browser::findRandomEvent()
 {
     if (configurator->getNumNetworkNodes() > 0) {
         int networkNodeIndex = intrand(configurator->getNumNetworkNodes());
@@ -118,10 +118,10 @@ const domain::Event *Browser::findRandomEvent()
         auto peer = configurator->findDaemon(networkNode);
         if (peer->getNumEvents() > 0) {
             int eventIndex = intrand(peer->getNumEvents());
-            return &peer->getEvent(eventIndex);
+            return peer->getEvent(eventIndex);  // by value — the DAG lives in the store
         }
     }
-    return nullptr;
+    return std::nullopt;
 }
 
 void Browser::on_chain_completed(const domain::Event& event, const domain::EventChain&)
