@@ -272,14 +272,25 @@ later parts.
 sim adapter (`Daemon`/`Browser`) was updated for the new arity but is **not compiled here** (no
 OMNeT++/INET in this environment) — unverified until an OMNeT++ build (Part 6).
 
-### Part 3 — Neighbor history + `NeighborHistoryRouter`
-- [ ] Build the `time → {NodeId, address}` history — as an index over the DAG cross-links, or an
-  explicit fill from `add_neighbor`.
-- [ ] Retain old neighbor addresses (Decision 1).
-- [ ] `NeighborHistoryRouter`: undirected candidate set over a `time_range` (unions the buckets it
-  spans). This is the always-available fallback.
+### Part 3 — Neighbor history + `NeighborHistoryRouter` — **DONE**
+- [x] **Decision: DAG-derived, not a separate table.** `NeighborHistoryRouter`
+  ([routing/discovery_router.hpp](../../src/core/routing/discovery_router.hpp)) reads the history
+  straight from the DAG: it scans this node's live clock events, keeps those whose timestamp is in
+  `ctx.range`, and collects the non-self creators referenced by / referencing them — exactly the
+  neighbors cross-linked then, the set `extend_*_for_neighbor` can close through. No duplicate
+  store; the cross-links already are the time-indexed adjacency.
+- [x] Candidates are filtered to ids still in `neighbors_` so we can send to them; old neighbors are
+  retained there (no `remove_neighbor`), so a past neighbor that has gone stays a candidate
+  (Decision 1). (Addresses live in the transport adapter, outside core — nothing to retain here.)
+- [x] Undirected by construction (1-hop cross-links can't point toward a far destination — that is
+  the routing table's job); returns *all* in-window neighbors, which the flood (Part 5) explores.
+  `RouteContext` gained `range`; it is threaded into `find_next_hop_neighbor` at the two request-leg
+  sites. **Default router stays Static** (behavior unchanged); the router is unit-tested directly
+  ([test_routing.cpp](../../test/core/test_routing.cpp): full-range → both neighbors, out-of-window
+  → none, non-neighbor cross-link → excluded).
 
-**Risk:** medium (the historical-adjacency source; keep it bounded).
+**Risk:** medium. **Done** — `O(retained clock events)` scan per call (a compact time-indexed
+adjacency is a later optimization); core builds clean + green.
 
 ### Part 4 — Time-dependent routing table + `RoutingTableRouter`
 - [ ] `(destination, time_bucket) → [next hop, shortest first]`; `learn_route` gains a time bucket.

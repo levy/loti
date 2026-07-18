@@ -195,7 +195,7 @@ void Node::process_chain_request(const Neighbor& sender, const wire::ChainReques
     if (m.hop_limit > 0 && m.path.size() >= m.hop_limit) return;  // hop-limit cap
     wire::ChainRequest fwd = m;
     fwd.path.push_back(id_);
-    if (const auto* next = find_next_hop_neighbor(m.event.creator))
+    if (const auto* next = find_next_hop_neighbor(m.event.creator, routing::RouteContext{m.range}))
       if (!contains(m.path, next->node_id)) send_chain_request(*next, fwd);
   }
 }
@@ -279,7 +279,7 @@ void Node::discover_event_chain(const Event& event, TimeRange range, ChainCallba
     } else {
       complete_chain_discovery(event.hash);
     }
-  } else if (const auto* next = find_next_hop_neighbor(event.creator)) {
+  } else if (const auto* next = find_next_hop_neighbor(event.creator, routing::RouteContext{range})) {
     wire::ChainRequest req;
     req.originator = id_;
     req.event = EventReference{event.creator, event.hash};
@@ -641,8 +641,8 @@ LocalClockEvent Node::insert_clock_event(std::uint32_t chain) {
 // that is a known neighbor. The default StaticShortestPathRouter returns exactly the one
 // static next hop (already filtered to a known neighbor), so this preserves the historical
 // single-path behavior; later parts return more candidates, which fan-out (Part 5) consumes.
-const Neighbor* Node::find_next_hop_neighbor(NodeId node) const {
-  for (NodeId hop : router_->next_hops(node, routing::RouteContext{})) {
+const Neighbor* Node::find_next_hop_neighbor(NodeId node, const routing::RouteContext& ctx) const {
+  for (NodeId hop : router_->next_hops(node, ctx)) {
     auto jt = neighbors_.find(hop);
     if (jt != neighbors_.end()) return &jt->second;
   }

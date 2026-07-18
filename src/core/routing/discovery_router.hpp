@@ -14,16 +14,20 @@
 #pragma once
 
 #include <map>
+#include <set>
 #include <vector>
 
 #include "domain/types.hpp"
+#include "ports/store.hpp"
 
 namespace loti::routing {
 
-// Per-hop context a router may consult. It grows as later parts land (time range,
-// request/response leg, visited set, accumulated looseness `g`, hop limit); Part 1
-// needs none of it, but the seam carries it from the start so the signature is stable.
-struct RouteContext {};
+// Per-hop context a router may consult. `range` is the discovery's estimated time window,
+// which the time-dependent routers use to select the overlay as it was then. (It grows as
+// later parts land: request/response leg, accumulated looseness `g`, etc.)
+struct RouteContext {
+  domain::TimeRange range;
+};
 
 // A pluggable forwarding policy. Returns the ordered/weighted candidate next-hop
 // neighbor ids to forward a discovery toward `destination` (best first). An empty
@@ -56,6 +60,50 @@ class StaticShortestPathRouter final : public DiscoveryRouter {
  private:
   const std::map<domain::NodeId, domain::Neighbor>& neighbors_;
   const std::map<domain::NodeId, domain::NodeId>& routes_;
+};
+
+// The time-dependent neighbor history, read straight from the DAG. The candidate next hops
+// are exactly the neighbors this node cross-linked with during `ctx.range` — the set the
+// chain-building `extend_*_for_neighbor` primitives can actually close through then. This is
+// **undirected**: local 1-hop cross-links cannot say which neighbor lies toward a far
+// destination (that is the routing table's job), so it returns *all* such neighbors, which the
+// flood (Part 5) explores. It is the always-available, always-time-correct fallback when no
+// routing table is filled.
+//
+// Source: scan this node's own live clock events and collect the non-self creators referenced
+// (forward cross-links to neighbor tips) or referencing (reverse cross-links learned from
+// neighbor notifications) them within the window. Only ids still in `neighbors_` are returned,
+// so we can actually send to them — old neighbors are retained there (Decision 1), so a past
+// neighbor that has since gone stays a candidate. O(retained clock events) per call; a compact
+// time-indexed adjacency is a later optimization.
+class NeighborHistoryRouter final : public DiscoveryRouter {
+ public:
+  NeighborHistoryRouter(domain::NodeId self, const ports::Store& store,
+                        const std::map<domain::NodeId, domain::Neighbor>& neighbors)
+      : self_(self), store_(store), neighbors_(neighbors) {}
+
+  [[nodiscard]] std::vector<domain::NodeId> next_hops(
+      domain::NodeId /*destination*/, const RouteContext& ctx) const override {
+    std::vector<domain::NodeId> out;
+    std::set<domain::NodeId> seen;
+    const auto collect = [&](const std::vector<domain::EventReference>& refs) {
+      for (const auto& r : refs)
+        if (r.creator != self_ && neighbors_.find(r.creator) != neighbors_.end() &&
+            seen.insert(r.creator).second)
+          out.push_back(r.creator);
+    };
+    for (const auto& ce : store_.load_clock_events()) {
+      if (!ctx.range.contains(ce.timestamp)) continue;
+      collect(ce.referenced_events);
+      collect(ce.referencing_events);
+    }
+    return out;
+  }
+
+ private:
+  domain::NodeId self_;
+  const ports::Store& store_;
+  const std::map<domain::NodeId, domain::Neighbor>& neighbors_;
 };
 
 }  // namespace loti::routing

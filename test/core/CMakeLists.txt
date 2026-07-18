@@ -6,6 +6,7 @@ add_executable(loti_core_tests
   test_hashing.cpp
   test_wire.cpp
   test_discovery.cpp
+  test_routing.cpp
   test_chains.cpp
   test_keystore.cpp
   test_proof.cpp

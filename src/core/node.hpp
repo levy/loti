@@ -202,7 +202,8 @@ class Node final : private ChainCallback {
   // DAG mutation / lookup — writes go to the store; the small overlay is read from RAM.
   domain::Event insert_event(domain::Bytes data);
   domain::LocalClockEvent insert_clock_event(std::uint32_t chain);
-  [[nodiscard]] const domain::Neighbor* find_next_hop_neighbor(domain::NodeId) const;
+  [[nodiscard]] const domain::Neighbor* find_next_hop_neighbor(
+      domain::NodeId, const routing::RouteContext&) const;
   [[nodiscard]] const domain::Neighbor* neighbor_by_id(domain::NodeId) const;
 
   // ports & config
