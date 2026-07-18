@@ -201,6 +201,25 @@ node's own clock events**, so the bounds are expressed in that node's local time
 - the timestamp of any event can be narrowed to **less than ~40 seconds** by any node
   according to that node's local clock.
 
+## Bounding storage: multi-resolution clock chains
+
+The estimate above grows without bound — a chain kept forever accumulates ~3–30 GB/year and
+never shrinks. The implementation avoids this by having a node run **several independent clock
+chains at once**, at geometrically spaced intervals (chain 0 fastest, each next chain a fixed
+factor slower); each is an ordinary clock-event chain in the sense of
+[Components](#components) above, just ticking less often.
+
+Every event a node publishes is pinned into **every** chain, not just the fastest one: at
+creation it references each chain's current tip, and each chain's next tick references the
+event back. That symmetry is what makes pruning safe — a node can ring-prune a chain down to a
+fixed number of retained clock events without ever losing an event's orderability, because a
+dropped fast-chain clock event's role is still covered by a slower, still-retained chain. Old
+events don't disappear; their provable bound just widens to the coarser chain's own interval —
+roughly `1/C` of the event's age for `C` clock events kept per chain. Storage is then flat
+(bounded by the number of chains times the ring size per chain) instead of growing with
+wall-clock time, while reach — the oldest age still orderable at all — grows exponentially with
+each additional chain.
+
 ## Preventing attacks
 
 The security rests entirely on the difficulty of inverting/predicting a cryptographic hash.

@@ -62,10 +62,10 @@ Duration  = int64_t           // a difference of Timestamps
 | --- | --- | --- |
 | `EventReference` | `creator: NodeId`, `hash: EventHash` | A typed pointer to another event/clock event. |
 | `Event` | `creator`, `hash`, `data: Bytes`, `salt`, `referenced_events: [EventReference]`, `signature: Signature` | A published event. `data` is the content; `signature` is optional and excluded from the hash. |
-| `ClockEvent` | `creator`, `hash`, `timestamp: Timestamp`, `salt`, `referenced_events`, `signature` | A timestamped event. |
+| `ClockEvent` | `creator`, `hash`, `chain: uint32_t`, `timestamp: Timestamp`, `salt`, `referenced_events`, `signature` | A timestamped event; `chain` identifies which of the node's multi-resolution clock chains (0 = fastest) it belongs to, and is part of the hashed content — see [Multi-resolution clock chains](#multi-resolution-clock-chains). |
 | `LocalClockEvent` : `ClockEvent` | + `referencing_events: [EventReference]` | A clock event **created by this node**; also tracks who references it (reverse edges). |
 | `EventChain` | `event: Event`, `lower_bound: deque<ClockEvent>`, `upper_bound: deque<ClockEvent>` | The proof object: a hash chain enclosing `event`. |
-| `Neighbor` | `node_id`, `last_clock_event_hash` | An overlay neighbor and the newest clock event of theirs we know. Its transport address is tracked separately by the transport port adapter (see [The overlay](#the-overlay-networkconfigurator)). |
+| `Neighbor` | `node_id`, `last_clock_event_hashes: [EventHash]` | An overlay neighbor and the newest clock event of theirs we know, **per chain** (indexed by chain level; an empty entry means not yet learned). Its transport address is tracked separately by the transport port adapter (see [The overlay](#the-overlay-networkconfigurator)). |
 | `EventChainDiscovery` | `start_time`, `end_time`, `originator`, `event`, `chain`, `state` | Originator-side record of a chain discovery. |
 | `EventBoundsDiscovery` | `start_time`, `end_time`, `event`, `lower_bound: Timestamp`, `upper_bound: Timestamp`, `state` | Result of a bounds discovery. |
 | `EventOrderDiscovery` | `start_time`, `end_time`, `event1`, `event2`, `order`, `state` | Result of an order discovery. |
@@ -96,8 +96,9 @@ canonical, computed by free functions in
 
 - **Event**: `data` bytes, then `salt` (big-endian u64), then for each referenced event its
   `creator` (u64) and `hash` bytes.
-- **Clock event**: `timestamp` (u64), then `salt`, then each referenced event's
-  `creator` and `hash`.
+- **Clock event**: `chain` (u64), then `timestamp` (u64), then `salt`, then each referenced
+  event's `creator` and `hash`. `chain` is hashed even though the in-memory field is a
+  `uint32_t`, so a clock event cannot lie about which chain it belongs to.
 
 The `signature` field is deliberately excluded from this serialization — a signature signs the
 hash, so attaching one never changes an event's or clock event's hash and never invalidates a
@@ -172,6 +173,10 @@ neighbor's `last_clock_event_hash`, where known} ∪ {all `unreferenced_events_`
 4. notifies the Telemetry port (`on_clock_event_created`),
 5. sends a **clock event notification** to every neighbor via the Transport port.
 
+This describes the single-chain shape of the logic; a node actually runs it once per clock
+chain (`create_clock_event(chain)` / `insert_clock_event(chain)`), each on its own timer — see
+[Multi-resolution clock chains](#multi-resolution-clock-chains).
+
 ### Clock event notifications
 
 `send_clock_event_notification(neighbor, clock_event)` sends a datagram carrying
@@ -188,6 +193,36 @@ event of *that* neighbor I currently know)`.
 Only the **hash** of a clock event is ever broadcast — never its contents, and never events.
 This is the "clock event hashes are distributed to neighbors; events are not distributed"
 property from the paper.
+
+### Multi-resolution clock chains
+
+A node does not run a single clock-event chain; it runs `L` independent chains at once
+(`NodeConfig::chains`, each a `ChainConfig{interval, keep}`), geometrically spaced so chain 0 is
+the fastest. Each chain is an ordinary hash chain — a chain-`ℓ` clock event only links to its
+own chain-`ℓ` predecessor — ticking on its own timer (`schedule_clock_timer(chain)` →
+`create_clock_event(chain)` → `insert_clock_event(chain)`).
+
+Published events anchor into **every** chain, not just the one nearest in time: `insert_event`
+references each chain's current tip at creation (the lower anchor), and each chain's own next
+tick references the event back (the upper pin, drawn from `unreferenced_per_chain_[ℓ]`) — so an
+event stays boundable at every resolution. Neighbor tips are likewise tracked per chain
+(`Neighbor::last_clock_event_hashes`, indexed by chain level); a local chain-`ℓ` clock event
+cross-links to each neighbor's matched chain-`ℓ` tip, and advertisement is change-only per chain
+(a chain's tip is only re-broadcast when it ticks).
+
+Each chain is **ring-pruned** to its configured `keep`: `Store::prune_chain(chain, keep)` drops
+the oldest chain-`ℓ` clock events (record and reverse-index entries), and
+`create_clock_event(chain)` calls it after every tick once `keep > 0` (`Node::gc()` re-asserts
+every chain's cap on demand — see [`loti db gc`](cli.md#storage--maintenance)). Because every
+event is pinned into every chain at creation, dropping a fast chain's old clock events never
+loses an event's ordering — it only widens the provable bound to the next-coarser chain still
+retaining it. The store is **gap-tolerant** to make this cheap: clock events are keyed by a
+monotonic seq, pruning just deletes records (leaving sparse seqs), and the reverse index is
+cleaned along with them, so chain discovery resolves a pruned reference to nothing and falls
+through to the finest surviving chain automatically. `lotid` runs a default 4-chain, ×8-spaced
+schedule (4096 clock events kept per chain) derived from `--clock-interval`, bounding total
+clock-event storage instead of letting it grow with wall-clock time; see
+[theory.md](theory.md#bounding-storage-multi-resolution-clock-chains) for the retention math.
 
 ## The overlay: NetworkConfigurator
 

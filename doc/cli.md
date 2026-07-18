@@ -8,9 +8,9 @@ A **working subset is already implemented**: the [`lotid`](../src/app/lotid/loti
 [`loti`](../src/app/loti/loti.cpp) client cover `init`, the control-socket RPC, `peer add`/`peer ls`,
 `publish`, `events`/`event show`/`event find`, the three discoveries (`bounds` / `chain` / `order`,
 including remote `<creator>:<hash>` addressing), Ed25519 identity and signing, snapshot persistence
-with `db stat`/`backup`/`restore`, and portable, offline-verifiable proofs (`prove` / `verify` /
+with `db stat`/`gc`/`backup`/`restore`, and portable, offline-verifiable proofs (`prove` / `verify` /
 `proof show`). The rest of the surface below — daemon supervision, key rotation, routing/overlay
-management, the `clock` subcommands, `db gc`/`db verify`, `config`, `stats`/`metrics`, and
+management, the `clock` subcommands, `db verify`, `config`, `stats`/`metrics`, and
 reference-node targeting — remains design/reference (see
 [paper-vs-implementation.md](paper-vs-implementation.md) for the remaining gaps). See
 [Implementation status](#implementation-status-mvp) below for the exact command table and where the
@@ -75,7 +75,7 @@ verify offline** — plus persistence. All of the daemon promotions above are im
 | Discovery | `bounds <e>`, `chain <e>`, `order <a> <b>` — `<e>` is a local `hash`/`last` **or** a remote `<creator>:<hash>` |
 | Proofs | `prove bounds\|order\|chain … --out <f>`, `verify <f>`, `proof show <f>` |
 | Peers | `peer add <id:ip:port>`, `peer ls` |
-| Storage | `db stat`, `db backup --out <f>`, `db restore <f>` |
+| Storage | `db stat`, `db gc`, `db backup --out <f>`, `db restore <f>` |
 | Global | `--control`, `--json` (pretty, nested), `--quiet`, `--home`, `--out`, `--trust`, `--help` |
 
 **Deviations from this spec** (accepted for the MVP):
@@ -96,10 +96,17 @@ verify offline** — plus persistence. All of the daemon promotions above are im
 - **`event find <text>`** (local content substring search) is an addition not in the original
   command surface.
 
-**Retention.** The rule *local events and the local clock chain are never dropped* (they back all
-future proofs) holds **by construction**: nothing prunes them, and `snapshot`/`restore` round-trip
-the whole DAG. `db gc` and `db verify` from [Storage & maintenance](#storage--maintenance) are not
-implemented — there is no expendable derived state to garbage-collect at MVP scale.
+**Retention.** `lotid` runs a fixed default schedule of several independent clock chains at
+geometrically spaced intervals (fastest first) instead of one; every published event pins into
+every chain at creation, and each chain is ring-pruned to a fixed capacity after each tick, so
+clock-event storage is **bounded** rather than growing with wall-clock time. This retires the
+earlier rule *local events and the local clock chain are never dropped*: the invariant now is
+that the local clock chain is never dropped **below the coarsest retained resolution** — every
+event stays boundable, at a precision that degrades to roughly `a/C` of its age (`C` = clock
+events kept per chain) rather than being lost. `db gc` from [Storage &
+maintenance](#storage--maintenance) is implemented — it re-asserts every chain's ring cap
+(normally a no-op, since the same pruning already runs after every clock tick); `db verify` is
+not implemented.
 
 **Deferred (post-MVP):** `config get/set/list` (+ a config-file loader; `init` writes a flat config
 that the operator pastes into the `lotid` command), `node start` (process spawn/daemonize),
@@ -327,8 +334,8 @@ VALID   event:2c7f…9a  created 2026-07-17T10:31:02Z .. 10:31:39Z (width 37s)
 
 | Command | Purpose |
 | --- | --- |
-| `loti db stat` | Store size, counts (events, clock events, cross-links, discoveries), growth rate. |
-| `loti db gc [--keep <dur>]` | Prune expendable data. **Local events and the local clock chain must be retained** (they are the node's only record and back all future proofs); learned neighbor cross-links and expired discovery caches can be trimmed. |
+| `loti db stat` | Store size, counts (events, clock events, **chains**, cross-links, discoveries), growth rate, and a retention line ("per-chain ring; events stay boundable at the coarsest retained chain"). |
+| `loti db gc` | Ring-prune each clock chain down to its configured capacity (`keep`). Conservative by construction — every event was pinned into every chain at creation, so pruning a fast chain never drops an event's ordering, only widens its provable bound to the next-coarser retained chain. Normally a no-op: the same pruning already runs after every clock tick; `db gc` re-asserts it on demand. |
 | `loti db verify` | Re-hash and re-check the integrity of the local store. |
 | `loti db backup --out <file>` / `db restore <file>` | Cold backup / restore of the entire node state. |
 | `loti db export/import` | Interchange subsets (e.g. share a slice of the clock DAG). |
@@ -453,7 +460,13 @@ loti verify order.loti
   of trust)?
 - Should proofs be **multi-reference** (bounds according to several independent nodes at once)
   for stronger legal standing?
-- What is the exact retention policy that keeps proofs reconstructible years later without
-  unbounded storage growth (~3–30 GB/year of clock events per the paper)?
+- ~~What is the exact retention policy that keeps proofs reconstructible years later without
+  unbounded storage growth (~3–30 GB/year of clock events per the paper)?~~ **Answered** by
+  multi-resolution clock chains (see [`db gc`](#storage--maintenance) above and
+  [plan/pending/multi-resolution-clock-chains.md](../plan/pending/multi-resolution-clock-chains.md)):
+  `N` independent clock chains at geometrically spaced intervals, each ring-pruned to a fixed
+  `keep`, bound total clock-event storage to ≈ `chains · keep` — old events are never dropped,
+  they degrade from exact to ≈ `a/C` precision of their age (`C` = events kept per chain) once
+  they age past the fastest chain's retained window.
 - Transport: stay on UDP (single-datagram chains) or add a reliable/streamed transport for
   large chains and event sharing?

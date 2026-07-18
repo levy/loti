@@ -300,39 +300,37 @@ discovery correct (a pruned ref resolves to nullopt and is skipped, selecting th
 **Risk:** medium — realized (on-the-wire format touch; `test_wire.cpp` round-trips it). The
 `doc/packet-format.md` write-up is Part 8.
 
-### Part 6 — Simulation & statistics
+### Part 6 — Simulation & statistics ⏸ DEFERRED
 
-- [ ] **6a.** The sim `Daemon` runs the schedule and prunes; `clockEventsFileLength`
-  ([doc/implementation.md](../../doc/implementation.md), `sim/Analysis.anf`) now shows a
-  **bounded** curve — the headline chart for the feature.
-- [ ] **6b.** New stats: per-chain retained count, and **realized bound width vs event age**
-  (validate `~a/C`).
-- [ ] **6c.** Acceptance ([test/acceptance/run.sh](../../test/acceptance/run.sh)): prune, then
-  assert an old event is still boundable (wider) and a recent one is still tight; restart
-  survival with `L` chains.
+- [x] **6c (partial).** Verified end-to-end without the OMNeT++ sim: `test_chains.cpp` asserts an
+  old event stays boundable via a coarser chain after the fine chain is pruned, and a recent one
+  stays tight; the production acceptance suite (`test/acceptance/run.sh`) passes **10/10** with the
+  multi-chain default (restart survival, backup/restore, multi-node notary proof over real UDP).
+- [ ] **6a/6b.** The OMNeT++ `Daemon` running the per-chain schedule + the `clockEventsFileLength`
+  bounded-curve / bound-width-vs-age stats. **Deferred:** the simulation is a separate OMNeT++/INET
+  toolchain not buildable in this environment, so multi-chain sim code cannot be compiled or
+  validated here. The sim currently runs a valid single chain (default empty schedule). Do this
+  once the sim toolchain is available.
 
-**Risk:** low. Validates the whole design end-to-end.
+### Part 7 — Sibling-hop variant (optional) ⏸ NOT DONE
 
-### Part 7 — Sibling-hop variant (optional; high-event-rate escape valve)
+Optional high-event-rate escape valve; not needed for the current design (enumeration is correct
+and bounded for normal event rates). Left as a future option — see the design discussion above.
 
-- [ ] **7a.** Config flag: coarse chains reference **sibling-chain tips** instead of enumerating
-  events. Storage → `O(L·C)` regardless of `R`.
-- [ ] **7b.** Document the trade: old-event **upper** bounds become reachable only while some
-  node (local or neighbor) still retains a fine path — a distributed-redundancy property, not a
-  local guarantee. Lower bounds stay locally graceful either way.
+- [ ] **7a.** Config flag: coarse chains reference sibling-chain tips instead of enumerating events.
+- [ ] **7b.** Document the distributed-redundancy trade for old-event upper bounds.
 
-**Risk:** low (opt-in). Only needed when `R·reach` dominates.
+### Part 8 — Documentation ✅
 
-### Part 8 — Documentation
-
-- [ ] **8a.** [doc/theory.md](../../doc/theory.md): the multi-resolution chain and the `a/C`
-  degradation as a first-class concept.
-- [ ] **8b.** [doc/implementation.md](../../doc/implementation.md): the `L`-chain data model,
-  pinning rules, ring prune.
-- [ ] **8c.** [doc/packet-format.md](../../doc/packet-format.md): the chain id on the tip
-  notification.
-- [ ] **8d.** [doc/cli.md](../../doc/cli.md): `db gc`, the new retention invariant, and **answer
-  the open question at line 456**.
+- [x] **8a.** `doc/theory.md`: new "Bounding storage: multi-resolution clock chains" subsection
+  (independent geometric chains, event pinned into every chain, `~1/C`-of-age degradation).
+- [x] **8b.** `doc/implementation.md`: `chain` field + per-chain `Neighbor` tips in the data model
+  and hash; new "Multi-resolution clock chains" subsection (per-chain creation/pinning, prune,
+  gap-tolerant store, `lotid` default schedule).
+- [x] **8c.** `doc/packet-format.md`: clock notification gains `u64 chain` (81→89 B), `ClockEvent`
+  composite gains `chain` (68→76 + 44·r B), hash formula prepends `chain`.
+- [x] **8d.** `doc/cli.md`: `db gc` documented, retention rewritten to the new invariant, and the
+  open retention question struck through / marked **Answered**.
 
 ---
 
@@ -375,12 +373,18 @@ accuracy) is acceptable.
 
 ## Status
 
-In progress on branch `multi-resolution-clock-chains` (worktree). **Multi-chain core landed**
-(Parts 1, 2, 4a/4b, 5) — the core builds and all `loti_core` tests pass (44 cases, incl. the new
-`test_chains.cpp` driving 2 chains). Single-chain behavior is unchanged, so `lotid` still runs one
-chain until pruning lands.
+Implemented on branch `multi-resolution-clock-chains` (worktree). **Parts 1–5, 3, and 8 are done
+and validated**; Part 6 (OMNeT++ sim stats) is deferred (toolchain not available here) and Part 7
+(sibling-hop) is an unneeded optional.
 
-Remaining: **Part 3** (per-chain ring prune → gap-tolerant seq, `db gc`, `db stat`; this also
-unlocks 4c and switching `lotid` to the default multi-resolution schedule); **Part 6** (sim +
-stats — editable but not buildable here, separate OMNeT++ toolchain); **Part 7** (optional
-sibling-hop); **Part 8** (docs). Move to `plan/done/` once complete.
+Verification:
+- `loti_core` unit tests: **46/46 pass** (`scripts/build-core.sh`), including `test_chains.cpp`
+  (multi-chain creation, pinning, per-chain tips, cross-node chain-building, ring pruning, and the
+  key **old-event-boundable-via-coarser-chain-after-prune** test).
+- Production acceptance suite: **10/10 pass** over real UDP with the default 4-chain daemon.
+- The daemon is live multi-chain by default (4 chains, ×8, keep 4096/chain → bounded storage);
+  `loti db stat` shows `chains`, `loti db gc` works.
+
+Stays in `plan/pending/` (not moved to `plan/done/`) because Part 6a/6b (the OMNeT++ simulation
+running the schedule + the bounded-storage stat charts) still needs the sim toolchain to build and
+validate. Everything buildable in this environment is complete.

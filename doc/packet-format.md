@@ -105,27 +105,30 @@ The three `type` values and their payloads:
 
 ## Datagram 1 — Clock notification (`type = 0`)
 
-**When:** a node emits one to **each** neighbor every time it creates a new local clock event.
-This is the continuous background gossip that hash-links every node's clock DAG. Only two
-hashes travel — never the clock event's contents.
+**When:** a node emits one to **each** neighbor every time it creates a new local clock event,
+**on any of its clock chains**. This is the continuous background gossip that hash-links every
+node's clock DAG. A node runs several independent, geometrically-spaced clock chains (see
+[implementation.md](implementation.md#multi-resolution-clock-chains)), so the notification
+carries a `chain` id alongside the two hashes — never the clock event's contents.
 
 Payload after the 9-byte header:
 
 | Field | Encoding | Meaning |
 | --- | --- | --- |
-| `last_clock_event_hash` | `blob` (EventHash) | Hash of the sender's newest local clock event. |
-| `neighbor_last_clock_event_hash` | `blob` (EventHash) | Hash of the newest clock event the sender has heard **from this neighbor** — the back-reference that stitches the two DAGs together. |
+| `chain` | `u64` | Which of the sender's clock chains this notification is about (0 = fastest). Advertised change-only: a chain's tip is (re-)sent only when it ticks. |
+| `last_clock_event_hash` | `blob` (EventHash) | Hash of the sender's newest local clock event on that chain. |
+| `neighbor_last_clock_event_hash` | `blob` (EventHash) | Hash of the newest clock event the sender has heard **from this neighbor on that chain** — the back-reference that stitches the two DAGs together. |
 
 ```
- +----------- header 9 B -----------+------ blob ------+------ blob ------+
- | type=0 |        sender u64        | last_clock_hash  | neighbor_last…   |
- +--------+-------------------------+------------------+------------------+
-                                     \--- 4 + 32 B ---/ \--- 4 + 32 B ---/
+ +----------- header 9 B -----------+---- u64 ----+------ blob ------+------ blob ------+
+ | type=0 |        sender u64        |    chain    | last_clock_hash  | neighbor_last…   |
+ +--------+-------------------------+-------------+------------------+------------------+
+                                        8 B         \--- 4 + 32 B ---/ \--- 4 + 32 B ---/
 ```
 
-**Size (SHA-256 hashes): 9 + 36 + 36 = 81 bytes** (fixed).
+**Size (SHA-256 hashes): 9 + 8 + 36 + 36 = 89 bytes** (fixed).
 
-On receipt, the node records the neighbor's newest hash and, if it recognizes
+On receipt, the node records the neighbor's newest hash for that chain, and, if it recognizes
 `neighbor_last_clock_event_hash` as one of its own clock events, records the reverse cross-link.
 
 ---
@@ -220,14 +223,17 @@ count.
 > deliberately **excludes** `data` — that is a modeling choice for size statistics, not a claim
 > about the encoded bytes. The actual datagram includes it.)
 
-### `ClockEvent` — 68 + 44·*r* B (unsigned, SHA-256)
+### `ClockEvent` — 76 + 44·*r* B (unsigned, SHA-256)
 
 A timestamped node of the clock DAG; a chain carries many of them. *r* = referenced-event count.
+`chain` — which of the node's multi-resolution clock chains this event belongs to (0 = fastest)
+— is part of the hashed content, so a clock event cannot lie about its chain.
 
 | Field | Encoding | Size |
 | --- | --- | --- |
 | `creator` | `u64` | 8 B |
 | `hash` | `blob` (EventHash) | 4 + 32 B |
+| `chain` | `u64` | 8 B |
 | `timestamp` | `u64` | 8 B |
 | `salt` | `u64` | 8 B |
 | `referenced_events` | `array<EventReference>` | 4 + 44·*r* B |
@@ -260,7 +266,7 @@ adds 64 bytes per signed `Event`/`ClockEvent`.
 
 | Datagram | `type` | Size | Fixed? |
 | --- | --- | --- | --- |
-| Clock notification | 0 | 81 B | ✔ fixed |
+| Clock notification | 0 | 89 B | ✔ fixed |
 | Chain request | 1 | 61 B | ✔ fixed |
 | Chain response | 2 | 17 B + `EventChain` | ✘ variable |
 
@@ -276,7 +282,7 @@ the transport encoding above** (defined in [`src/core/hash/hashing.hpp`](../src/
 so a node can recompute and verify any hash it receives:
 
 - **Event hash** = `SHA-256( data ‖ salt(u64 BE) ‖ for each referenced event: creator(u64 BE) ‖ hash bytes )`.
-- **Clock-event hash** = `SHA-256( timestamp(u64 BE) ‖ salt(u64 BE) ‖ for each referenced event: creator(u64 BE) ‖ hash bytes )`.
+- **Clock-event hash** = `SHA-256( chain(u64 BE) ‖ timestamp(u64 BE) ‖ salt(u64 BE) ‖ for each referenced event: creator(u64 BE) ‖ hash bytes )`.
 
 A node's own `creator`/`hash` fields and its `signature` are **not** part of the preimage — the
 signature signs the hash, so signing never changes a hash. This is why the `data` bytes must
@@ -293,13 +299,14 @@ Runs on every clock-event tick, independent of any query — this is what keeps 
 
 ```
 Node A                                    Node B (neighbor)
-   |  creates a local clock event             |
+   |  creates a local clock event on chain ℓ  |
    |  clock notification (type 0)             |
-   |   { last_clock_event_hash,               |
+   |   { chain,                               |
+   |     last_clock_event_hash,               |
    |     neighbor_last_clock_event_hash }     |
-   |----------------------------------------->|  record A's newest hash;
+   |----------------------------------------->|  record A's newest hash for chain ℓ;
    |                                          |  add reverse cross-link into DAG
-   |                   (and symmetrically B -> A on B's own ticks)
+   |                   (and symmetrically B -> A on B's own ticks, per chain)
 ```
 
 ### B. Event-chain discovery (request out, response back)
