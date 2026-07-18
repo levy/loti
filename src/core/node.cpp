@@ -12,6 +12,13 @@ namespace loti {
 
 using namespace domain;
 
+namespace {
+// Membership test for the reverse-path breadcrumb (which doubles as the per-copy visited set).
+bool contains(const std::vector<NodeId>& path, NodeId id) {
+  return std::find(path.begin(), path.end(), id) != path.end();
+}
+}  // namespace
+
 Node::Node(NodeId id, NodePorts ports, NodeConfig config)
     : id_(id),
       clock_(ports.clock),
@@ -143,9 +150,9 @@ void Node::on_packet_received(const Bytes& datagram) {
     process_clock_event_notification(neighbor, m->chain, m->last_clock_event_hash,
                                      m->neighbor_last_clock_event_hash);
   } else if (const auto* m = std::get_if<wire::ChainRequest>(&dg.payload)) {
-    process_chain_request(m->originator, neighbor, m->event);
+    process_chain_request(neighbor, *m);
   } else if (const auto* m = std::get_if<wire::ChainResponse>(&dg.payload)) {
-    process_chain_response(m->originator, neighbor, m->chain);
+    process_chain_response(neighbor, *m);
   }
 }
 
@@ -165,44 +172,59 @@ void Node::process_clock_event_notification(Neighbor& neighbor, std::uint32_t ch
   }
 }
 
-void Node::send_chain_request(NodeId originator, const Neighbor& neighbor,
-                              const EventReference& event) {
-  wire::ChainRequest m{originator, event};
-  transport_.send(neighbor.node_id, wire::encode(id_, m));
+void Node::send_chain_request(const Neighbor& to, const wire::ChainRequest& m) {
+  transport_.send(to.node_id, wire::encode(id_, m));
 }
 
-void Node::process_chain_request(NodeId originator, const Neighbor& neighbor,
-                                 const EventReference& event) {
-  if (event.creator == id_) {
-    auto local = store_.event_by_hash(event.hash);
+void Node::process_chain_request(const Neighbor& sender, const wire::ChainRequest& m) {
+  if (m.event.creator == id_) {
+    // Creator: seed the enclosing chain and reflect it back along the reverse-path breadcrumb.
+    auto local = store_.event_by_hash(m.event.hash);
     if (!local) return;
     EventChain chain;
     chain.event = *local;
     if (!add_local_lower_bound(chain)) return;
     if (!add_local_upper_bound(chain)) return;
-    if (!extend_lower_bound_for_neighbor(neighbor, chain)) return;
-    if (!extend_upper_bound_for_neighbor(neighbor, chain)) return;
-    send_chain_response(originator, neighbor, chain);
+    if (!extend_lower_bound_for_neighbor(sender, chain)) return;
+    if (!extend_upper_bound_for_neighbor(sender, chain)) return;
+    send_chain_response_retrace(m.originator, chain, m.path);
   } else {
-    if (const auto* next = find_next_hop_neighbor(event.creator))
-      send_chain_request(originator, *next, event);
+    // Intermediate: forward toward the creator, appending ourself to the breadcrumb. The
+    // breadcrumb is also the per-copy visited set (loop avoidance) and bounds the flood depth.
+    if (contains(m.path, id_)) return;                            // already visited — loop, drop
+    if (m.hop_limit > 0 && m.path.size() >= m.hop_limit) return;  // hop-limit cap
+    wire::ChainRequest fwd = m;
+    fwd.path.push_back(id_);
+    if (const auto* next = find_next_hop_neighbor(m.event.creator))
+      if (!contains(m.path, next->node_id)) send_chain_request(*next, fwd);
   }
 }
 
-void Node::send_chain_response(NodeId originator, const Neighbor& neighbor, const EventChain& chain) {
-  wire::ChainResponse m{originator, chain};
-  transport_.send(neighbor.node_id, wire::encode(id_, m));
+void Node::send_chain_response(const Neighbor& to, const wire::ChainResponse& m) {
+  transport_.send(to.node_id, wire::encode(id_, m));
 }
 
-void Node::process_chain_response(NodeId originator, const Neighbor& neighbor,
-                                  const EventChain& chain) {
-  const Hash& hash = chain.event.hash;
-  if (originator == id_) {
+void Node::send_chain_response_retrace(NodeId originator, const EventChain& chain,
+                                       const std::vector<NodeId>& path) {
+  if (path.empty()) return;  // nowhere left to send (the originator completes locally)
+  wire::ChainResponse resp;
+  resp.originator = originator;
+  resp.chain = chain;
+  resp.path = path;
+  const NodeId next_id = resp.path.back();
+  resp.path.pop_back();
+  if (const auto* to = neighbor_by_id(next_id)) send_chain_response(*to, resp);
+}
+
+void Node::process_chain_response(const Neighbor& sender, const wire::ChainResponse& m) {
+  const Hash& hash = m.chain.event.hash;
+  if (m.originator == id_) {
+    // Home: attach our own clock events at both ends and complete (or abort).
     auto it = chain_discoveries_.find(hash);
     if (it == chain_discoveries_.end()) return;
     auto& discovery = it->second.discovery;
     if (discovery.state != DiscoveryState::in_progress) return;
-    discovery.chain = chain;
+    discovery.chain = m.chain;
     auto& updated = discovery.chain;
     if (!add_local_lower_bound(updated)) {
       abort_chain_discovery(hash);
@@ -212,14 +234,15 @@ void Node::process_chain_response(NodeId originator, const Neighbor& neighbor,
       complete_chain_discovery(hash);
     }
   } else {
-    const auto* next = find_next_hop_neighbor(originator);
-    if (!next) return;
-    EventChain updated = chain;
+    // Intermediate on the return leg: splice our clock events, extend for the node the
+    // response came from, then retrace one hop further along the breadcrumb — never routing.
+    if (m.path.empty()) return;  // malformed: not home yet, but no breadcrumb left
+    EventChain updated = m.chain;
     if (!add_local_lower_bound(updated)) return;
     if (!add_local_upper_bound(updated)) return;
-    if (!extend_lower_bound_for_neighbor(neighbor, updated)) return;
-    if (!extend_upper_bound_for_neighbor(neighbor, updated)) return;
-    send_chain_response(originator, *next, updated);
+    if (!extend_lower_bound_for_neighbor(sender, updated)) return;
+    if (!extend_upper_bound_for_neighbor(sender, updated)) return;
+    send_chain_response_retrace(m.originator, updated, m.path);
   }
 }
 
@@ -233,7 +256,7 @@ Event Node::publish_event(Bytes data) {
   return event;
 }
 
-void Node::discover_event_chain(const Event& event, ChainCallback& callback) {
+void Node::discover_event_chain(const Event& event, TimeRange range, ChainCallback& callback) {
   auto it = chain_discoveries_.find(event.hash);
   if (it != chain_discoveries_.end()) {
     const auto& d = it->second.discovery;
@@ -245,6 +268,7 @@ void Node::discover_event_chain(const Event& event, ChainCallback& callback) {
     return;
   }
   auto& discovery = insert_chain_discovery(event, id_, &callback);
+  discovery.range = range;
   telemetry_.on_chain_discovery_started(discovery);
   if (event.creator == id_) {
     auto& chain = discovery.chain;
@@ -256,11 +280,17 @@ void Node::discover_event_chain(const Event& event, ChainCallback& callback) {
       complete_chain_discovery(event.hash);
     }
   } else if (const auto* next = find_next_hop_neighbor(event.creator)) {
-    send_chain_request(id_, *next, EventReference{event.creator, event.hash});
+    wire::ChainRequest req;
+    req.originator = id_;
+    req.event = EventReference{event.creator, event.hash};
+    req.range = range;
+    req.hop_limit = config_.discovery_hop_limit;
+    req.path = {id_};  // seed the breadcrumb with the originator
+    send_chain_request(*next, req);
   }
 }
 
-void Node::discover_event_bounds(const Event& event, BoundsCallback& callback) {
+void Node::discover_event_bounds(const Event& event, TimeRange range, BoundsCallback& callback) {
   auto it = bounds_discoveries_.find(event.hash);
   if (it != bounds_discoveries_.end()) {
     const auto& d = it->second.discovery;
@@ -275,10 +305,11 @@ void Node::discover_event_bounds(const Event& event, BoundsCallback& callback) {
   }
   auto& discovery = insert_bounds_discovery(event, callback);
   telemetry_.on_bounds_discovery_started(discovery);
-  discover_event_chain(event, *this);
+  discover_event_chain(event, range, *this);
 }
 
-void Node::discover_event_order(const Event& event1, const Event& event2, OrderCallback& callback) {
+void Node::discover_event_order(const Event& event1, const Event& event2, TimeRange range,
+                                OrderCallback& callback) {
   auto key = std::make_pair(event1.hash, event2.hash);
   auto it = order_discoveries_.find(key);
   if (it != order_discoveries_.end()) {
@@ -292,8 +323,8 @@ void Node::discover_event_order(const Event& event1, const Event& event2, OrderC
   }
   auto& discovery = insert_order_discovery(event1, event2, callback);
   telemetry_.on_order_discovery_started(discovery);
-  discover_event_chain(event1, *this);
-  discover_event_chain(event2, *this);
+  discover_event_chain(event1, range, *this);
+  discover_event_chain(event2, range, *this);
 }
 
 // ---------------------------------------------------------------------------
@@ -616,6 +647,11 @@ const Neighbor* Node::find_next_hop_neighbor(NodeId node) const {
     if (jt != neighbors_.end()) return &jt->second;
   }
   return nullptr;
+}
+
+const Neighbor* Node::neighbor_by_id(NodeId id) const {
+  auto it = neighbors_.find(id);
+  return it == neighbors_.end() ? nullptr : &it->second;
 }
 
 // ---------------------------------------------------------------------------

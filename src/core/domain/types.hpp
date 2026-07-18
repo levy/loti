@@ -12,6 +12,7 @@
 
 #include <cstdint>
 #include <deque>
+#include <limits>
 #include <vector>
 
 namespace loti::domain {
@@ -29,6 +30,19 @@ using Timestamp = std::int64_t;
 
 // A span of time in the same tick unit as Timestamp (a difference of Timestamps).
 using Duration = std::int64_t;
+
+// A closed time window [lo, hi] in Timestamp ticks: the estimated span during which the
+// target event existed. It is supplied by the querying party — the network cannot estimate
+// it — and it is what makes forwarding time-dependent: a discovery routes over the overlay
+// as it was within this window. The default is the unconstrained full range
+// (`TimeRange::all()`), which the time-dependent routers treat as "any time / all history".
+struct TimeRange {
+  Timestamp lo = std::numeric_limits<Timestamp>::min();
+  Timestamp hi = std::numeric_limits<Timestamp>::max();
+  [[nodiscard]] static constexpr TimeRange all() noexcept { return {}; }
+  [[nodiscard]] constexpr bool contains(Timestamp t) const noexcept { return lo <= t && t <= hi; }
+  bool operator==(const TimeRange&) const = default;
+};
 
 // A typed pointer to another event / clock event (its creator + hash).
 struct EventReference {
@@ -102,6 +116,7 @@ struct EventChainDiscovery {
   Timestamp end_time = 0;
   NodeId originator = 0;
   Event event;
+  TimeRange range;  // the querying party's estimated window for `event` (routes by it)
   EventChain chain;
   DiscoveryState state = DiscoveryState::in_progress;
 };

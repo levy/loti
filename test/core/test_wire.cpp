@@ -19,13 +19,21 @@ TEST_CASE("clock notification round-trips") {
 }
 
 TEST_CASE("chain request round-trips") {
-  wire::ChainRequest m{/*originator=*/3, domain::EventReference{5, domain::EventHash(32, 0xAB)}};
+  wire::ChainRequest m;
+  m.originator = 3;
+  m.event = domain::EventReference{5, domain::EventHash(32, 0xAB)};
+  m.range = domain::TimeRange{100, 200};
+  m.hop_limit = 7;
+  m.path = {3, 4, 5};
   const auto dg = wire::decode(wire::encode(9, m));
   CHECK(dg.sender == 9);
   const auto* got = std::get_if<wire::ChainRequest>(&dg.payload);
   REQUIRE(got != nullptr);
   CHECK(got->originator == 3);
   CHECK(got->event == m.event);
+  CHECK(got->range == m.range);
+  CHECK(got->hop_limit == m.hop_limit);
+  CHECK(got->path == m.path);
 }
 
 TEST_CASE("chain response with a full EventChain round-trips") {
@@ -49,11 +57,15 @@ TEST_CASE("chain response with a full EventChain round-trips") {
   hi.timestamp = 222;
   chain.upper_bound.push_back(hi);
 
-  wire::ChainResponse m{/*originator=*/42, chain};
+  wire::ChainResponse m;
+  m.originator = 42;
+  m.chain = chain;
+  m.path = {42, 7, 9};
   const auto dg = wire::decode(wire::encode(1, m));
   CHECK(dg.sender == 1);
   const auto* got = std::get_if<wire::ChainResponse>(&dg.payload);
   REQUIRE(got != nullptr);
   CHECK(got->originator == 42);
   CHECK(got->chain == chain);
+  CHECK(got->path == m.path);
 }

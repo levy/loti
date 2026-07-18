@@ -25,7 +25,7 @@ TEST_CASE("two-node event chain discovery completes and validates") {
   harness::gossip(w, nodes, 6);                 // pin the event and form the reverse links
 
   harness::RecordingChain cb;
-  n2.discover_event_chain(event, cb);           // n2 is the reference node
+  n2.discover_event_chain(event, domain::TimeRange::all(), cb);           // n2 is the reference node
   w.pump();
 
   REQUIRE(cb.completed);
@@ -50,7 +50,7 @@ TEST_CASE("three-node path bounds discovery yields a sane interval") {
   harness::gossip(w, nodes, 8);
 
   harness::RecordingBounds cb;
-  n3.discover_event_bounds(event, cb);          // bounds according to n3's clock, 3 hops away
+  n3.discover_event_bounds(event, domain::TimeRange::all(), cb);          // bounds according to n3's clock, 3 hops away
   w.pump();
 
   REQUIRE(cb.completed);
@@ -71,7 +71,7 @@ TEST_CASE("event order discovery: an earlier event is ordered before a later one
   harness::gossip(w, nodes, 8);
 
   harness::RecordingOrder cb;
-  n3.discover_event_order(early, late, cb);
+  n3.discover_event_order(early, late, domain::TimeRange::all(), cb);
   w.pump();
 
   REQUIRE(cb.completed);

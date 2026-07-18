@@ -72,7 +72,7 @@ void Browser::processDiscoverEventChainTimer()
 {
     auto event = findRandomEvent();
     if (event)
-        daemon->discoverEventChain(*event, *this);
+        daemon->discoverEventChain(*event, domain::TimeRange::all(), *this);
     else
         EV_WARN << "No event found for event chain discovery" << endl;
 }
@@ -88,7 +88,7 @@ void Browser::processDiscoverEventBoundsTimer()
 {
     auto event = findRandomEvent();
     if (event)
-        daemon->discoverEventBounds(*event, *this);
+        daemon->discoverEventBounds(*event, domain::TimeRange::all(), *this);
     else
         EV_WARN << "No event found for event bounds discovery" << endl;
 }
@@ -105,7 +105,7 @@ void Browser::processDiscoverEventOrderTimer()
     auto event1 = findRandomEvent();
     auto event2 = findRandomEvent();
     if (event1 && event2)
-        daemon->discoverEventOrder(*event1, *event2, *this);
+        daemon->discoverEventOrder(*event1, *event2, domain::TimeRange::all(), *this);
     else
         EV_WARN << "No events found for event order discovery" << endl;
 }

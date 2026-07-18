@@ -109,23 +109,23 @@ domain::Event Daemon::publishEvent(const domain::Bytes& data)
     return node_->publish_event(data);
 }
 
-void Daemon::discoverEventChain(const domain::Event& event, ChainCallback& callback)
+void Daemon::discoverEventChain(const domain::Event& event, domain::TimeRange range, ChainCallback& callback)
 {
     Enter_Method_Silent();
-    node_->discover_event_chain(event, callback);
+    node_->discover_event_chain(event, range, callback);
 }
 
-void Daemon::discoverEventBounds(const domain::Event& event, BoundsCallback& callback)
+void Daemon::discoverEventBounds(const domain::Event& event, domain::TimeRange range, BoundsCallback& callback)
 {
     Enter_Method_Silent();
-    node_->discover_event_bounds(event, callback);
+    node_->discover_event_bounds(event, range, callback);
 }
 
 void Daemon::discoverEventOrder(const domain::Event& event1, const domain::Event& event2,
-                                OrderCallback& callback)
+                                domain::TimeRange range, OrderCallback& callback)
 {
     Enter_Method_Silent();
-    node_->discover_event_order(event1, event2, callback);
+    node_->discover_event_order(event1, event2, range, callback);
 }
 
 void Daemon::learnRoute(domain::NodeId destination, domain::NodeId nextHop)

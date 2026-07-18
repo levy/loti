@@ -248,17 +248,29 @@ Ordered; each part a commit. Do the work in a worktree, mark parts done here, mo
 **Risk:** low (mechanical extraction). **Done** — `RouteContext` is an empty struct that grows in
 later parts.
 
-### Part 2 — Time-range + reverse-path plumbing
-- [ ] Add `TimeRange` to the discovery API (`discover_event_chain/bounds/order`).
-- [ ] Carry `time_range`, the **visited-node set**, hop **limit**, and the **reverse-path
-  breadcrumb** on `ChainRequest` / `ChainResponse` (wire + codec); reserve the optional `g` field;
-  version the packet.
-- [ ] Request leg **accumulates** the breadcrumb as it forwards; the response site
-  ([node.cpp:188](../../src/core/node.cpp)) **retraces** it (pop) instead of routing via
-  `find_next_hop_neighbor(originator)` — mandatory (Decision 6).
-- [ ] Update [doc/packet-format.md](../../doc/packet-format.md). `discovery_expiry`/purge unaffected.
+### Part 2 — Time-range + reverse-path plumbing — **DONE**
+- [x] Added `domain::TimeRange` ([types.hpp](../../src/core/domain/types.hpp)) with an
+  unconstrained `TimeRange::all()`; `discover_event_chain/bounds/order` take a **required** range
+  (stored on `EventChainDiscovery`). **Decision:** callers without a real user window (tests,
+  `lotid`, sim Browser) pass `TimeRange::all()` — threading a real window through the CLI control
+  protocol is deferred (see Open questions).
+- [x] `ChainRequest` carries `range`, `hop_limit`, and the **breadcrumb `path`**; `ChainResponse`
+  carries the remaining `path`. Codec + round-trip test updated. **Decision:** the breadcrumb
+  **subsumes the visited-set** — with stateless intermediates a copy's breadcrumb *is* its visited
+  path (loop avoidance = "am I already in it"); cross-branch dedup needs per-node state and is a
+  beam-layer feature deferred regardless. So one `path` field, not two. The `g` accumulator is
+  omitted (A*/beam layer, beyond these parts). **`hop_limit`** lives on `NodeConfig`
+  (`discovery_hop_limit`, default 0 = unlimited → behavior-preserving; Part 5 sets a cap).
+- [x] Request leg **accumulates** the breadcrumb (each forwarder appends itself; loop-avoidance
+  skips neighbors already in it); the creator and every response hop **retrace** it via
+  `send_chain_response_retrace` (next = `path.back()`, pop) — `find_next_hop_neighbor(originator)`
+  is gone from the response path (Decision 6). Verified by the existing 2- and 3-hop discovery
+  tests (they exercise the multi-hop retrace and stay green).
+- [ ] `doc/packet-format.md` update folded into **Part 7** (Documentation).
 
-**Risk:** medium (a genuine wire touch + the response-leg switch; version the packet).
+**Risk:** medium. **Done** — core targets build clean (`-Wall -Wextra -Wpedantic`) and green. The
+sim adapter (`Daemon`/`Browser`) was updated for the new arity but is **not compiled here** (no
+OMNeT++/INET in this environment) — unverified until an OMNeT++ build (Part 6).
 
 ### Part 3 — Neighbor history + `NeighborHistoryRouter`
 - [ ] Build the `time → {NodeId, address}` history — as an index over the DAG cross-links, or an

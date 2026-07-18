@@ -99,7 +99,7 @@ TEST_CASE("cross-node bounds discovery completes and validates with multiple cha
   gossip_chain(w, nodes, 0, 2);
 
   harness::RecordingChain chain_cb;
-  n2.discover_event_chain(event, chain_cb);  // reaching completion means validation passed
+  n2.discover_event_chain(event, domain::TimeRange::all(), chain_cb);  // reaching completion means validation passed
   w.pump();
   REQUIRE(chain_cb.completed);
   CHECK_FALSE(chain_cb.aborted);
@@ -113,7 +113,7 @@ TEST_CASE("cross-node bounds discovery completes and validates with multiple cha
   for (const auto& ce : chain_cb.chain.upper_bound) CHECK(ce.chain == 0);
 
   harness::RecordingBounds bounds_cb;
-  n2.discover_event_bounds(event, bounds_cb);
+  n2.discover_event_bounds(event, domain::TimeRange::all(), bounds_cb);
   w.pump();
   REQUIRE(bounds_cb.completed);
   CHECK(bounds_cb.lower <= bounds_cb.upper);
@@ -153,7 +153,7 @@ TEST_CASE("pruning: an old event stays boundable via a coarser chain after the f
   CHECK(store.clock_event_count() == 5);  // chain 0 pinned at 3 + chain 1's 2 events
 
   harness::RecordingChain cb;
-  n.discover_event_chain(e, cb);  // own-event discovery: local lower + upper bounds
+  n.discover_event_chain(e, domain::TimeRange::all(), cb);  // own-event discovery: local lower + upper bounds
   w.pump();
   REQUIRE(cb.completed);
   CHECK_FALSE(cb.aborted);

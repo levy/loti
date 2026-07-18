@@ -8,6 +8,7 @@
 #pragma once
 
 #include <cstddef>
+#include <cstdint>
 #include <map>
 #include <memory>
 #include <optional>
@@ -23,6 +24,7 @@
 #include "ports/telemetry.hpp"
 #include "ports/transport.hpp"
 #include "routing/discovery_router.hpp"
+#include "wire/packets.hpp"
 
 namespace loti {
 
@@ -58,7 +60,8 @@ struct NodeConfig {
   // The chain schedule, index = chain/level (0 = fastest). Empty → a single implicit chain
   // (chain 0) with no timer — the caller drives create_clock_event() by hand (sim / tests).
   std::vector<ChainConfig> chains;
-  domain::Duration discovery_expiry = 0;  // > 0 → auto-purge stale discoveries
+  domain::Duration discovery_expiry = 0;    // > 0 → auto-purge stale discoveries
+  std::uint32_t discovery_hop_limit = 0;    // max discovery forward hops (0 = unlimited) — flood cap
 };
 
 // Non-owning references to the ports a Node runs on. The Store holds the whole DAG — the
@@ -89,12 +92,17 @@ class Node final : private ChainCallback {
   void add_neighbor(domain::NodeId neighbor);
   void learn_route(domain::NodeId destination, domain::NodeId next_hop);
 
-  // Application API.
+  // Application API. `range` is the querying party's estimated time window for the target
+  // event — a required input the network cannot infer; forwarding routes over the overlay
+  // as it was within it (doc/dynamic-discovery.md). Pass domain::TimeRange::all() when the
+  // whole history is acceptable.
   domain::Event publish_event(domain::Bytes data);
-  void discover_event_chain(const domain::Event& event, ChainCallback& callback);
-  void discover_event_bounds(const domain::Event& event, BoundsCallback& callback);
+  void discover_event_chain(const domain::Event& event, domain::TimeRange range,
+                            ChainCallback& callback);
+  void discover_event_bounds(const domain::Event& event, domain::TimeRange range,
+                             BoundsCallback& callback);
   void discover_event_order(const domain::Event& event1, const domain::Event& event2,
-                            OrderCallback& callback);
+                            domain::TimeRange range, OrderCallback& callback);
 
   // Inbound datagram from the transport adapter.
   void on_packet_received(const domain::Bytes& datagram);
@@ -159,14 +167,15 @@ class Node final : private ChainCallback {
   void process_clock_event_notification(domain::Neighbor& neighbor, std::uint32_t chain,
                                         const Hash& last_clock_event_hash,
                                         const Hash& neighbor_last_clock_event_hash);
-  void send_chain_request(domain::NodeId originator, const domain::Neighbor& neighbor,
-                          const domain::EventReference& event);
-  void process_chain_request(domain::NodeId originator, const domain::Neighbor& neighbor,
-                             const domain::EventReference& event);
-  void send_chain_response(domain::NodeId originator, const domain::Neighbor& neighbor,
-                           const domain::EventChain& chain);
-  void process_chain_response(domain::NodeId originator, const domain::Neighbor& neighbor,
-                              const domain::EventChain& chain);
+  void send_chain_request(const domain::Neighbor& to, const wire::ChainRequest& m);
+  void process_chain_request(const domain::Neighbor& sender, const wire::ChainRequest& m);
+  void send_chain_response(const domain::Neighbor& to, const wire::ChainResponse& m);
+  void process_chain_response(const domain::Neighbor& sender, const wire::ChainResponse& m);
+  // Send a response one hop along the reverse-path breadcrumb: the next hop is path.back();
+  // the response carries the rest (path minus that hop). Used by the creator and every
+  // intermediate on the return leg (Decision 6 — the response never routes, it retraces).
+  void send_chain_response_retrace(domain::NodeId originator, const domain::EventChain& chain,
+                                   const std::vector<domain::NodeId>& path);
 
   // discovery bookkeeping
   domain::EventChainDiscovery& insert_chain_discovery(const domain::Event&, domain::NodeId originator,
@@ -194,6 +203,7 @@ class Node final : private ChainCallback {
   domain::Event insert_event(domain::Bytes data);
   domain::LocalClockEvent insert_clock_event(std::uint32_t chain);
   [[nodiscard]] const domain::Neighbor* find_next_hop_neighbor(domain::NodeId) const;
+  [[nodiscard]] const domain::Neighbor* neighbor_by_id(domain::NodeId) const;
 
   // ports & config
   domain::NodeId id_;

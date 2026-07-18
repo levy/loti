@@ -48,6 +48,16 @@ class Writer {
     for (const auto& c : ch.upper_bound) clock_event(c);
   }
 
+  void time_range(const domain::TimeRange& tr) {
+    u64(static_cast<std::uint64_t>(tr.lo));
+    u64(static_cast<std::uint64_t>(tr.hi));
+  }
+
+  void node_ids(const std::vector<domain::NodeId>& ids) {
+    u32(static_cast<std::uint32_t>(ids.size()));
+    for (auto id : ids) u64(id);
+  }
+
   [[nodiscard]] const domain::Bytes& bytes() const noexcept { return buf_; }
 
  private:
@@ -112,6 +122,21 @@ class Reader {
     for (std::uint32_t n = u32(), i = 0; i < n; ++i) ch.lower_bound.push_back(clock_event());
     for (std::uint32_t n = u32(), i = 0; i < n; ++i) ch.upper_bound.push_back(clock_event());
     return ch;
+  }
+
+  domain::TimeRange time_range() {
+    domain::TimeRange tr;
+    tr.lo = static_cast<domain::Timestamp>(u64());
+    tr.hi = static_cast<domain::Timestamp>(u64());
+    return tr;
+  }
+
+  std::vector<domain::NodeId> node_ids() {
+    std::uint32_t n = u32();
+    std::vector<domain::NodeId> out;
+    out.reserve(n);
+    for (std::uint32_t i = 0; i < n; ++i) out.push_back(u64());
+    return out;
   }
 
   [[nodiscard]] bool at_end() const noexcept { return pos_ == buf_.size(); }

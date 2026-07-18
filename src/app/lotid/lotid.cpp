@@ -473,7 +473,7 @@ class Lotid final : public ChainCallback, public BoundsCallback, public OrderCal
       const auto b = resolve_event(args[2]);
       if (!a || !b) return {kNotFound, false, "no such event", {}};
       if (reply_fd >= 0) pending_order_[std::make_pair(a->hash, b->hash)] = reply_fd;
-      node_->discover_event_order(*a, *b, *this);
+      node_->discover_event_order(*a, *b, domain::TimeRange::all(), *this);
       return reply_fd >= 0 ? Reply{kOk, true, "", {}} : Reply{kOk, false, "", {{"status", "started"}}};
     }
     if (args.size() < 2) return {kUsage, false, "usage: " + verb + " <event>", {}};
@@ -481,10 +481,10 @@ class Lotid final : public ChainCallback, public BoundsCallback, public OrderCal
     if (!e) return {kNotFound, false, "no such event", {}};
     if (verb == "bounds") {
       if (reply_fd >= 0) pending_bounds_.insert({e->hash, reply_fd});
-      node_->discover_event_bounds(*e, *this);
+      node_->discover_event_bounds(*e, domain::TimeRange::all(), *this);
     } else {  // chain
       if (reply_fd >= 0) pending_chain_.insert({e->hash, reply_fd});
-      node_->discover_event_chain(*e, *this);
+      node_->discover_event_chain(*e, domain::TimeRange::all(), *this);
     }
     return reply_fd >= 0 ? Reply{kOk, true, "", {}} : Reply{kOk, false, "", {{"status", "started"}}};
   }
@@ -505,8 +505,8 @@ class Lotid final : public ChainCallback, public BoundsCallback, public OrderCal
       const auto b = resolve_event(args[3]);
       if (!a || !b) return {kNotFound, false, "no such event", {}};
       order_proofs_.push_back(OrderProof{reply_fd, a->hash, b->hash, {}, {}});
-      node_->discover_event_chain(*a, *this);
-      node_->discover_event_chain(*b, *this);
+      node_->discover_event_chain(*a, domain::TimeRange::all(), *this);
+      node_->discover_event_chain(*b, domain::TimeRange::all(), *this);
       return {kOk, true, "", {}};
     }
     if (sub != "bounds" && sub != "chain")
@@ -516,7 +516,7 @@ class Lotid final : public ChainCallback, public BoundsCallback, public OrderCal
     if (!e) return {kNotFound, false, "no such event", {}};
     const proof::Kind kind = (sub == "chain") ? proof::Kind::chain : proof::Kind::bounds;
     pending_proof_.insert({e->hash, ProofRequest{reply_fd, kind}});
-    node_->discover_event_chain(*e, *this);
+    node_->discover_event_chain(*e, domain::TimeRange::all(), *this);
     return {kOk, true, "", {}};
   }
 

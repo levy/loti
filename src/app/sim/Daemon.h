@@ -78,10 +78,10 @@ class Daemon : public cSimpleModule, public UdpSocket::ICallback
     // Application API used by the Publisher/Browser modules. Events come back by value —
     // the DAG lives in the store now, so there is no stable in-RAM Event to reference.
     domain::Event publishEvent(const domain::Bytes& data);
-    void discoverEventChain(const domain::Event& event, ChainCallback& callback);
-    void discoverEventBounds(const domain::Event& event, BoundsCallback& callback);
+    void discoverEventChain(const domain::Event& event, domain::TimeRange range, ChainCallback& callback);
+    void discoverEventBounds(const domain::Event& event, domain::TimeRange range, BoundsCallback& callback);
     void discoverEventOrder(const domain::Event& event1, const domain::Event& event2,
-                            OrderCallback& callback);
+                            domain::TimeRange range, OrderCallback& callback);
 
     int getNumEvents() const { return static_cast<int>(node_->event_count()); }
     domain::Event getEvent(int index) const { return node_->event_at(index); }

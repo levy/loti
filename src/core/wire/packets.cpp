@@ -28,6 +28,9 @@ domain::Bytes encode(domain::NodeId sender, const ChainRequest& m) {
   w.u64(m.originator);
   w.u64(m.event.creator);
   w.blob(m.event.hash);
+  w.time_range(m.range);
+  w.u64(m.hop_limit);
+  w.node_ids(m.path);
   return w.bytes();
 }
 
@@ -36,6 +39,7 @@ domain::Bytes encode(domain::NodeId sender, const ChainResponse& m) {
   write_header(w, Type::chain_response, sender);
   w.u64(m.originator);
   w.chain(m.chain);
+  w.node_ids(m.path);
   return w.bytes();
 }
 
@@ -58,6 +62,9 @@ Datagram decode(const domain::Bytes& datagram) {
       m.originator = r.u64();
       m.event.creator = r.u64();
       m.event.hash = r.blob();
+      m.range = r.time_range();
+      m.hop_limit = static_cast<std::uint32_t>(r.u64());
+      m.path = r.node_ids();
       out.payload = std::move(m);
       break;
     }
@@ -65,6 +72,7 @@ Datagram decode(const domain::Bytes& datagram) {
       ChainResponse m;
       m.originator = r.u64();
       m.chain = r.chain();
+      m.path = r.node_ids();
       out.payload = std::move(m);
       break;
     }

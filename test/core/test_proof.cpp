@@ -14,7 +14,7 @@ namespace {
 // Run a discovery and return the reference node's enclosing chain.
 domain::EventChain discover_chain(harness::World& w, const domain::Event& event, Node& reference) {
   harness::RecordingChain cb;
-  reference.discover_event_chain(event, cb);
+  reference.discover_event_chain(event, domain::TimeRange::all(), cb);
   w.pump();
   REQUIRE(cb.completed);
   return cb.chain;
@@ -36,7 +36,7 @@ domain::EventChain self_chain(Node& node, domain::Timestamp& now) {
   now = 20;
   node.create_clock_event();                 // C2 references the event
   harness::RecordingChain cb;
-  node.discover_event_chain(event, cb);      // event.creator == node.id() → no network
+  node.discover_event_chain(event, domain::TimeRange::all(), cb);      // event.creator == node.id() → no network
   REQUIRE(cb.completed);
   return cb.chain;
 }
