@@ -27,7 +27,7 @@ mode="${1:-release}"
 # keystore on OpenSSL) and the production apps `src/app/lotid` (has its own main() +
 # links libcrypto) / `src/app/loti` — any would pull an unresolved symbol into libloti.so.
 opp_makemake -f --deep -e cpp --make-so -o loti -O out \
-  -X test -X build -X scripts -X plan -X doc -X bin \
+  -X test -X build -X scripts -X plan -X doc -X bin -X third_party \
   -X src/adapters/os -X src/app/lotid -X src/app/loti \
   -KINET_PROJ="$INET_ROOT" -DINET_IMPORT \
   -Isrc -Isrc/core '-I$(INET_PROJ)/src' '-L$(INET_PROJ)/src' '-lINET$(D)'

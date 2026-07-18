@@ -9,7 +9,7 @@
 # dependency. Adapters and apps (added in later MVP stages) depend on loti_core,
 # never the reverse.
 cmake_minimum_required(VERSION 3.20)
-project(loti LANGUAGES CXX)
+project(loti LANGUAGES C CXX)  # C is for the vendored LMDB engine (third_party/lmdb)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -36,6 +36,21 @@ add_library(loti_core STATIC
 target_include_directories(loti_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src/core)
 
 # ----------------------------------------------------------------------------
+# loti_lmdb — vendored LMDB 0.9.31 (third_party/lmdb), the embedded store engine
+# behind the daemon's persistent DAG. Compiled as unmodified upstream C, so its
+# warnings are silenced (-w) rather than linted with the project flags above.
+# Linked into lotid ONLY — loti_core stays pure and the simulation never sees it.
+# ----------------------------------------------------------------------------
+find_package(Threads REQUIRED)
+add_library(loti_lmdb STATIC
+  third_party/lmdb/mdb.c
+  third_party/lmdb/midl.c
+)
+target_include_directories(loti_lmdb PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/third_party/lmdb)
+target_compile_options(loti_lmdb PRIVATE -w)
+target_link_libraries(loti_lmdb PUBLIC Threads::Threads)
+
+# ----------------------------------------------------------------------------
 # lotid — the production daemon: one loti::Node on the OS port adapters
 # (src/adapters/os/, header-only) driven by an epoll reactor. Links loti_core ONLY —
 # no OMNeT++/INET — so this target existing under scripts/build-core.sh proves the
@@ -48,7 +63,7 @@ add_executable(lotid
   src/app/lotid/lotid.cpp
   src/adapters/os/keystore.cpp
 )
-target_link_libraries(lotid PRIVATE loti_core OpenSSL::Crypto)
+target_link_libraries(lotid PRIVATE loti_core OpenSSL::Crypto loti_lmdb)
 target_include_directories(lotid PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
 
 # loti — the CLI client. Talks to lotid over the control socket; `loti init` also
