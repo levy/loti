@@ -96,8 +96,8 @@ domain::Bytes to_bytes(const MDB_val& v) {
 // open / close
 // ---------------------------------------------------------------------------
 
-LmdbStore::LmdbStore(std::string path, std::size_t map_size)
-    : path_(std::move(path)), map_size_(map_size) {
+LmdbStore::LmdbStore(std::string path, std::size_t map_size, SyncPolicy sync)
+    : path_(std::move(path)), map_size_(map_size), sync_policy_(sync) {
   check(mdb_env_create(&env_), "env_create");
 
   // maxdbs and mapsize must both be set before the env is opened.
@@ -108,7 +108,12 @@ LmdbStore::LmdbStore(std::string path, std::size_t map_size)
     mdb_env_close(env_); env_ = nullptr; fail_rc("set_mapsize", rc);
   }
   // MDB_NOSUBDIR: `path` is a single file (like the old snapshot), not a directory.
-  if (int rc = mdb_env_open(env_, path_.c_str(), MDB_NOSUBDIR, 0644); rc != MDB_SUCCESS) {
+  // MDB_NOSYNC (lazy): skip the per-commit fsync; the OS flushes dirty pages on its own
+  // and sync() forces them. Without MDB_WRITEMAP this keeps the DB crash-consistent —
+  // only the last unsynced commits are at risk, never integrity (see the header).
+  unsigned env_flags = MDB_NOSUBDIR;
+  if (sync_policy_ == SyncPolicy::lazy) env_flags |= MDB_NOSYNC;
+  if (int rc = mdb_env_open(env_, path_.c_str(), env_flags, 0644); rc != MDB_SUCCESS) {
     mdb_env_close(env_);
     env_ = nullptr;
     if (rc == MDB_INVALID)  // e.g. pointed at a pre-LMDB snapshot blob — guide the migration.

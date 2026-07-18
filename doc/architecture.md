@@ -156,6 +156,14 @@ that ceiling also bounds a 32-bit node's **total stored DAG over its lifetime** 
 paper's GB/year) — the 64-bit Zero 2 W has no such ceiling and is the long-life target. See
 [`doc/embedded.md`](embedded.md).
 
+Durability is tunable for SD-card wear. By default each commit is fsync'd (`--store-sync-interval 0`,
+safe). With `--store-sync-interval <s> > 0` the store opens `MDB_NOSYNC` (lazy): per-commit fsyncs
+are skipped and a reactor timer flushes every `<s>` seconds, so SD writes coalesce. Without
+`MDB_WRITEMAP` this stays crash-*consistent* — a crash only risks the last `<s>` of commits, never
+integrity. Clean shutdown and `save` always force a final flush. `MDB_NOMETASYNC` (fsync data but not
+the meta page) is a documented middle ground, not currently wired to a flag. Full operator guidance:
+[`doc/embedded.md`](embedded.md).
+
 Neighbor/routing state is core state fed through `add_neighbor` / `learn_route`: the simulation's
 [`NetworkConfigurator`](../src/app/sim/NetworkConfigurator.cpp) computes it once globally; the
 production peering commands (`peer add`) call the same methods.

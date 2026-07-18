@@ -32,7 +32,8 @@
 // Usage:
 //   lotid --port <p> {--id <n> | --key <path>} [--peer <id>:<ip>:<port>]...
 //         [--route <dst>:<nexthop>]... [--clock-interval <s>] [--expiry <s>]
-//         [--store <path>] [--control <path>] [--verbose]
+//         [--store <path>] [--store-mapsize <GiB>] [--store-sync-interval <s>]
+//         [--control <path>] [--verbose]
 
 #include <sys/stat.h>
 #include <unistd.h>
@@ -283,10 +284,11 @@ class Lotid final : public ChainCallback, public BoundsCallback, public OrderCal
  public:
   Lotid(domain::NodeId id, std::uint16_t port, domain::Duration clock_ns,
         domain::Duration expiry_ns, bool verbose, std::string store_path, std::size_t store_map_size,
-        const std::string& key_path, std::string control_path)
+        domain::Duration store_sync_ns, const std::string& key_path, std::string control_path)
       : transport_(port),
         scheduler_(reactor_, clock_),
         telemetry_(verbose),
+        store_sync_interval_ns_(store_sync_ns > 0 ? store_sync_ns : 0),
         control_path_(std::move(control_path)) {
     if (key_path.empty()) {
       signer_ = std::make_unique<os::NullSigner>();
@@ -301,7 +303,11 @@ class Lotid final : public ChainCallback, public BoundsCallback, public OrderCal
     node_ = std::make_unique<Node>(
         node_id_, NodePorts{clock_, scheduler_, transport_, rng_, *signer_, telemetry_},
         NodeConfig{clock_ns, expiry_ns});
-    if (!store_path.empty()) store_.emplace(std::move(store_path), store_map_size);
+    if (!store_path.empty()) {
+      const auto policy = store_sync_interval_ns_ > 0 ? os::LmdbStore::SyncPolicy::lazy
+                                                      : os::LmdbStore::SyncPolicy::safe;
+      store_.emplace(std::move(store_path), store_map_size, policy);
+    }
   }
 
   domain::NodeId node_id() const { return node_id_; }
@@ -328,6 +334,7 @@ class Lotid final : public ChainCallback, public BoundsCallback, public OrderCal
 
   void run() {
     node_->start();
+    schedule_store_sync();  // periodic flush when the store runs in lazy (MDB_NOSYNC) mode
     reactor_.add_reader(transport_.fd(), [this] {
       for (;;) {
         domain::Bytes datagram = transport_.receive();
@@ -340,6 +347,17 @@ class Lotid final : public ChainCallback, public BoundsCallback, public OrderCal
     reactor_.run();
     if (!control_path_.empty()) ::unlink(control_path_.c_str());
     if (store_) store_->sync();  // flush on a clean shutdown (writes are already durable)
+  }
+
+  // In lazy sync mode the store skips per-commit fsyncs, so a repeating reactor timer
+  // forces committed pages out every interval. Bounds the crash-loss window to one
+  // interval; a no-op (never armed) in safe mode or without a store.
+  void schedule_store_sync() {
+    if (store_sync_interval_ns_ == 0 || !store_) return;
+    scheduler_.after(store_sync_interval_ns_, [this] {
+      if (store_) store_->sync();
+      schedule_store_sync();  // re-arm
+    });
   }
 
   // ---- discovery callbacks: answer any control clients waiting on this event ----
@@ -765,6 +783,7 @@ class Lotid final : public ChainCallback, public BoundsCallback, public OrderCal
   std::string stdin_buf_;
   std::optional<os::LmdbStore> store_;
   std::optional<StorePersistence> persistence_;  // installed after load; mirrors changes
+  domain::Duration store_sync_interval_ns_ = 0;  // >0 → lazy store + periodic sync() timer
   std::vector<std::tuple<domain::NodeId, std::string, std::uint16_t>> peers_;
 
   std::string control_path_;
@@ -823,6 +842,7 @@ int main(int argc, char** argv) {
   bool verbose = false;
   std::string store_path, key_path, control_path;
   std::size_t store_map_size = loti::os::LmdbStore::kDefaultMapSize;
+  double store_sync_interval = 0.0;  // 0 = safe (fsync per commit); >0 = lazy + periodic sync
   std::vector<std::string> peers, routes;
 
   for (int i = 1; i < argc; ++i) {
@@ -842,6 +862,8 @@ int main(int argc, char** argv) {
     else if (a == "--expiry") expiry = parse_seconds(next("--expiry"));
     else if (a == "--store") store_path = next("--store");
     else if (a == "--store-mapsize") store_map_size = parse_mapsize_gib(next("--store-mapsize"));
+    else if (a == "--store-sync-interval")
+      store_sync_interval = parse_seconds(next("--store-sync-interval"));
     else if (a == "--key") key_path = next("--key");
     else if (a == "--control") control_path = next("--control");
     else if (a == "--verbose" || a == "-v") verbose = true;
@@ -854,7 +876,8 @@ int main(int argc, char** argv) {
     std::fprintf(stderr,
                  "usage: lotid --port <p> {--id <n> | --key <path>} [--peer id:ip:port]... "
                  "[--route dst:nexthop]... [--clock-interval s] [--expiry s] [--store <path>] "
-                 "[--store-mapsize <GiB>] [--control <path>] [--verbose]\n");
+                 "[--store-mapsize <GiB>] [--store-sync-interval <s>] [--control <path>] "
+                 "[--verbose]\n");
     return 2;
   }
 
@@ -864,7 +887,7 @@ int main(int argc, char** argv) {
 
   try {
     Lotid daemon(id.value_or(0), port, to_ns(clock_interval), to_ns(expiry), verbose, store_path,
-                 store_map_size, key_path, control_path);
+                 store_map_size, to_ns(store_sync_interval), key_path, control_path);
     daemon.restore_from_store();
     for (const auto& p : peers) {
       auto f = split(p, ':');

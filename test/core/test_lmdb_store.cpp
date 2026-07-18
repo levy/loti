@@ -312,6 +312,27 @@ TEST_CASE("LmdbStore grows its map on MDB_MAP_FULL and keeps the data") {
   CHECK(reopened.event_count() == static_cast<std::size_t>(written));
 }
 
+TEST_CASE("LmdbStore lazy (MDB_NOSYNC) mode round-trips after an explicit sync") {
+  TempEnv env("lazysync");
+  const auto e0 = make_event(1, 50, "lazy0");
+  const auto e1 = make_event(1, 51, "lazy1");
+  {
+    // Lazy: commits skip the fsync; sync() forces them out before close — modeling the
+    // daemon's clean-shutdown flush (run() calls store_->sync() on exit).
+    LmdbStore store(env.str(), LmdbStore::kDefaultMapSize, LmdbStore::SyncPolicy::lazy);
+    CHECK(store.sync_policy() == LmdbStore::SyncPolicy::lazy);
+    auto b = store.begin();
+    b.append_event(e0);
+    b.append_event(e1);
+    b.commit();
+    store.sync();  // clean-shutdown flush
+  }
+  // Reopen (default safe policy) and confirm the synced data survived the restart.
+  LmdbStore reopened(env.str());
+  CHECK(reopened.event_count() == 2);
+  CHECK(reopened.load_events() == std::vector<domain::Event>{e0, e1});
+}
+
 TEST_CASE("LmdbStore keeps the committed prefix intact when a later write is abandoned") {
   TempEnv env("crash");
   const auto e0 = make_event(1, 40, "kept");

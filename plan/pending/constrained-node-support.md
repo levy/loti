@@ -91,16 +91,20 @@ fsync-forced flushes become one-per-interval. LMDB stays **crash-consistent** ei
 tradeoff is only a bounded *durability window* (a crash in lazy mode may lose the last `<interval>`
 of commits, never corrupt).
 
-- [ ] **C1.** `LmdbStore`: add a sync-policy option to the ctor (open with `MDB_NOSYNC` when "lazy").
-  Default stays **safe** (fsync per commit).
-- [ ] **C2.** Daemon: `--store-sync-interval <seconds>` — `0` = safe/per-commit; `>0` = `MDB_NOSYNC`
+- [x] **C1.** `LmdbStore`: add a sync-policy option to the ctor (open with `MDB_NOSYNC` when "lazy").
+  Default stays **safe** (fsync per commit). *Done: `SyncPolicy` enum + `sync_policy()` accessor.*
+- [x] **C2.** Daemon: `--store-sync-interval <seconds>` — `0` = safe/per-commit; `>0` = `MDB_NOSYNC`
   + a reactor timer calling `store.sync()` every interval. Clean shutdown + the `save` command already
-  force a final `sync()`.
+  force a final `sync()`. *Done: `schedule_store_sync()` re-arms a scheduler timer; smoke-tested (lazy
+  publish → clean shutdown → reopen persists).*
 - [ ] **C3.** *(Optional, complementary)* per-reactor-wakeup **write batching** — group all of one
   wakeup's changes into a single txn (needs a small reactor idle hook). Cuts the commit/fsync count even
-  in safe mode. Deferred from the LMDB plan; include if the nosync win isn't enough.
-- [ ] **C4.** Tests/docs: verify lazy mode survives a clean stop/restart (synced on shutdown) and document
+  in safe mode. Deferred from the LMDB plan; include if the nosync win isn't enough. *Not done — the
+  `MDB_NOSYNC` win is the primary lever; batching stays deferred (would need a reactor idle hook).*
+- [x] **C4.** Tests/docs: verify lazy mode survives a clean stop/restart (synced on shutdown) and document
   the durability-window tradeoff. Note `MDB_NOMETASYNC` (fsync data, not meta) as a middle ground.
+  *Done: doctest for lazy round-trip after sync; durability note in doc/architecture.md (+ operator
+  guidance to land in doc/embedded.md, Part E).*
 
 **Risk:** low–medium. Default behavior unchanged; lazy mode is opt-in with a documented tradeoff.
 

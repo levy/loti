@@ -39,6 +39,14 @@ struct LmdbStoreFull : std::runtime_error {
 
 class LmdbStore {
  public:
+  // How durably a commit reaches disk. `safe` fsyncs on every commit (each change is
+  // durable before the daemon replies). `lazy` opens the env with MDB_NOSYNC: LMDB skips
+  // the per-commit fsync and the OS flushes dirty pages on its own schedule, so actual SD
+  // writes coalesce (less wear) — sync() (a reactor timer, clean shutdown, or `save`)
+  // forces them out. Without MDB_WRITEMAP this stays crash-*consistent*; only durability
+  // of the last <flush-window> of commits is at risk (never corruption). See doc/embedded.md.
+  enum class SyncPolicy { safe, lazy };
+
   // On-disk layout version, stamped in the `meta` sub-DB; bump only on a format change.
   static constexpr std::uint64_t kFormatVersion = 1;
 
@@ -57,9 +65,11 @@ class LmdbStore {
       sizeof(std::size_t) >= 8 ? (std::size_t{16} << 30) : (std::size_t{1} << 30);  // 16 / 1 GiB
 
   // Opens (creating if absent) the LMDB environment stored at the single file `path`
-  // (LMDB keeps its lock file alongside as `<path>-lock`). Throws std::runtime_error on
-  // any LMDB failure or a format-version mismatch.
-  explicit LmdbStore(std::string path, std::size_t map_size = kDefaultMapSize);
+  // (LMDB keeps its lock file alongside as `<path>-lock`). `sync` picks the durability
+  // policy (default safe = fsync per commit). Throws std::runtime_error on any LMDB
+  // failure or a format-version mismatch.
+  explicit LmdbStore(std::string path, std::size_t map_size = kDefaultMapSize,
+                     SyncPolicy sync = SyncPolicy::safe);
   ~LmdbStore();
 
   LmdbStore(const LmdbStore&) = delete;
@@ -128,6 +138,7 @@ class LmdbStore {
   void grow_map();
 
   [[nodiscard]] std::size_t map_size() const noexcept { return map_size_; }
+  [[nodiscard]] SyncPolicy sync_policy() const noexcept { return sync_policy_; }
 
   [[nodiscard]] const std::string& path() const noexcept { return path_; }
   [[nodiscard]] std::uint64_t format_version() const noexcept { return format_version_; }
@@ -135,6 +146,7 @@ class LmdbStore {
  private:
   std::string path_;
   std::size_t map_size_ = 0;
+  SyncPolicy sync_policy_ = SyncPolicy::safe;
   MDB_env* env_ = nullptr;
 
   // Named sub-databases (opened once; the handles stay valid for the life of the env).
