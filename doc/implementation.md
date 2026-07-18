@@ -252,8 +252,8 @@ sender up in its `neighbors_` map):
 | `wire::Type` | Payload | Direction |
 | --- | --- | --- |
 | `clock_notification` | `ClockNotification { last_clock_event_hash, neighbor_last_clock_event_hash }` | broadcast to each neighbor on every clock event |
-| `chain_request` | `ChainRequest { originator, event: EventReference }` | routed toward the event's creator |
-| `chain_response` | `ChainResponse { originator, chain: EventChain }` | routed back toward the originator |
+| `chain_request` | `ChainRequest { originator, event, range, hop_limit, path }` | flooded toward the event's creator, accumulating the reverse-path breadcrumb `path` |
+| `chain_response` | `ChainResponse { originator, chain, path }` | retraced back toward the originator along `path` (no routing table consulted) |
 
 `Node::on_packet_received` decodes the datagram (`wire::decode`), verifies the sender is a
 known neighbor, then dispatches by type. The core owns the exact wire bytes
@@ -271,22 +271,29 @@ An event chain discovery reconstructs an `EventChain` whose concatenation
 originator's own clock events** and passes through the requested `event`. This is the proof
 object described in [theory.md](theory.md).
 
-> The algorithm below is the **width-1 special case**: one deterministic walk along the routing
-> shortest path. How it generalizes to the paper's probabilistic beam search — and how that
-> copes with a churning, lazily-linked network — is covered in
-> [dynamic-discovery.md](dynamic-discovery.md).
+> Forwarding is pluggable (see [Forwarding & routing policy](#forwarding--routing-policy) below).
+> The default policy is still the **width-1 special case** — one deterministic walk along the
+> static shortest path — but a node can instead be configured to flood, forwarding to every
+> neighbor it was cross-linked with during the discovery's time window. Either way this is an
+> *uninformed* walk/flood, not yet the paper's probabilistic beam search — how that scores and
+> prunes candidates, and copes more generally with a churning, lazily-linked network, is covered
+> in [dynamic-discovery.md](dynamic-discovery.md).
 
 ### Starting (originator)
 
-`Node::discover_event_chain(event, callback)`:
+`Node::discover_event_chain(event, range, callback)` — `range` is the querying party's estimated
+time window for `event` ([`domain::TimeRange`](../src/core/domain/types.hpp); pass
+`TimeRange::all()` for the whole history), a required input because the network cannot estimate
+it itself:
 
 - If a discovery for `event.hash` already exists, the call **coalesces**: attach the callback
   (in progress), or immediately replay the aborted/completed result.
-- Otherwise create an `EventChainDiscovery` (state `in_progress`) and:
+- Otherwise create an `EventChainDiscovery` (state `in_progress`, storing `range`) and:
   - **If this node is the creator**, build the chain locally — `add_local_lower_bound` +
     `add_local_upper_bound` — and complete immediately (no packets).
-  - **Otherwise** look up `find_next_hop_neighbor(event.creator)` and send a `ChainRequest`
-    with `originator = this node`.
+  - **Otherwise** build a `ChainRequest{originator = this node, event, range, hop_limit}` and
+    hand it to `flood_chain_request(event.creator, RouteContext{range}, req)` (below), which
+    sends it toward the creator.
 
 Only the **originator** keeps an `EventChainDiscovery` record. Intermediate and creator nodes
 handle request/response packets statelessly, building an `EventChain` on the stack and
@@ -294,14 +301,26 @@ forwarding it.
 
 ### Routing the request
 
+`flood_chain_request(dest, ctx, base)` is what actually sends a request onward: it appends this
+node to `base.path` — the reverse-path **breadcrumb**, see
+[Forwarding & routing policy](#forwarding--routing-policy) — then, for every candidate
+`router_->next_hops(dest, ctx)` returns, sends a copy of the request to that neighbor, skipping
+any candidate already on the breadcrumb before this node appended itself (loop avoidance). Under
+the default static policy this fans out to exactly one neighbor, reproducing the historical
+single-hop walk; under a flood policy it fans out to every candidate the router names.
+
 `process_chain_request`:
 
-- **Not the creator** → forward the request to `find_next_hop_neighbor(event.creator)`.
+- **Not the creator** → if this node already appears in the request's breadcrumb (`m.path` —
+  meaning this copy looped back to somewhere it has already been) or `m.hop_limit` is reached,
+  drop the request. Otherwise call `flood_chain_request(event.creator, RouteContext{m.range}, m)`
+  to fan the request further toward the creator.
 - **Is the creator** → seed `chain.event`, then in order
   `add_local_lower_bound`, `add_local_upper_bound`, `extend_lower_bound_for_neighbor(sender)`,
-  `extend_upper_bound_for_neighbor(sender)`; if all succeed, send a `ChainResponse` back to the
-  neighbor the request came from. Any failing step drops the discovery without sending a
-  response (it will later expire at the originator via purge — see
+  `extend_upper_bound_for_neighbor(sender)`; if all succeed, call
+  `send_chain_response_retrace(m.originator, chain, m.path)` (below) to start the response back
+  along the breadcrumb `m.path` the request accumulated. Any failing step drops the discovery
+  without sending a response (it will later expire at the originator via purge — see
   [Discovery lifecycle and expiry](#discovery-lifecycle-and-expiry)).
 
 ### The four chain-building primitives
@@ -333,20 +352,75 @@ endpoints touch a given neighbor's clock events.
 
 ### Routing the response back
 
+The response never routes — it **retraces** the reverse-path breadcrumb the request built up.
+`send_chain_response_retrace(originator, chain, path)` sends the response to `path.back()` (the
+neighbor closest to home), popping that entry off the copy it sends; once `path` is empty the
+chain is already home and there is nothing left to send. No routing table is consulted at any
+step, which is what lets a flooded request complete even when one was never filled — see
+[Forwarding & routing policy](#forwarding--routing-policy).
+
 `process_chain_response`:
 
 - **Not the originator** (intermediate node) → `add_local_lower_bound`, `add_local_upper_bound`
   (splice this node's clock events onto the ends the previous node left touching it), then
   `extend_lower_bound_for_neighbor(neighbor)`, `extend_upper_bound_for_neighbor(neighbor)` —
-  `neighbor` being the node that just sent this response — then forward the updated chain
-  toward `find_next_hop_neighbor(originator)`. Any failing step silently drops the response.
+  `neighbor` being the node that just sent this response — then call
+  `send_chain_response_retrace(m.originator, updated, m.path)` to retrace one hop further. Any
+  failing step silently drops the response.
 - **Is the originator** → `add_local_lower_bound`, `add_local_upper_bound` to attach the
   originator's own clock events at both ends, then `complete_chain_discovery`. A failing step
   aborts the discovery.
 
-The net effect: the request walks hop-by-hop to the creator; the response walks hop-by-hop
-back; at each node the chain accretes that node's local clock events; and it arrives at the
-originator with the originator's own clock events at both ends.
+The net effect: the request fans out hop-by-hop toward the creator, recording a breadcrumb as it
+goes; the response walks that breadcrumb hop-by-hop back; at each node the chain accretes that
+node's local clock events; and it arrives at the originator with the originator's own clock
+events at both ends.
+
+### Forwarding & routing policy
+
+Both routing sections above route through a single seam: `routing::DiscoveryRouter`
+([`routing/discovery_router.hpp`](../src/core/routing/discovery_router.hpp)), which the `Node`
+constructor builds once, from `config_`, and holds as `router_`:
+
+```cpp
+virtual std::vector<domain::NodeId> next_hops(domain::NodeId destination,
+                                              const routing::RouteContext& ctx) const = 0;
+```
+
+`RouteContext` currently carries just `range`, the discovery's `domain::TimeRange`, because
+forwarding is **time-dependent**: a route must go over the overlay as it was *during* the
+target event's time window, not the current topology, since a chain can only close through a
+neighbor that was actually cross-linked back then. `TimeRange{lo, hi}` is a closed `[lo, hi]`
+window of `Timestamp` ticks; `TimeRange::all()` (the default) is unconstrained.
+
+Four implementations compose into the policy `NodeConfig::discovery_routing` selects:
+
+- **`StaticShortestPathRouter`** — the historical single next hop from
+  `destination_to_next_hop_`, time-agnostic. The width-1 anchor, and the default
+  (`DiscoveryRouting::static_shortest_path`).
+- **`NeighborHistoryRouter`** — the neighbors this node actually cross-linked with during
+  `ctx.range`, read straight off the DAG's `referenced_events`/`referencing_events`. Undirected
+  (a 1-hop cross-link can't say which neighbor lies toward a far destination), so it returns
+  *every* such neighbor — the always-available flood fallback.
+- **`RoutingTableRouter`** — a directional, time-scoped table (filled by `learn_route_at`); on a
+  hit it returns the recorded next hops for `destination` intersected with the neighbor history
+  (so every hop is one the chain can actually close through); on a miss, or when no directed hop
+  is cross-linked, it degrades to `NeighborHistoryRouter` outright.
+- **`ProbabilisticRouter`** — caps the fan-out to width `discovery_fanout`, sampling that many
+  candidates uniformly at random via the Rng port; a pass-through when the cap is 0 or ≥ the
+  candidate count.
+
+Under `DiscoveryRouting::flood`, the `Node` constructor wires the last three into a stack —
+`NeighborHistoryRouter` → `RoutingTableRouter` → `ProbabilisticRouter` — so a directed hit prunes
+the flood when the table has one, and every miss still degrades to the bounded, undirected
+flood. `NodeConfig::discovery_hop_limit` bounds flood depth (0 = unlimited), independently of
+`discovery_expiry`, which bounds a discovery's wall-clock lifetime.
+
+`learn_route_at` is a provider seam, not a routing protocol: the table is in-RAM and nothing
+fills it by default, so the flood — `NeighborHistoryRouter`'s undirected candidate set, capped
+by `ProbabilisticRouter` — is the primary path today. This is exactly why the response leg's
+mandatory breadcrumb retrace (above) matters: it lets a request that was flooded with **no
+routing table at all** still find its way home, since the response never needs to route.
 
 ### Completing and validating
 

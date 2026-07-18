@@ -13,6 +13,22 @@ chain-building primitives (`addLocalLowerBound`, `addLocalUpperBound`,
 `extendLowerBoundForNeighbor`, `extendUpperBoundForNeighbor`), request/response routing, and
 `validateEventChain`. Read that first; here we generalize it.
 
+> **The routing substrate below is now implemented.** Discovery forwarding is a pluggable
+> `routing::DiscoveryRouter`
+> ([`routing/discovery_router.hpp`](../src/core/routing/discovery_router.hpp);
+> [plan/pending/scalable-pluggable-discovery.md](../plan/pending/scalable-pluggable-discovery.md)):
+> a single static next hop (`StaticShortestPathRouter`, still the default), or a bounded flood
+> over the neighbors cross-linked within the discovery's required `domain::TimeRange` window
+> (`NeighborHistoryRouter`), optionally narrowed by a time-scoped `RoutingTableRouter` and capped
+> in width by a `ProbabilisticRouter`. The response leg always retraces the request's recorded
+> reverse-path breadcrumb rather than routing, so a flood completes even with an empty routing
+> table (see [implementation.md § Forwarding & routing policy](implementation.md#forwarding--routing-policy)).
+> What is **not** built yet is the score-weighted layer this document describes: candidates are
+> chosen uninformed (uniform sampling under the width cap), not ranked by `f = g + h` and pruned
+> to a beam, and the beam is not carried in the packet. The routing substrate is the *inner loop*
+> the beam search below still needs to be built on top of — see
+> [What changes in the code](#what-changes-in-the-code).
+
 ## The one invariant that makes everything else easy
 
 **Soundness is not the search's job.** Every candidate chain a discovery returns is run through
@@ -42,8 +58,10 @@ a hash cycle, which is infeasible ("it would break the hash by forming a full ci
 | **Latency variance.** Each hop is a round trip. | Long chains (~40 events, "there and back again") accumulate delay; a single slow hop dominates completion time. |
 | **The DAG only grows.** More cross-links exist later than earlier. | A discovery that fails or is loose **now** may succeed or tighten **later** — bounds have a *maturity*. |
 
-Every one of these degrades the *single deterministic shortest-path walk* that the code does
-today. A beam search is the general tool that absorbs them.
+Every one of these degrades an *uninformed* walk — whether that is the single deterministic
+shortest-path walk of the static policy, or the bounded flood the routing substrate (see the note
+above) can already be configured to run instead. A beam search — which scores and prunes
+candidates instead of walking or flooding blindly — is the general tool that absorbs them.
 
 ## The search space, precisely
 
@@ -71,8 +89,10 @@ Model the search as growing a **partial chain**:
   enclosing chain, and `T_R(upper) − T_R(lower)` is a candidate interval.
 
 So a discovery is a **graph search** whose states are partial chains and whose moves are hops
-toward `R` along cross-links. The current code explores exactly one state at a time along the
-routing shortest path — **beam width 1, deterministic**.
+toward `R` along cross-links. Under the default routing policy the code explores exactly one
+state at a time along the static shortest path — **beam width 1, deterministic**. The flood
+policy already explores every cross-linked neighbor at each hop, but *uninformed*: every
+candidate is treated equally, none scored or pruned by tightness.
 
 ### The local looseness signal
 
@@ -127,8 +147,8 @@ probability `∝ exp(−f/τ)` (a *stochastic beam*, temperature `τ`). Why rand
 - **Load spreading** — different discoveries take different paths, avoiding hot spots.
 - **Cost control** — `τ` and `k` cap work regardless of graph size.
 
-Width `k = 1`, `τ → 0` recovers **exactly today's deterministic single-path walk** as the
-degenerate case, which is the right sanity anchor.
+Width `k = 1`, `τ → 0` recovers **exactly the `StaticShortestPathRouter` default** — today's
+deterministic single-path walk — as the degenerate case, which is the right sanity anchor.
 
 ## Realizing the beam across the network
 
@@ -199,13 +219,13 @@ acceptable chain arrives (or the tightest, if `R` waits for the beam to drain be
 
 The width-1 code is the beam's inner loop; generalizing is mostly additive:
 
-| Today | Beam generalization |
+| Today (routing substrate, implemented) | Beam generalization (not yet built) |
 | --- | --- |
-| `findNextHopNeighbor(dest)` → one neighbor | `nextHopsToward(dest, b)` → `b` best neighbors (k-shortest-paths overlay routing) |
+| `DiscoveryRouter::next_hops(dest, ctx)` → an unranked candidate list — one hop under the static policy, or every cross-linked neighbor under the flood policy, uniformly width-capped by `ProbabilisticRouter` | score those candidates by `f = g + h` and prune to the beam width, instead of capping uniformly (`nextHopsToward` becomes score-aware) |
 | `extend*ForNeighbor` stops at the **first** cross-link, returns `bool` | return the nearest **few** cross-link points with their walk distances (the `g` contribution), or "dead" |
-| request/response carry **one** `EventChain` | carry a pruned **beam** of partial chains + accumulated `g` + a visited-node set (realization B/C) |
+| request/response carry **one** `EventChain` plus a reverse-path breadcrumb | carry a pruned **beam** of partial chains + accumulated `g` (realization B/C) |
 | originator keeps one `EventChainDiscovery`, first response wins | keep the in-flight beam; **collect multiple completions, validate each, keep the tightest** |
-| `discoveryExpiryTime` only | + `beam_width k`, `branching b`, `temperature τ`, `hop TTL`, `retry` |
+| `discoveryExpiryTime`, `discovery_hop_limit`, and a **uniform** fan-out cap `discovery_fanout` | + score-weighted `beam_width k` (`∝ exp(−f/τ)`), `branching b`, `temperature τ`, `retry` |
 
 Crucially, `validateEventChainDiscoveryResult`, the hashing, and the four primitives are
 **unchanged** — the beam orchestrates them; it does not alter the proof.

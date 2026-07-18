@@ -357,13 +357,21 @@ routing protocol fills the table.
 (a dynamically re-wired overlay) was **not** simulated — deferred; the static-topology run already
 exercises "flood with an empty routing table", which is the mechanism this plan adds.
 
-### Part 7 — Documentation
-- [ ] [doc/dynamic-discovery.md](../../doc/dynamic-discovery.md): this substrate under the beam.
-- [ ] [doc/implementation.md](../../doc/implementation.md): time-dependent forwarding, the two
-  tables, old-neighbor routing.
-- [ ] [doc/packet-format.md](../../doc/packet-format.md): the `time_range` field.
-- [ ] [doc/architecture.md](../../doc/architecture.md): the `DiscoveryRouter` seam and table
-  providers.
+### Part 7 — Documentation — **DONE**
+- [x] [doc/implementation.md](../../doc/implementation.md): rewrote the "Routing the request/response"
+  sections (breadcrumb fan-out + mandatory retrace, no `find_next_hop_neighbor`) and added a
+  **"Forwarding & routing policy"** section (the `DiscoveryRouter` seam, the four routers, the
+  static/flood policy, `TimeRange`, why the flood completes with an empty table). Updated the
+  packet-summary table for the new `ChainRequest`/`ChainResponse` fields.
+- [x] [doc/packet-format.md](../../doc/packet-format.md): added `TimeRange`; the `range` /
+  `hop_limit` / breadcrumb `path` fields on chain request + response (now variable-size); the
+  breadcrumb-retrace note; the forwarding-policy note on addressing.
+- [x] [doc/dynamic-discovery.md](../../doc/dynamic-discovery.md): note that the routing **substrate**
+  is now implemented (pluggable router, `TimeRange`, mandatory breadcrumb), leaving the
+  score-weighted beam as the layer still on top; touched up the now-inaccurate "single deterministic
+  walk" phrasings.
+- [x] [doc/architecture.md](../../doc/architecture.md): the `routing::DiscoveryRouter` seam under
+  "What lives in the core" + the `routing/` directory in the layout.
 
 ---
 
@@ -390,5 +398,11 @@ exercises "flood with an empty routing table", which is the mechanism this plan 
 
 ## Status
 
-Pending design plan. Decisions above are locked from the design discussion; implementation not
-started.
+**Implemented.** Parts 1–7 are done on branch `scalable-pluggable-discovery` (each part a commit).
+The pure core builds clean (`-Wall -Wextra -Wpedantic`) and passes all core tests (50 cases / 224
+assertions), and the **OMNeT++ 6.4 / INET 4.7** simulation runs the flood policy end-to-end on the
+bundled 57-node network — completing chain discoveries with an **empty routing table**. Deferred
+(see Open questions): the score-weighted / in-packet **beam** on top of this substrate;
+**cross-branch dedup** (the flood is exponential in the hop limit without it — keep `hop_limit ≈
+diameter` for now); CLI/control-protocol threading of a real `TimeRange` (callers pass
+`TimeRange::all()` today); timed-route **persistence**; and a sim **churn** scenario.

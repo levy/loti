@@ -87,6 +87,9 @@ the logic that is *identical* in both runtimes:
 - **The three discoveries** — chain request/response routing and the four chain-building
   primitives (`addLocalLowerBound`, `addLocalUpperBound`, `extendLowerBoundForNeighbor`,
   `extendUpperBoundForNeighbor`), plus bounds and order on top.
+- **Discovery forwarding policy** — the pluggable `routing::DiscoveryRouter` seam a discovery
+  request routes through (static single next hop, or a time-scoped neighbor-history/routing-table
+  flood capped in width), in [`routing/`](../src/core/routing).
 - **Validation** — `validateEventChain` / `validateEventChainDiscoveryResult`, and (for the
   product) proof serialization/verification.
 - **Neighbor table & overlay routing state** — updated *through the API* by whichever frontend
@@ -291,6 +294,7 @@ src/
     wire/                  length-prefixed codec + the three datagram types
     ports/                 Clock, Scheduler, Transport, Rng, Signer, Telemetry (abstract)
     proof/                 portable proof serialization + offline verification
+    routing/               DiscoveryRouter seam — static / neighbor-history / routing-table / probabilistic forwarding policies
     node.{hpp,cpp}         the Node — DAG, discoveries, validation, orchestration
   adapters/
     sim/                   OMNeT++ port implementations (header-only)

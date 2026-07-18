@@ -29,7 +29,10 @@ plain domain structs in [`src/core/domain/types.hpp`](../src/core/domain/types.h
   carries the **sender's** `NodeId` in its header (see below); the receiver uses it to identify
   which neighbor sent the packet. Multi-hop discovery is achieved by neighbor-to-neighbor
   forwarding, not end-to-end addressing. An outbound datagram to an unknown next hop is silently
-  dropped.
+  dropped. The next hop(s) for a chain **request** are chosen by a pluggable, time-dependent
+  forwarding policy (a single static next hop, or a bounded flood over the neighbors cross-linked
+  in the query's time window); the **response** follows the reverse-path breadcrumb the request
+  recorded rather than any routing table.
 - **Maximum size:** the receive buffer is 65535 bytes (one UDP datagram). Chain responses are
   the only messages that can approach this; the protocol is designed so a chain fits in a single
   datagram.
@@ -62,6 +65,7 @@ How each logical field type maps onto the primitives above:
 | `NodeId` | `u64` | 8 B | A node's identity. |
 | `Salt` | `u64` | 8 B | Random salt folded into a hash. |
 | `Timestamp` | `u64` | 8 B | A raw clock tick (nanoseconds in production), signed 64-bit reinterpreted as `u64`. |
+| `TimeRange` | two `u64` (`lo`, `hi`) | 16 B | A closed `[lo, hi]` window of `Timestamp` ticks — a discovery's estimated time window. |
 | `EventHash` | `blob` | 36 B | A SHA-256 digest → `4 (length) + 32`. |
 | content `data` | `blob` | 4 + *n* B | Arbitrary event payload bytes. |
 | `Signature` | `blob` | 4 B unsigned · 68 B signed | Empty (`length = 0`) when the node is unsigned; an Ed25519 signature → `4 + 64` when signed. |
@@ -146,46 +150,57 @@ Payload after the 9-byte header:
 | `originator` | `u64` (NodeId) | The node that started the discovery; the response is routed back to it. Unchanged across every hop. |
 | `event.creator` | `u64` (NodeId) | Creator of the target event — the routing destination. |
 | `event.hash` | `blob` (EventHash) | Hash of the target event. |
+| `range` | `TimeRange` (16 B) | The querying party's estimated time window for the event; forwarding routes over the overlay as it was within it. |
+| `hop_limit` | `u64` | Maximum forward hops (`0` = unlimited) — bounds a flood's depth. |
+| `path` | `array<NodeId>` | The **reverse-path breadcrumb**: the request's forward path of senders `[originator, …, previous hop]`. It doubles as the per-copy visited set (a node forwards only to neighbors not already on it), and the creator reflects the response back along it. |
 
-(The last two fields together are an `EventReference`, inlined directly into the datagram.)
+(`event.creator` + `event.hash` together are an `EventReference`, inlined directly into the datagram.)
 
 ```
- +----------- header 9 B -----------+---- u64 ----+---- u64 ----+--- blob ---+
- | type=1 |        sender u64        | originator  | evt.creator | evt.hash   |
- +--------+-------------------------+-------------+-------------+------------+
-                                       8 B           8 B          4 + 32 B
+ +--- header 9 B ---+-- u64 --+-- u64 --+- blob -+- TimeRange -+-- u64 --+- array<NodeId> -+
+ | type=1 | sender  | orig.   | creator | e.hash | lo | hi     | hop_lim | u32 n · n·u64   |
+ +--------+---------+---------+---------+--------+-------------+---------+-----------------+
+                       8 B       8 B     4 + 32 B    16 B         8 B     4 + 8·n (breadcrumb)
 ```
 
-**Size (SHA-256 hash): 9 + 8 + 8 + 36 = 61 bytes** (fixed).
+**Size (SHA-256 hash): 9 + 8 + 8 + 36 + 16 + 8 + (4 + 8·*h*) = 89 + 8·*h* bytes**, where *h* is the
+breadcrumb length (one entry per hop travelled so far). *Now variable* — it was 61 B fixed before
+the time-dependent routing / breadcrumb fields were added.
 
-Routing: if `event.creator` is this node, it builds the enclosing chain locally and replies with
-a chain response; otherwise it forwards the same request to the next hop toward `event.creator`.
+Routing: if `event.creator` is this node, it builds the enclosing chain locally and replies with a
+chain response. Otherwise it appends itself to `path` and forwards a copy to **each** next hop its
+forwarding policy chooses — the single static next hop, or, under the flood policy, every neighbor
+it cross-linked with in `range` that is not already on the breadcrumb (see
+[implementation.md](implementation.md) and [`src/core/routing/`](../src/core/routing/)).
 
 ---
 
 ## Datagram 3 — Chain response (`type = 2`)
 
-**When:** the creator builds the initial `EventChain` and replies; each intermediate node, on
-the way back, **extends** the chain with its own clock-event bounds before forwarding it one hop
-closer to the originator.
+**When:** the creator builds the initial `EventChain` and replies; each intermediate node, on the
+way back, **extends** the chain with its own clock-event bounds before forwarding it one hop closer
+to the originator — **along the reverse-path breadcrumb the request recorded**, not via a routing
+table (the response never re-routes).
 
 Payload after the 9-byte header:
 
 | Field | Encoding | Meaning |
 | --- | --- | --- |
-| `originator` | `u64` (NodeId) | Copied from the request; the destination this response is routed toward. |
+| `originator` | `u64` (NodeId) | Copied from the request; identifies the discovery. The response is *home* when it reaches this node. |
 | `chain` | `EventChain` (see below) | The accreting proof: the target event plus a lower- and upper-bound run of clock events. Grows at each hop. |
+| `path` | `array<NodeId>` | The **remaining** reverse-path breadcrumb toward the originator: the next hop is `path.back()`, popped at each hop; empty once the response reaches the originator. |
 
 ```
- +----------- header 9 B -----------+---- u64 ----+---- EventChain (variable) ----+
- | type=2 |        sender u64        | originator  | event · lower[] · upper[]     |
- +--------+-------------------------+-------------+-------------------------------+
+ +----------- header 9 B -----------+-- u64 --+-- EventChain (var) --+- array<NodeId> -+
+ | type=2 |        sender u64        | orig.   | event·lower[]·upper[]| u32 n · n·u64   |
+ +--------+-------------------------+---------+----------------------+-----------------+
+                                       8 B          (variable)         4 + 8·n (remaining)
 ```
 
-**Size: 9 + 8 + `sizeof(EventChain)` bytes** (variable — the only variable-length datagram, and
-the largest). Its size is dominated by the number of clock events accreted into the chain: one
-per hop on each side, each further inflated by its referenced-event list and (if present) its
-signature.
+**Size: 9 + 8 + `sizeof(EventChain)` + (4 + 8·*h*) bytes** (variable — the largest datagram),
+where *h* is the remaining breadcrumb length. The size is dominated by the number of clock events
+accreted into the chain: one per hop on each side, each further inflated by its referenced-event
+list and (if present) its signature.
 
 ---
 
@@ -267,8 +282,8 @@ adds 64 bytes per signed `Event`/`ClockEvent`.
 | Datagram | `type` | Size | Fixed? |
 | --- | --- | --- | --- |
 | Clock notification | 0 | 89 B | ✔ fixed |
-| Chain request | 1 | 61 B | ✔ fixed |
-| Chain response | 2 | 17 B + `EventChain` | ✘ variable |
+| Chain request | 1 | 89 + 8·*h* B (*h* = breadcrumb hops) | ✘ variable |
+| Chain response | 2 | 21 + 8·*h* B + `EventChain` | ✘ variable |
 
 (UDP + IPv4 headers are added by the OS network stack and are not part of these figures.)
 
