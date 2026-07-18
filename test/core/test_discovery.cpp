@@ -110,3 +110,38 @@ TEST_CASE("flood discovery completes with no routing table (ring, breadcrumb ret
   CHECK(cb.chain.lower_bound.front().creator == ring[2]->id());
   CHECK(cb.chain.upper_bound.back().creator == ring[2]->id());
 }
+
+TEST_CASE("flood with a forward cap still completes (cross-branch dedup)") {
+  harness::World w;
+  NodeConfig cfg;
+  cfg.discovery_routing = DiscoveryRouting::flood;
+  cfg.discovery_hop_limit = 16;
+  cfg.discovery_forward_cap = 1;  // each node re-floods a given discovery at most once
+
+  // Diamond + tail: 1—2—4, 1—3—4, 4—5. n4 receives the request from BOTH n2 and n3, so the
+  // fan-in cap actually triggers there; the discovery must still complete via one of the paths.
+  std::vector<Node*> nodes;
+  for (int i = 0; i < 5; ++i) nodes.push_back(&w.add_node(domain::NodeId(i + 1), cfg));
+  const auto link = [&](int a, int b) {
+    nodes[a]->add_neighbor(nodes[b]->id());
+    nodes[b]->add_neighbor(nodes[a]->id());
+  };
+  link(0, 1);
+  link(0, 2);
+  link(1, 3);
+  link(2, 3);
+  link(3, 4);
+
+  harness::gossip(w, nodes, 12);
+  const auto event = nodes[4]->publish_event({0x5E, 0xED});  // event on n5
+  harness::gossip(w, nodes, 12);
+
+  harness::RecordingChain cb;
+  nodes[0]->discover_event_chain(event, domain::TimeRange::all(), cb);  // n1 finds n5's event
+  w.pump();
+
+  REQUIRE(cb.completed);
+  CHECK_FALSE(cb.aborted);
+  CHECK(cb.chain.event.hash == event.hash);
+  CHECK(cb.chain.lower_bound.front().creator == nodes[0]->id());
+}

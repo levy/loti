@@ -70,6 +70,7 @@ struct NodeConfig {
   std::uint32_t discovery_hop_limit = 0;    // max discovery forward hops (0 = unlimited) — flood cap
   DiscoveryRouting discovery_routing = DiscoveryRouting::static_shortest_path;
   std::size_t discovery_fanout = 0;         // max fan-out width k (0 = unlimited = full flood)
+  std::uint32_t discovery_forward_cap = 0;  // max times a node re-floods one discovery (0 = unlimited)
 };
 
 // Non-owning references to the ports a Node runs on. The Store holds the whole DAG — the
@@ -266,6 +267,16 @@ class Node final : private ChainCallback {
   std::map<Hash, Entry<domain::EventChainDiscovery, ChainCallback>> chain_discoveries_;
   std::map<Hash, Entry<domain::EventBoundsDiscovery, BoundsCallback>> bounds_discoveries_;
   std::map<std::pair<Hash, Hash>, Entry<domain::EventOrderDiscovery, OrderCallback>> order_discoveries_;
+
+  // Cross-branch flood dedup (transient): how many times this node has already re-flooded a given
+  // discovery (keyed by originator + event) and when it first did — so many copies fanning in
+  // through one node are capped instead of re-flooded (turning an exponential flood polynomial).
+  // Purged with discovery_expiry. Only consulted when discovery_forward_cap > 0.
+  struct FloodSeen {
+    domain::Timestamp first_seen = 0;
+    std::uint32_t forwards = 0;
+  };
+  std::map<std::pair<domain::NodeId, Hash>, FloodSeen> flood_seen_;
 
   std::vector<ports::TimerId> clock_timers_;  // one per chain (those with interval > 0)
   ports::TimerId purge_timer_ = 0;

@@ -141,6 +141,10 @@ void Node::purge_discoveries() {
       ++it;
     }
   }
+  for (auto it = flood_seen_.begin(); it != flood_seen_.end();) {  // drop stale flood-dedup entries
+    if (it->second.first_seen < limit) it = flood_seen_.erase(it);
+    else ++it;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -217,6 +221,12 @@ void Node::process_chain_request(const Neighbor& sender, const wire::ChainReques
     // the per-copy visited set for loop avoidance and bounds the flood depth).
     if (contains(m.path, id_)) return;                            // already visited — loop, drop
     if (m.hop_limit > 0 && m.path.size() >= m.hop_limit) return;  // hop-limit cap
+    if (config_.discovery_forward_cap > 0) {                      // cross-branch fan-in cap
+      auto& seen = flood_seen_[{m.originator, m.event.hash}];
+      if (seen.forwards == 0) seen.first_seen = clock_.now();
+      if (seen.forwards >= config_.discovery_forward_cap) return;  // re-flooded enough copies already
+      ++seen.forwards;
+    }
     flood_chain_request(m.event.creator, routing::RouteContext{m.range}, m);
   }
 }

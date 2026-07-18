@@ -381,12 +381,16 @@ exercises "flood with an empty routing table", which is the mechanism this plan 
   plan only guarantees graceful degradation (undirected bounded walk) without it. **Part 6 validated
   this** — the flood matches static routing's completion rate on the 57-node net *with an empty
   routing table* — **but only under tight bounds** (see the next point).
-- **The flood is exponential without cross-branch dedup (found in Part 6).** With only a per-copy
-  visited set, each node re-floods every *distinct* copy it receives, so on a dense graph the packet
-  count blows up with the hop limit (`fanout=4, hop_limit=20` made no progress in 5 min). Mitigations:
-  keep `hop_limit ≈ diameter` and `fanout` small (works today), or add **per-node discovery-seen
-  state** to deduplicate reconverging branches (the beam layer — deferred). Until then the hop limit
-  is a hard *safety* knob, not just a tuning one.
+- **The flood is exponential without cross-branch dedup (found in Part 6; now mitigated).** With
+  only a per-copy visited set, each node re-floods every *distinct* copy it receives, so the packet
+  count blows up with the hop limit (`fanout=4, hop_limit=20` made no progress in 5 min).
+  **Fixed by `NodeConfig::discovery_forward_cap`** — each node re-floods a given discovery at most
+  `cap` times (a per-node fan-in cap keyed by originator+event, purged with `discovery_expiry`),
+  turning the flood polynomial. With `cap=1, hop_limit=15` the 15 s sim runs in **0.2 s** (vs the
+  5-min runaway). Completion stays **maturity-bound** (~13–21 % across all configs — the cross-link
+  maturity ceiling, not reach), so a larger hop limit is now *safe* but doesn't itself buy
+  completion in a short run. The full score-weighted **beam** (keep the *k-best* copies, not the
+  first `cap`) remains the deferred ideal.
 - **Delivery to a former neighbor** relies on the retained address. If that node moved / its
   address changed, delivery fails → the branch dies → graceful (soundness intact). Accepted per
   Decision 1.

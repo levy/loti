@@ -55,6 +55,7 @@ void Daemon::initialize(int stage)
         // Discovery forwarding policy (Part 5): static single next hop, or the time-dependent flood.
         config.discovery_hop_limit = static_cast<std::uint32_t>(par("discoveryHopLimit").intValue());
         config.discovery_fanout = static_cast<std::size_t>(par("discoveryFanout").intValue());
+        config.discovery_forward_cap = static_cast<std::uint32_t>(par("discoveryForwardCap").intValue());
         config.discovery_routing = (par("discoveryRouting").stdstringValue() == "flood")
                                        ? DiscoveryRouting::flood
                                        : DiscoveryRouting::static_shortest_path;
