@@ -8,9 +8,11 @@ add_executable(loti_core_tests
   test_discovery.cpp
   test_keystore.cpp
   test_proof.cpp
-  ${CMAKE_SOURCE_DIR}/src/adapters/os/keystore.cpp  # the crypto adapter under test
+  test_lmdb_store.cpp
+  ${CMAKE_SOURCE_DIR}/src/adapters/os/keystore.cpp     # the crypto adapter under test
+  ${CMAKE_SOURCE_DIR}/src/adapters/os/lmdb_store.cpp   # the LMDB store adapter under test
 )
-target_link_libraries(loti_core_tests PRIVATE loti_core OpenSSL::Crypto)
+target_link_libraries(loti_core_tests PRIVATE loti_core OpenSSL::Crypto loti_lmdb)
 target_include_directories(loti_core_tests PRIVATE
   ${CMAKE_SOURCE_DIR}/test/doctest
   ${CMAKE_SOURCE_DIR}/test

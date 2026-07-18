@@ -60,9 +60,10 @@ hide — the user asked for reliable, so lean on a battle-tested store).
 
 ## Architecture
 
-`loti_core` stays pure. LMDB is an **adapter** under `src/adapters/os/`. The Node gains
-**persistence hooks** on its existing observer interface (default no-ops), so the daemon drives the
-store and the **simulation is completely unaffected** (no LMDB, no persistence — same as today).
+`loti_core` stays pure. LMDB is an **adapter** under `src/adapters/os/`. The Node gains a
+**persistence listener** (a nullable pointer, set by the daemon, null in the sim), so the daemon
+drives the store and the **simulation is completely unaffected** (no LMDB, no persistence — same as
+today). See Step 4 for why a new listener is needed rather than an existing interface.
 
 ### Data model (one LMDB env, named sub-DBs)
 
@@ -107,9 +108,10 @@ Work in the dedicated `lmdb-store` worktree at `../loti-lmdb-store`, not the mai
   midl.h,lmdb.h,LICENSE,CHANGES}` (v0.9.31, matches system `liblmdb0`). Added a `loti_lmdb` static lib
   (`project(... LANGUAGES C CXX)`, warnings silenced with `-w`), linked into `lotid` only. Added
   `-X third_party` to `scripts/build-sim.sh`. `scripts/build-core.sh` green, existing tests pass.
-- [ ] **Step 1 — `os::LmdbStore` skeleton + schema.** Open/create the env, set mapsize, open the
-  sub-DBs above, write/read the `meta` version. doctest: open → close → reopen an empty env in a
-  temp dir.
+- [x] **Step 1 — `os::LmdbStore` skeleton + schema.** `src/adapters/os/lmdb_store.{hpp,cpp}`: opens
+  the env (`MDB_NOSUBDIR` single file, 16 GiB default mapsize, 8 named sub-DBs), stamps/checks the
+  `meta` format version, RAII close. doctest `test_lmdb_store.cpp`: fresh-open stamps v1, reopen reads
+  it back. Wired into the test target (links `loti_lmdb`).
 - [ ] **Step 2 — Write path.** `append_event`, `append_clock_event`, `put_neighbor`,
   `remove_neighbor`, `put_route`, mark/clear `unreferenced`, all in durable txns reusing the wire
   codec. doctest: write a mix of records, reopen, read raw back → equal.
@@ -118,11 +120,15 @@ Work in the dedicated `lmdb-store` worktree at `../loti-lmdb-store`, not the mai
   rebuild**; reimplement `restore(blob)` on top of it so behavior is provably identical.
   `LmdbStore::replay()` streams records into it. doctest: build a DAG, persist incrementally, reopen
   → loaded state deep-equals the source (event/clock counts, hashes, neighbors, routes).
-- [ ] **Step 4 — Node persistence hooks.** Add default-no-op hooks to Node's observer interface
-  (`on_event_appended(const Event&)`, `on_clock_event_appended(const LocalClockEvent&)`,
-  `on_neighbor_changed`, `on_route_changed`), called from `insert_event`/`insert_clock_event` and the
-  neighbor/route mutators. Sim's Daemon inherits the no-ops → **zero sim change**. *(First confirm the
-  observer base-class name and that clock-event creation is internal to the Node timer.)*
+- [ ] **Step 4 — Node persistence listener.** There is **no** general Node observer to reuse:
+  `ChainCallback`/`BoundsCallback`/`OrderCallback` (`src/core/node.hpp:27-45`) are per-discovery result
+  callbacks the daemon passes into `discover_*`, not lifecycle hooks. So add a dedicated
+  `PersistenceListener` interface (`on_event_appended(const Event&)`,
+  `on_clock_event_appended(const LocalClockEvent&)`, `on_neighbor_changed`, `on_route_changed`) plus a
+  nullable `Node` pointer set via a setter by the daemon (null in the sim → **zero sim change**). Call
+  it from the private append choke points `insert_event`/`insert_clock_event`
+  (`src/core/node.hpp:153-154`) and the `add_neighbor`/`learn_route` mutators so it catches appends from
+  every trigger (app publish, the internal clock timer, network intake).
 - [ ] **Step 5 — Swap the daemon onto LmdbStore.** Replace `FileStore store_` with `LmdbStore`;
   `restore_from_store()` → `replay()`; the daemon's hook impls drive the write path;
   **retire the 5-s full-snapshot timer** (replace with a periodic `mdb_env_sync` flush, or drop it if
@@ -160,16 +166,18 @@ Work in the dedicated `lmdb-store` worktree at `../loti-lmdb-store`, not the mai
 
 ## Risks & open questions
 
-- **Observer hook vs. full Store port.** Stage 1 uses the existing observer hooks (lowest risk, sim
-  untouched). Promoting `Store` to a real 7th entry in `NodePorts` (as `doc/architecture.md:140`
-  sketches) is deferred to Stage 2 — only needed if the sim ever wants persistence.
+- **Persistence listener vs. full Store port.** Stage 1 adds a dedicated nullable persistence
+  listener (lowest risk, sim untouched — no general Node observer exists to reuse). Promoting `Store`
+  to a real 7th entry in `NodePorts` (as `doc/architecture.md:140` sketches) is deferred to Stage 2 —
+  only needed if the sim ever wants persistence.
 - **Durability window.** Default to per-batch durable commit; `MDB_NOSYNC` + periodic sync is opt-in.
   Decide the batch boundary (per reactor wakeup vs. a short flush timer).
 - **mapsize** must be set up front; pick a generous default and implement `MDB_MAP_FULL` growth.
 - **`EventHash` is variable-length** (`vector`, 32 by convention) — index keys use the raw bytes;
   keep the daemon's existing `size() != 32` guards in mind.
-- Confirm the observer base-class name and that `create_clock_event` fires from the Node's own timer
-  (so the daemon can't intercept it without the hook).
+- Confirmed: no general observer exists (see Step 4); `create_clock_event` (`src/core/node.hpp:88`) is
+  public but is also the body of the internal clock timer, so the daemon can't intercept
+  timer-created clock events without the listener.
 
 ## Out of scope (future / Stage 2)
 
@@ -183,3 +191,10 @@ Work in the dedicated `lmdb-store` worktree at `../loti-lmdb-store`, not the mai
   `LMDB_0.9.31` tag; version matches the host's `liblmdb0`). `loti_lmdb` static lib compiles the C
   engine with `-w`; `project()` now enables `C`. Linked into `lotid` only; `-X third_party` keeps it
   out of the sim. `scripts/build-core.sh`: configure + build + ctest all green, no new warnings.
+- **Step 1 done** — `LmdbStore` (`src/adapters/os/lmdb_store.{hpp,cpp}`) opens/creates the env and the
+  eight named sub-DBs, stamps the `meta` format version on create and verifies it on reopen, throws on
+  any LMDB error or version mismatch, and RAII-closes. Env is a single file (`MDB_NOSUBDIR`), 16 GiB
+  default mapsize. Tested in `test_lmdb_store.cpp` (open → reopen); test target now links `loti_lmdb`.
+- **Design correction (found in Step 1):** no general Node observer exists — the `*Callback` classes
+  are per-discovery result callbacks. Step 4 will add a dedicated nullable `PersistenceListener`
+  driven from `insert_event`/`insert_clock_event`. Plan Step 4 / risks updated accordingly.
