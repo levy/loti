@@ -4,8 +4,7 @@
 #
 # The simulation runs entirely on loti-core: this build compiles core/ +
 # adapters/sim/ (the port adapters) + app/sim/ (the thin Node-hosting OMNeT++
-# modules) and EXCLUDES the pre-refactor src/ modules (kept as an untouched
-# baseline). Everything is C++20 (see makefrag). The Makefile is generated, not
+# modules). Everything is C++20 (see makefrag). The Makefile is generated, not
 # checked in (it is gitignored), so this script is the source of truth for how the
 # simulation is built.
 #
@@ -28,7 +27,7 @@ mode="${1:-release}"
 # OpenSSL) and the production apps `app/lotid` (has its own main() + links libcrypto)
 # / `app/loti` — any of which would pull an unresolved symbol into libloti.so.
 opp_makemake -f --deep -e cpp --make-so -o loti -O out \
-  -X src -X test -X build -X scripts -X plan -X doc -X bin \
+  -X test -X build -X scripts -X plan -X doc -X bin \
   -X adapters/os -X app/lotid -X app/loti \
   -KINET_PROJ="$INET_ROOT" -DINET_IMPORT \
   -I. -Icore '-I$(INET_PROJ)/src' '-L$(INET_PROJ)/src' '-lINET$(D)'
