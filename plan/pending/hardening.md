@@ -1,0 +1,309 @@
+# Hardening LOTI for adversarial, always-on deployment
+
+This plan turns the findings of a full design/robustness review into an ordered, checkable
+work list. The core protocol and the ports/adapters architecture are sound and are **not**
+changed here — every item is localized to an adapter, a validation seam, a config default, or
+the docs. Nothing touches the DAG shape, the four chain-building primitives, or the discovery
+algorithm.
+
+## Why now — the threat-model shift
+
+The code was written and tested against a **trusted, lossless, single-operator** environment
+(the in-process harness uses a lossless FIFO transport; the acceptance test runs two cooperating
+nodes on localhost). The docs, however, market a **permissionless, internet-facing, multi-year,
+runs-on-a-Pi** node ([README.md](../../README.md), [doc/embedded.md](../../doc/embedded.md)).
+The gap between those two worlds is what this plan closes. The recurring root cause, seen across
+every adapter, is one sentence:
+
+> **Almost every error path terminates the process, and almost nothing that touches the network
+> or disk is defended against a hostile or merely unlucky input.**
+
+## Severity legend
+
+- 🔴 **Critical** — breaks a headline guarantee (availability, proof soundness, or identity)
+  and is remotely or locally exploitable today.
+- 🟠 **High** — a correctness/durability bug that a multi-year deployment will hit, or a real
+  deployability blocker.
+- 🟡 **Medium** — hardening, operability, and scale-rot items.
+- 📄 **Docs** — reconcile documentation with the code as it actually is.
+
+Each item is a checkbox so progress is visible. Follow the repo convention: do the work in a
+worktree, commit per item, tick the box and record any decision inline as you go, and move this
+file to `plan/done/` once every 🔴/🟠 item is landed (the 🟡/📄 tail may be split off into a
+follow-up plan if it lags).
+
+---
+
+## Phase 1 — Availability: the daemon must not die on bad input 🔴
+
+The single most important phase. Today a **one-byte UDP packet from anyone** — or a Byzantine
+chain response from a peer, or a mistyped `peer add` — unwinds out of the event loop and exits
+the process ([lotid.cpp:889](../../src/app/lotid/lotid.cpp#L889)).
+
+- [ ] **1.1 — Isolate every reactor callback.** Wrap the timer-callback and fd-readable dispatch
+  in [reactor.hpp](../../src/adapters/os/reactor.hpp#L87) (`fire_due_timers`, the `run()` dispatch
+  loop) in `try { … } catch (const std::exception& e) { log; }` so one throwing callback is
+  logged and dropped, never fatal. This is the structural root fix — every finding below that ends
+  in "→ crash" is downgraded to "→ one dropped packet/command" once this lands.
+- [ ] **1.2 — Guard the UDP receive path.** In the reader lambda at
+  [lotid.cpp:305-311](../../src/app/lotid/lotid.cpp#L305), wrap `on_packet_received(datagram)` in a
+  per-datagram `try/catch` (drop + optional debug log). Belt-and-suspenders with 1.1; keeps a
+  storm of bad packets from spamming the generic reactor logger.
+- [ ] **1.3 — Decode is validation, not a fatal parse.** `wire::decode`
+  ([packets.cpp:80](../../src/core/wire/packets.cpp#L80)) and the `Reader` `need()` guard
+  ([codec.hpp:151](../../src/core/wire/codec.hpp#L151)) throw on any malformed field. Confirm the
+  only callers are inside the now-guarded paths (transport receive, `proof::deserialize`). Keep
+  `decode` throwing (it is the right signal); the fix is that callers must catch.
+- [ ] **1.4 — Validation on the live path returns, it does not throw.** Change
+  `Node::validate_chain_discovery_result` ([node.cpp:580](../../src/core/node.cpp#L580)) so a
+  failed `validate::verify_chain` **aborts the discovery** (like an expiry) instead of
+  `throw std::runtime_error` at [node.cpp:585](../../src/core/node.cpp#L585). A dishonest peer is
+  the *expected* case in a trustless network; it must not be fatal. (The offline `proof::verify`
+  path already returns a result — this makes the two symmetric.)
+- [ ] **1.5 — Guard the control/stdin command path.** Every command in `Lotid::dispatch` is called
+  bare except `db-restore`; `peer add <bad-ip>` throws from `UdpTransport::set_peer`
+  ([transport.hpp:59](../../src/adapters/os/transport.hpp#L59)) and kills the daemon. Wrap command
+  dispatch so a bad command returns an `ERR` reply, never exits. Validate numeric/address args
+  (`strtoull`/`atoi`/`parse_range` currently accept garbage silently) and reply `ERR` on bad input.
+- [ ] **1.6 — Preserve shutdown cleanup on fatal exit.** If the outer handler at
+  [lotid.cpp:889](../../src/app/lotid/lotid.cpp#L889) is ever reached, unlink the control socket and
+  `lmdb_->sync()` before returning, so a crash in lazy-sync mode does not skip the final flush.
+
+**Acceptance:** a new test feeds `on_packet_received` a corpus of truncated/garbage/oversized
+datagrams and a hostile `ChainResponse` (bad hash, bad linkage, wrong endpoint) and asserts the
+node **survives and drops** each one; the acceptance script gains a "fuzz the port" step
+(`nc`/`socat` a few random datagrams) and asserts the daemon is still up afterward.
+
+---
+
+## Phase 2 — Proof soundness & cryptographic identity 🔴
+
+These undermine the flagship "portable, offline-verifiable proof" and "attributable identity"
+guarantees directly.
+
+- [ ] **2.1 — Reject unsigned/empty signatures in validation.** `Ed25519KeyStore::verify` returns
+  `true` for an empty signature ([keystore.cpp:84](../../src/adapters/os/keystore.cpp#L84)), and
+  `validate::verify_chain` trusts it ([chain.cpp:42](../../src/core/validate/chain.cpp#L42), `:62`,
+  `:74`). Combined with `creator` being **excluded from the hash** and `proof::verify` **skipping
+  the fingerprint check when `reference.pubkey` is empty**
+  ([proof.cpp:64](../../src/core/proof/proof.cpp#L64)), an attacker can hand `loti verify` a
+  **fully fabricated, all-unsigned proof** attributing any event/order to any reference node and it
+  returns *valid*. Fix: in the production/verify configuration require a non-empty, correctly-signed
+  signature on every clock event **and** a present `reference.pubkey` whose fingerprint matches.
+  Keep `NullSigner` (empty-accepts) for the **simulation only**, selected by which signer is linked
+  — never on the verify path.
+  - Design note: the enclosure math is already sound for *real* events (hash-linkage pins the chain
+    to real edges), so this does not change any honest proof; it closes the **fabricated-event /
+    fabricated-reference** hole specifically.
+- [ ] **2.2 — Private key file must be `0600`.** `load_or_generate` writes the raw Ed25519 private
+  key with a plain `std::ofstream` ([keystore.cpp:61](../../src/adapters/os/keystore.cpp#L61)), so
+  under the default umask it lands world-readable (`0644`). Any local user steals the identity.
+  Create the temp file with mode `0600` (open with `O_CREAT|O_EXCL`, `0600`, or `chmod` before the
+  `rename`), and `chmod 0600` on load if looser. `loti init`'s `~/.loti` dir should be `0700`
+  (and its `mkdir` return checked — [loti.cpp](../../src/app/loti/loti.cpp) `do_init`).
+- [ ] **2.3 — Fail loudly on key/backup write errors.** `keystore.cpp`'s key write and
+  `FileStore::save` ([adapters/os/store.hpp](../../src/adapters/os/store.hpp) `save`) ignore
+  `ofstream`/`rename` failures and return `void`; `db-backup` then reports **success
+  unconditionally**. Check every write/rename; propagate failure; make `db-backup` reply `ERR`
+  when the blob was not durably written. A backup that can silently write nothing is worse than
+  none.
+- [ ] **2.4 — Widen `NodeId` to ≥128 bits.** The identity is the first **8 bytes** of
+  SHA-256(pubkey) ([keystore.cpp:99](../../src/adapters/os/keystore.cpp#L99),
+  [proof.cpp:15](../../src/core/proof/proof.cpp#L15)). At the paper's "few billion nodes" (~2³²)
+  target, 64 bits gives a ~50% birthday-collision probability among honest nodes, and ~2⁶⁴ targeted
+  impersonation grinding. Move to a wider id (≥16 bytes, or the full 32-byte fingerprint). This is a
+  **wire/format change** (`NodeId` is a `u64` in [domain/types.hpp](../../src/core/domain/types.hpp#L21)
+  and in every packet/snapshot) — bump the snapshot + on-disk + protocol versions together, or
+  scope it as its own sub-plan. Decide and record the chosen width here.
+- [ ] **2.5 — Gate/annotate unsigned mode.** `lotid` treats `--id <n>` (NullSigner) as a co-equal
+  production option with no warning. Either drop `--id` from the production binary, or print a
+  loud one-time "running UNSIGNED — no cryptographic identity" banner and reflect it in `status`.
+- [ ] **2.6 — Scrub key material.** Raw private-key bytes pass through plain `domain::Bytes` in
+  `keystore.cpp` with no cleanse. `OPENSSL_cleanse`/`explicit_bzero` before those buffers go out
+  of scope. (Lower urgency than 2.1–2.3; include here for completeness.)
+
+**Acceptance:** a test constructs a forged all-unsigned proof and asserts `verify` now **rejects**
+it (exit `6`); a test asserts the key file is `0600` after `init`; a test injects an `ofstream`
+failure and asserts `db-backup` reports `ERR`.
+
+---
+
+## Phase 3 — Transport authentication & anti-DoS 🔴/🟠
+
+- [ ] **3.1 — Cap length prefixes before reserving.** `refs()` and `node_ids()` do `out.reserve(n)`
+  with an attacker-controlled `u32` ([codec.hpp:92](../../src/core/wire/codec.hpp#L92),
+  [:136](../../src/core/wire/codec.hpp#L136)); a ~20-byte packet requesting billions of elements
+  OOM-kills a Pi. Before reserving, reject any `n` whose minimum encoded size exceeds the remaining
+  buffer (`need(n * min_element_bytes)` first, or cap-then-`need` per element without pre-reserving).
+- [ ] **3.2 — Authenticate the gossip layer.** `recvfrom` discards the source address
+  ([transport.hpp:74](../../src/adapters/os/transport.hpp#L74)) and the sender identity is a
+  **self-declared** `NodeId` in the payload ([node.cpp:166](../../src/core/node.cpp#L166)), so
+  anyone can spoof clock notifications from any neighbor. Add per-datagram authentication: at
+  minimum verify the UDP source address matches the registered address for the claimed `NodeId`;
+  better, sign/MAC the datagram (or the notification's `(chain, tip)` tuple) and verify before
+  mutating any state. Decide the mechanism and record it.
+- [ ] **3.3 — Dedup and bound `referencing_events`.** `process_clock_event_notification`
+  `push_back`s a reverse edge with **no dedup** ([node.cpp:189](../../src/core/node.cpp#L189)) and
+  persists it, so a chatty/spoofing neighbor grows a clock event's reverse-edge list without bound
+  (memory + disk amplification, and it poisons upper-bound discovery). Dedup on insert and cap the
+  per-clock-event reverse-edge count.
+- [ ] **3.4 — Safe flood defaults.** With `discovery_routing = flood`, `hop_limit`, `fanout`, and
+  `forward_cap` all default to `0` = **unlimited** ([node.hpp:69](../../src/core/node.hpp#L69)). Give
+  the flood policy non-zero safe defaults (bounded hop-limit, fan-out width, forward cap) so a single
+  config flip cannot trigger a network-wide flood. The static (width-1) default stays as is.
+- [ ] **3.5 — Socket robustness.** Set `SO_RCVBUF`/`SO_SNDBUF`, and count (telemetry) inbound drops;
+  handle `getrandom` `EINTR` with a retry rather than the fatal throw at
+  [rng.hpp:26](../../src/adapters/os/rng.hpp#L26).
+
+**Acceptance:** a decode test asserts a huge-count packet is rejected without a large allocation
+(cap enforced); a test asserts a spoofed-source notification is dropped; a test asserts duplicate
+notifications do not grow `referencing_events`.
+
+---
+
+## Phase 4 — Clock integrity 🟠
+
+The one guarantee LOTI sells (time bounds) rides on `CLOCK_REALTIME` with no protection, on
+hardware (Pi Zero) that has no RTC.
+
+- [ ] **4.1 — Reactor timers on `CLOCK_MONOTONIC`.** `Reactor::now_ns` and `WallClock` both read
+  `CLOCK_REALTIME` ([reactor.hpp:95](../../src/adapters/os/reactor.hpp#L95),
+  [clock.hpp](../../src/adapters/os/clock.hpp)). A backward NTP step stalls every pending timer; a
+  forward step fires them in a burst. Schedule timers against `CLOCK_MONOTONIC` (keep `CLOCK_REALTIME`
+  only for the hashed *timestamp*). This decouples "when do I tick" from "what time is it."
+- [ ] **4.2 — Monotonic-floor + plausibility gate on clock-event timestamps.** Nothing enforces that
+  a new clock event's timestamp is ≥ its same-chain predecessor's. Enforce a non-decreasing floor in
+  `insert_clock_event` ([node.cpp:607](../../src/core/node.cpp#L607)), and drop/park clock creation
+  when `clock.now()` is implausible (e.g. pre-2020 epoch on first boot before NTP sync). Record the
+  policy (clamp vs skip) here.
+- [ ] **4.3 — Enforce `lower ≤ upper`.** Neither `validate::verify_chain` nor `compare_event_chains`
+  ([node.cpp:574](../../src/core/node.cpp#L574)) checks that the proven interval is non-inverted.
+  Add `lower ≤ upper` to `ChainResult` validation so a non-monotonic reference clock cannot yield a
+  silently-inverted "valid" bound.
+
+**Acceptance:** a test creates clock events across a simulated backward clock step and asserts the
+stored timestamps are non-decreasing and no inverted interval validates.
+
+---
+
+## Phase 5 — Durability & operational correctness 🟠
+
+- [ ] **5.1 — `prune_chain` must not desync RAM from disk.** It `pop_front()`s the in-RAM retention
+  deque *before* the LMDB delete (`lmdb_store.cpp`, the `prune_chain` loop); if a delete throws
+  mid-loop the txn aborts (disk reverts) but the popped seqs are lost, leaking records forever and
+  silently degrading the bounded-storage invariant. Restore the deque on abort, or delete first and
+  mutate RAM only after a successful commit.
+- [ ] **5.2 — Robust map growth.** `durable()` catches `MDB_MAP_FULL` once, doubles once, retries
+  once (`lmdb_store.cpp`); a record larger than one doubling → uncaught → crash. Loop the grow/retry
+  until the record fits or the (32-bit) ceiling is truly hit.
+- [ ] **5.3 — Bound or prune published-event storage.** Only the clock chains are ring-pruned; the
+  `events`/`event_index` sub-DBs holding user content have **no cap** — a publisher node grows disk
+  without bound. Either document this as operator-driven (and surface it in `db stat`) or add an
+  event-retention policy. Note this qualifies the "storage stays flat" claim (see 📄).
+- [ ] **5.4 — Key pending-discovery maps by a stable token, not a reusable fd.** `lotid`'s
+  `pending_bounds_`/`chain_`/`order_`/`proof_` maps are keyed by raw `int fd`; a client that
+  disconnects mid-discovery leaves a stale entry, and OS fd-number reuse can misroute a later,
+  unrelated client's reply. Key by a monotonic request id (or clear pending entries on
+  `close_client`). Confirm the misroute is reachable before fixing; add a regression test.
+- [ ] **5.5 — Index-backed event lookup.** `find_by_hash_prefix` and `event find` linear-scan every
+  stored event ([lotid.cpp:713](../../src/app/lotid/lotid.cpp#L713)); cost grows with the store over
+  years. Use the `clock_index_`/`event_index_` hash indices (range scan on prefix) instead of walking
+  every record.
+- [ ] **5.6 — fsync off the reactor thread (or document the stall).** Default `safe` sync fsyncs on
+  every commit on the single reactor thread, so a storage latency spike blocks all networking and
+  control. Either move fsync to a helper thread that posts completion back to the reactor, or
+  document that `--store-sync-interval > 0` (lazy) is required for latency-sensitive deployments.
+
+**Acceptance:** a test injects an I/O error mid-`prune_chain` and asserts the retention deque and
+on-disk state stay consistent; a test drives a >2× single-record write and asserts it commits.
+
+---
+
+## Phase 6 — Reliability & scale 🟡
+
+- [ ] **6.1 — Reliable clock-notification delivery.** Reverse edges (the upper-bound walkability) are
+  learned only from single, change-only UDP notifications ([node.cpp:102](../../src/core/node.cpp#L102));
+  a lost datagram loses that reverse edge permanently. Add periodic re-advertisement / anti-entropy of
+  per-chain tips so a dropped notification self-heals. This is the main reason real-network discovery
+  success will trail the sim's lossless number.
+- [ ] **6.2 — Bound chain/datagram size; chunk or reject.** `EventChain` size is unbounded and
+  `sendto` failures (incl. `EMSGSIZE`) are swallowed ([transport.hpp:64](../../src/adapters/os/transport.hpp#L64));
+  a too-big chain response vanishes silently. Enforce a max chain size (reject/flag oversize), check
+  `sendto`, and design an app-layer chunking path (or cap the practical discovery depth) so large
+  proofs traverse the real internet rather than relying on 40 KB fragmented UDP.
+- [ ] **6.3 — Peer liveness and removal.** Implement `peer rm` / `peer ping`; expire dead peers so a
+  years-long node's overlay does not rot into a graveyard of unreachable addresses it keeps notifying.
+  (This is also on the paper-vs-implementation "not implemented" list — coordinate.)
+- [ ] **6.4 — IPv6 transport.** `set_peer` is `inet_pton(AF_INET, …)` only
+  ([transport.hpp:59](../../src/adapters/os/transport.hpp#L59)); add an IPv6/dual-stack path for
+  real internet (IPv6-only ISPs, CGNAT).
+- [ ] **6.5 — Log timestamps + verbosity.** `LogTelemetry` emits no wall-clock time and floods
+  discovery lifecycle lines unconditionally; add timestamps and gate discovery logging on verbosity.
+
+---
+
+## Phase 7 — Documentation reconciliation 📄
+
+Bring the docs in line with the code as it actually is (the review found many doc↔code and
+doc↔doc conflicts). No code change; do this alongside the phases that settle each fact.
+
+- [ ] **7.1 — One store story.** [doc/cli.md] and
+  [doc/paper-vs-implementation.md](../../doc/paper-vs-implementation.md#L33) call the MVP store "a
+  periodic full snapshot," but `lotid` instantiates the **incremental LMDB store**
+  ([lotid.cpp:274](../../src/app/lotid/lotid.cpp#L274)). Update cli.md/paper-vs-impl to LMDB; align
+  the `--store` file examples (`state.snap` vs `dag.mdb`).
+- [ ] **7.2 — One port number.** Sim `666`, CLI default `4666`, quickstarts `7000` appear with no
+  reconciliation. Pick a default, use it consistently, and explain the sim's fixed `666`.
+- [ ] **7.3 — `--control` vs `--rpc` and the default socket path.** cli.md's canonical flag list
+  names `--rpc` (used nowhere) while every example uses `--control` (listed nowhere); the default
+  path disagrees (`$LOTI_HOME/control.sock` vs README's `./loti.sock`). Make one authoritative.
+- [ ] **7.4 — Honest retention story.** The default schedule is 4 chains × ×8 × keep 4096
+  ([lotid.cpp:234](../../src/app/lotid/lotid.cpp#L234)) → a **sliding ~24-day** orderability horizon,
+  not "a decade-old event to about a minute, horizon of centuries" (README) and not "runs
+  indefinitely" with old events still orderable. State the real default horizon, the
+  chains-needed-for-longer-reach formula, that the horizon *slides* (old events age out of network
+  discovery), and the "prove-and-save within the horizon; the saved proof file is eternal" rule.
+  Reconcile embedded.md's "~1–2 year 32-bit lifetime" (an old unbounded-growth artifact) with the
+  bounded design. Define the undefined term `a` in the precision formula.
+- [ ] **7.5 — Stop demoing unimplemented features.** cli.md worked examples use `node start`,
+  `--reference <node>`, and `publish --sign/--salt/--wait` that the same doc lists as deferred; and
+  packet-format.md keeps a stale "fixed 61 B" chain-request size. Remove or mark clearly.
+- [ ] **7.6 — Qualify absolute claims.** "mathematically prove … any digital event" vs discovery
+  expiry/failure being first-class (exit code 5; ~83% completion in the sim); "storage stays flat"
+  vs unbounded published-event content (5.3); the datagram/notary/"perfectly good" phrasing. Add the
+  honest qualifiers this doc set already applies elsewhere.
+
+---
+
+## New tests to add (cross-cutting)
+
+The current suite never feeds hostile input through `on_packet_received`, never exercises LMDB
+pruning, and uses a lossless transport. Add:
+
+- [ ] **T1 — malformed-packet corpus** through `on_packet_received` → node survives (Phase 1).
+- [ ] **T2 — Byzantine `ChainResponse`** (bad hash/linkage/endpoint) → discovery aborts, node
+  survives (Phase 1.4).
+- [ ] **T3 — forged all-unsigned proof** → `verify` rejects (Phase 2.1).
+- [ ] **T4 — key-file mode `0600`** and **backup-write-failure → ERR** (Phase 2.2/2.3).
+- [ ] **T5 — huge-count decode** rejected without large allocation (Phase 3.1).
+- [ ] **T6 — spoofed-source / duplicate notification** dropped / deduped (Phase 3.2/3.3).
+- [ ] **T7 — backward clock step** → non-decreasing timestamps, no inverted interval (Phase 4).
+- [ ] **T8 — lossy-transport discovery** in the harness (add a loss/reorder model to the harness
+  `FakeTransport`, which is lossless today) → measure and assert self-healing after 6.1.
+- [ ] **T9 — LMDB prune/retention** at the real-storage layer (pruning correctness is only tested
+  against the in-memory sim store today).
+
+---
+
+## Out of scope (explicitly deferred, tracked elsewhere)
+
+Incentive/value-transfer layer, sybil resistance / admission control, the probabilistic beam
+search, multi-reference proofs, oracles/real-world event binding, and event import/sharing — all
+already on the paper-vs-implementation "not implemented" list and not required to make the node
+robust. This plan is about **hardening what exists**, not extending the feature surface.
+
+## Decision log
+
+Record non-obvious decisions here as items land (chosen `NodeId` width; gossip-auth mechanism;
+clock-implausibility policy; fsync threading vs documented-stall; whether `--id`/NullSigner stays
+in the production binary).
