@@ -13,6 +13,7 @@
 #include <cstdint>
 #include <deque>
 #include <limits>
+#include <map>
 #include <vector>
 
 namespace loti::domain {
@@ -105,6 +106,18 @@ struct Neighbor {
   NodeId node_id = 0;
   std::vector<EventHash> last_clock_event_hashes;
 };
+
+// A time-scoped overlay route toward some (multi-hop) destination: during `validity`, these are
+// the ordered next hops (shortest first). Not derivable from the DAG — multi-hop direction is a
+// global property — so it is filled by a routing protocol / static config and consumed by the
+// RoutingTableRouter. It lives here (not in routing/) so the Store port can persist it.
+struct TimedRoute {
+  TimeRange validity;
+  std::vector<NodeId> next_hops;
+  bool operator==(const TimedRoute&) const = default;
+};
+// destination → the time-scoped routes learned toward it.
+using TimedRouteTable = std::map<NodeId, std::vector<TimedRoute>>;
 
 enum class DiscoveryState { in_progress, completed, aborted };
 

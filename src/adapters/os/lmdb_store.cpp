@@ -12,7 +12,8 @@ namespace loti::os {
 namespace {
 
 // Number of named sub-DBs the env must accommodate; keep in sync with the opens below.
-constexpr unsigned kMaxDbs = 8;
+constexpr unsigned kMaxDbs = 9;  // meta, events, event_index, clock_events, clock_index,
+                                 // neighbors, routes, timed_routes, referencing
 
 constexpr char kVersionKey[] = "version";  // key into the `meta` sub-DB
 
@@ -159,6 +160,7 @@ LmdbStore::LmdbStore(std::string path, std::size_t map_size, SyncPolicy sync)
     open("clock_index", clock_index_);
     open("neighbors", neighbors_);
     open("routes", routes_);
+    open("timed_routes", timed_routes_);
     // The reverse index is DUPSORT: one key (a referenced hash) maps to many seq values,
     // kept sorted so a lookup yields the referencing clock events in ascending seq order.
     check(mdb_dbi_open(txn, "referencing", MDB_CREATE | MDB_DUPSORT, &referencing_), "referencing");
@@ -375,6 +377,44 @@ std::map<domain::NodeId, domain::NodeId> LmdbStore::load_routes() const {
   for_each(env_, routes_, [&](const MDB_val& k, const MDB_val& v) {
     out[get_u64_be(static_cast<const unsigned char*>(k.mv_data))] =
         get_u64_be(static_cast<const unsigned char*>(v.mv_data));
+  });
+  return out;
+}
+
+void LmdbStore::put_timed_routes(const domain::TimedRouteTable& table) {
+  MDB_txn* txn = nullptr;
+  check(mdb_txn_begin(env_, nullptr, 0, &txn), "txn_begin timed_routes");
+  mdb_drop(txn, timed_routes_, 0);  // replace semantics: empty, then rewrite (keep the DB)
+  for (const auto& [dest, routes] : table) {
+    unsigned char kbuf[8];
+    put_u64_be(kbuf, dest);
+    wire::Writer w;  // value: a count then each route's validity window + next-hop list
+    w.u64(routes.size());
+    for (const auto& rt : routes) {
+      w.time_range(rt.validity);
+      w.node_ids(rt.next_hops);
+    }
+    MDB_val k{sizeof(kbuf), kbuf};
+    MDB_val v{w.bytes().size(), const_cast<std::uint8_t*>(w.bytes().data())};
+    check_write(mdb_put(txn, timed_routes_, &k, &v, 0), "put_timed_route");
+  }
+  check_write(mdb_txn_commit(txn), "commit timed_routes");
+}
+
+domain::TimedRouteTable LmdbStore::load_timed_routes() const {
+  domain::TimedRouteTable out;
+  for_each(env_, timed_routes_, [&](const MDB_val& k, const MDB_val& v) {
+    const domain::NodeId dest = get_u64_be(static_cast<const unsigned char*>(k.mv_data));
+    domain::Bytes bytes = to_bytes(v);
+    wire::Reader r(bytes);
+    std::vector<domain::TimedRoute> routes;
+    for (auto n = r.u64(); n > 0; --n) {
+      domain::TimedRoute rt;
+      rt.validity = r.time_range();
+      rt.next_hops = r.node_ids();
+      routes.push_back(std::move(rt));
+    }
+    out[dest] = std::move(routes);
   });
   return out;
 }
@@ -603,7 +643,8 @@ void LmdbStore::reset() {
   MDB_txn* txn = nullptr;
   check(mdb_txn_begin(env_, nullptr, 0, &txn), "txn_begin");
   for (MDB_dbi dbi :
-       {events_, event_index_, clock_events_, clock_index_, referencing_, neighbors_, routes_}) {
+       {events_, event_index_, clock_events_, clock_index_, referencing_, neighbors_, routes_,
+        timed_routes_}) {
     if (int rc = mdb_drop(txn, dbi, 0); rc != MDB_SUCCESS) {  // del=0: empty but keep the DB
       mdb_txn_abort(txn);
       fail_rc("drop", rc);

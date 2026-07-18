@@ -144,6 +144,27 @@ TEST_CASE("LmdbStore round-trips a committed batch") {
   b.commit();
 }
 
+TEST_CASE("LmdbStore persists and reloads the time-dependent routing table") {
+  TempEnv env("timed_routes");
+  domain::TimedRouteTable table;
+  table[42].push_back(domain::TimedRoute{domain::TimeRange{100, 200}, {7, 9}});
+  table[42].push_back(domain::TimedRoute{domain::TimeRange::all(), {3}});
+  table[99].push_back(domain::TimedRoute{domain::TimeRange{-5, 5}, {1}});
+  {
+    LmdbStore store(env.str());
+    store.put_timed_routes(table);
+  }
+  LmdbStore reopened(env.str());
+  CHECK(reopened.load_timed_routes() == table);  // survives a reopen, byte-for-byte
+
+  SUBCASE("put_timed_routes replaces the whole table") {
+    domain::TimedRouteTable smaller;
+    smaller[1].push_back(domain::TimedRoute{domain::TimeRange::all(), {2}});
+    reopened.put_timed_routes(smaller);
+    CHECK(reopened.load_timed_routes() == smaller);
+  }
+}
+
 TEST_CASE("LmdbStore aborts an uncommitted batch without leaving a seq gap") {
   TempEnv env("abort");
   LmdbStore store(env.str());

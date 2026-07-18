@@ -251,9 +251,9 @@ later parts.
 ### Part 2 — Time-range + reverse-path plumbing — **DONE**
 - [x] Added `domain::TimeRange` ([types.hpp](../../src/core/domain/types.hpp)) with an
   unconstrained `TimeRange::all()`; `discover_event_chain/bounds/order` take a **required** range
-  (stored on `EventChainDiscovery`). **Decision:** callers without a real user window (tests,
-  `lotid`, sim Browser) pass `TimeRange::all()` — threading a real window through the CLI control
-  protocol is deferred (see Open questions).
+  (stored on `EventChainDiscovery`). **Decision:** tests + the sim Browser pass `TimeRange::all()`;
+  the `loti` CLI now threads a real window (`--from`/`--to` → `lotid` parses the optional trailing
+  window — see Follow-ups).
 - [x] `ChainRequest` carries `range`, `hop_limit`, and the **breadcrumb `path`**; `ChainResponse`
   carries the remaining `path`. Codec + round-trip test updated. **Decision:** the breadcrumb
   **subsumes the visited-set** — with stateless intermediates a copy's breadcrumb *is* its visited
@@ -402,11 +402,18 @@ exercises "flood with an empty routing table", which is the mechanism this plan 
 
 ## Status
 
-**Implemented.** Parts 1–7 are done on branch `scalable-pluggable-discovery` (each part a commit).
-The pure core builds clean (`-Wall -Wextra -Wpedantic`) and passes all core tests (50 cases / 224
-assertions), and the **OMNeT++ 6.4 / INET 4.7** simulation runs the flood policy end-to-end on the
-bundled 57-node network — completing chain discoveries with an **empty routing table**. Deferred
-(see Open questions): the score-weighted / in-packet **beam** on top of this substrate;
-**cross-branch dedup** (the flood is exponential in the hop limit without it — keep `hop_limit ≈
-diameter` for now); CLI/control-protocol threading of a real `TimeRange` (callers pass
-`TimeRange::all()` today); timed-route **persistence**; and a sim **churn** scenario.
+**Implemented.** Parts 1–7 are done on branch `scalable-pluggable-discovery` (each part a commit),
+plus follow-up commits for three of the deferred items. The pure core builds clean
+(`-Wall -Wextra -Wpedantic`) and passes all core tests, and the **OMNeT++ 6.4 / INET 4.7**
+simulation runs the flood policy end-to-end on the bundled 57-node network — completing chain
+discoveries with an **empty routing table**.
+
+### Follow-ups (deferred items)
+- ✅ **Cross-branch dedup** — `NodeConfig::discovery_forward_cap` (per-node fan-in cap) makes the
+  flood polynomial; `cap=1, hop_limit=15` runs the 15 s sim in 0.2 s (was a 5-min runaway).
+- ✅ **CLI `TimeRange` threading** — `loti --from <t> --to <t>` on bounds/chain/order/prove; `lotid`
+  parses the optional trailing window into a real `TimeRange` (absent → `all()`). Verified
+  end-to-end (daemon `prove`+`verify`).
+- ✅ **Timed-route persistence** — `learn_route_at` routes persist through the `Store` port.
+- ⬜ **Beam** (score-weighted / in-packet) and sim **churn** (needs a core `remove_neighbor`) remain
+  deferred as the harder pieces.

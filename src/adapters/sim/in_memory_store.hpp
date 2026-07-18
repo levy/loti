@@ -39,6 +39,7 @@ class InMemoryStore final : public ports::Store {
   }
   void put_neighbor(const domain::Neighbor& n) override { neighbors_[n.node_id] = n; }
   void put_route(domain::NodeId dst, domain::NodeId next_hop) override { routes_[dst] = next_hop; }
+  void put_timed_routes(const domain::TimedRouteTable& t) override { timed_routes_ = t; }
   void prune_chain(std::uint32_t chain, std::size_t keep) override {
     auto it = chain_seqs_.find(chain);
     if (it == chain_seqs_.end() || keep == 0) return;
@@ -104,6 +105,7 @@ class InMemoryStore final : public ports::Store {
 
   std::map<domain::NodeId, domain::Neighbor> load_neighbors() const override { return neighbors_; }
   std::map<domain::NodeId, domain::NodeId> load_routes() const override { return routes_; }
+  domain::TimedRouteTable load_timed_routes() const override { return timed_routes_; }
 
   void clear() override {
     events_.clear();
@@ -116,6 +118,7 @@ class InMemoryStore final : public ports::Store {
     chain_seqs_.clear();
     neighbors_.clear();
     routes_.clear();
+    timed_routes_.clear();
   }
 
  private:
@@ -129,6 +132,7 @@ class InMemoryStore final : public ports::Store {
   std::map<std::uint32_t, std::deque<std::uint64_t>> chain_seqs_;      // chain -> live seqs, oldest first
   std::map<domain::NodeId, domain::Neighbor> neighbors_;
   std::map<domain::NodeId, domain::NodeId> routes_;
+  domain::TimedRouteTable timed_routes_;
 };
 
 }  // namespace loti::sim

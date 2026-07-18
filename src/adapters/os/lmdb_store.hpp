@@ -130,6 +130,7 @@ class LmdbStore final : public ports::Store {
   void update_clock_event(const domain::LocalClockEvent&) override;
   void put_neighbor(const domain::Neighbor&) override;
   void put_route(domain::NodeId destination, domain::NodeId next_hop) override;
+  void put_timed_routes(const domain::TimedRouteTable&) override;
   void prune_chain(std::uint32_t chain, std::size_t keep) override;
 
   // ---- ports::Store: reads (each in its own read txn; the mmap keeps them zero-copy) ----
@@ -153,6 +154,7 @@ class LmdbStore final : public ports::Store {
   [[nodiscard]] std::vector<domain::LocalClockEvent> load_clock_events() const override;
   [[nodiscard]] std::map<domain::NodeId, domain::Neighbor> load_neighbors() const override;
   [[nodiscard]] std::map<domain::NodeId, domain::NodeId> load_routes() const override;
+  [[nodiscard]] domain::TimedRouteTable load_timed_routes() const override;
 
   [[nodiscard]] std::size_t event_count() const override;
   [[nodiscard]] std::size_t clock_event_count() const override;
@@ -204,6 +206,7 @@ class LmdbStore final : public ports::Store {
   MDB_dbi referencing_ = 0;  // DUPSORT: referenced hash -> seqs of clock events referencing it
   MDB_dbi neighbors_ = 0;
   MDB_dbi routes_ = 0;
+  MDB_dbi timed_routes_ = 0;  // destination -> serialized [TimedRoute] (time-dependent routing)
 
   std::uint64_t format_version_ = 0;
   std::uint64_t next_event_seq_ = 0;  // next unused key in `events`

@@ -37,6 +37,9 @@ class Store {
   virtual void update_clock_event(const domain::LocalClockEvent&) = 0;
   virtual void put_neighbor(const domain::Neighbor&) = 0;
   virtual void put_route(domain::NodeId destination, domain::NodeId next_hop) = 0;
+  // Persist the whole time-dependent routing table (replaces any previously stored one). Small
+  // and rarely changed, so it is stored as one unit rather than per-route.
+  virtual void put_timed_routes(const domain::TimedRouteTable&) = 0;
   // Ring-prune chain `chain` down to its newest `keep` clock events, deleting the oldest
   // (and their index / reverse-index entries). `keep == 0` is a no-op (unbounded). Deleting
   // clock events makes seqs sparse; reads by live seq (via clock_events_referencing) stay
@@ -74,6 +77,7 @@ class Store {
   // startup (neighbors carry their learned last-clock-event hash across a restart).
   [[nodiscard]] virtual std::map<domain::NodeId, domain::Neighbor> load_neighbors() const = 0;
   [[nodiscard]] virtual std::map<domain::NodeId, domain::NodeId> load_routes() const = 0;
+  [[nodiscard]] virtual domain::TimedRouteTable load_timed_routes() const = 0;
 
   // Drop every DAG and overlay record (before a db-restore rewrites the store).
   virtual void clear() = 0;

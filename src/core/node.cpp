@@ -70,6 +70,7 @@ void Node::learn_route(NodeId destination, NodeId next_hop) {
 
 void Node::learn_route_at(NodeId destination, NodeId next_hop, TimeRange validity) {
   timed_routes_[destination].push_back(routing::TimedRoute{validity, {next_hop}});
+  store_.put_timed_routes(timed_routes_);  // persist the (small) table as one unit
 }
 
 // ---------------------------------------------------------------------------
@@ -769,6 +770,7 @@ void Node::load(std::vector<Event> events, std::vector<LocalClockEvent> clock_ev
 void Node::hydrate_working_state() {
   neighbors_ = store_.load_neighbors();
   destination_to_next_hop_ = store_.load_routes();
+  timed_routes_ = store_.load_timed_routes();
 
   // Rederive each chain's unreferenced-event tail: for chain ℓ, the events published since
   // its last tick — i.e. the suffix of events not yet referenced by any chain-ℓ clock event.

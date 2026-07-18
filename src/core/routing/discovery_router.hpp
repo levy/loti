@@ -110,17 +110,12 @@ class NeighborHistoryRouter final : public DiscoveryRouter {
   const std::map<domain::NodeId, domain::Neighbor>& neighbors_;
 };
 
-// A single time-scoped routing hint: during `validity`, these are the ordered next hops
-// (shortest first) toward some far destination. Not derivable from the DAG (multi-hop direction
-// is a global property); filled by a routing protocol or static config — out of scope here. The
-// router only consumes it.
-struct TimedRoute {
-  domain::TimeRange validity;
-  std::vector<domain::NodeId> next_hops;
-};
-
-// destination → the time-scoped routes learned toward it.
-using TimedRouteTable = std::map<domain::NodeId, std::vector<TimedRoute>>;
+// A time-scoped routing hint (`domain::TimedRoute`): during `validity`, the ordered next hops
+// (shortest first) toward some far destination. Not derivable from the DAG (multi-hop direction is
+// global); filled by a routing protocol / static config. It lives in `domain` so the Store port
+// can persist it; re-exported here as the routers' vocabulary.
+using domain::TimedRoute;
+using domain::TimedRouteTable;
 
 // The directional, time-dependent router. On a **hit** — a route toward `destination` whose
 // validity overlaps `ctx.range` — it returns those next hops (shortest first) **intersected with
