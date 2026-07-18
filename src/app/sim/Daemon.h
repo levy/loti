@@ -60,6 +60,13 @@ class Daemon : public cSimpleModule, public UdpSocket::ICallback
     domain::NodeId nodeId_ = 0;
     cMessage createClockEventTimer_;
 
+    // Multi-resolution clock chains driven off the single fast timer: chain 0 ticks every
+    // timer firing; chain L also ticks every clockChainFactor^L firings (see handleMessage).
+    int numChains_ = 1;
+    int chainFactor_ = 1;
+    long clockTickCount_ = 0;
+    simsignal_t clockEventsRetainedSignal_ = -1;
+
     // Constructed at INITSTAGE_LOCAL, once getId() is available. Declared last so
     // it is destroyed first — while the port adapters it references are still alive.
     std::unique_ptr<Node> node_;

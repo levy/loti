@@ -39,15 +39,23 @@ void Daemon::initialize(int stage)
 {
     if (stage == INITSTAGE_LOCAL) {
         nodeId_ = static_cast<domain::NodeId>(getId());
+        numChains_ = par("clockChainCount").intValue();
+        chainFactor_ = par("clockChainFactor").intValue();
+        const std::size_t keep = static_cast<std::size_t>(par("clockChainKeep").intValue());
         NodeConfig config;
-        // The clock-event timer stays in this module so it keeps re-sampling the volatile
-        // createClockEventInterval; only the purge timer is core-driven. A default (empty)
-        // chain schedule means the core starts no clock timer — this module drives ticks.
+        // Multi-resolution clock chains. All intervals are 0 — this module drives the ticks off
+        // its single fast timer (so the fast chain keeps re-sampling the volatile
+        // createClockEventInterval; coarser chains piggyback every clockChainFactor^L firings),
+        // and node_->start() therefore schedules no core clock timers, only the purge timer.
+        // keep > 0 enables per-chain ring pruning, bounding total clock-event storage.
+        for (int ch = 0; ch < numChains_; ++ch)
+            config.chains.push_back(ChainConfig{/*interval=*/0, keep});
         simtime_t expiry(par("discoveryExpiryTime").doubleValue());
         config.discovery_expiry = expiry.raw();
         node_ = std::make_unique<Node>(
             nodeId_, NodePorts{clock_, scheduler_, transport_, rng_, signer_, telemetry_, store_},
             config);
+        clockEventsRetainedSignal_ = registerSignal("clockEventsRetained");
         createClockEventTimer_.setName("CreateClockEventTimer");
         scheduleCreateClockEventTimer();
         node_->start();
@@ -63,7 +71,16 @@ void Daemon::initialize(int stage)
 void Daemon::handleMessage(cMessage *message)
 {
     if (message == &createClockEventTimer_) {
-        node_->create_clock_event();
+        node_->create_clock_event(0);  // the fastest chain ticks on every timer firing
+        ++clockTickCount_;
+        // Coarser chains piggyback: chain L ticks every chainFactor^L fast ticks.
+        long modulus = 1;
+        for (int ch = 1; ch < numChains_; ++ch) {
+            modulus *= chainFactor_;
+            if (clockTickCount_ % modulus == 0)
+                node_->create_clock_event(static_cast<std::uint32_t>(ch));
+        }
+        emit(clockEventsRetainedSignal_, static_cast<long>(node_->clock_event_count()));
         scheduleCreateClockEventTimer();
     }
     else if (scheduler_.owns(message))

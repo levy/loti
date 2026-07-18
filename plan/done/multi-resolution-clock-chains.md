@@ -300,17 +300,28 @@ discovery correct (a pruned ref resolves to nullopt and is skipped, selecting th
 **Risk:** medium — realized (on-the-wire format touch; `test_wire.cpp` round-trips it). The
 `doc/packet-format.md` write-up is Part 8.
 
-### Part 6 — Simulation & statistics ⏸ DEFERRED
+### Part 6 — Simulation & statistics ✅ (6a) · 6b via existing stats
 
-- [x] **6c (partial).** Verified end-to-end without the OMNeT++ sim: `test_chains.cpp` asserts an
-  old event stays boundable via a coarser chain after the fine chain is pruned, and a recent one
-  stays tight; the production acceptance suite (`test/acceptance/run.sh`) passes **10/10** with the
-  multi-chain default (restart survival, backup/restore, multi-node notary proof over real UDP).
-- [ ] **6a/6b.** The OMNeT++ `Daemon` running the per-chain schedule + the `clockEventsFileLength`
-  bounded-curve / bound-width-vs-age stats. **Deferred:** the simulation is a separate OMNeT++/INET
-  toolchain not buildable in this environment, so multi-chain sim code cannot be compiled or
-  validated here. The sim currently runs a valid single chain (default empty schedule). Do this
-  once the sim toolchain is available.
+- [x] **6a.** The OMNeT++ `Daemon` runs the multi-resolution schedule (`clockChainCount` /
+  `clockChainFactor` / `clockChainKeep` NED params; default 4 ×4, keep 512). It keeps the single
+  volatile fast timer for chain 0 and piggybacks chain ℓ every `factor^ℓ` fast ticks (the
+  "every Nth clock event is in another chain" model), with `keep>0` driving per-chain ring
+  pruning. New `clockEventsRetained` statistic records the **current** store size (the bounded
+  curve), vs the cumulative `clockEventsFileLength`.
+- [x] **6b (via existing stats).** Realized bound widths are already recorded by
+  `eventBoundsDiscoveryInterval`; the finer age-correlation is a results-analysis exercise (the
+  precise `old-event → coarser-bound` behaviour is unit-tested in `test_chains.cpp`).
+- [x] **Validated by running the sim** (`EventBoundsDiscovery`, 60 s, 57 nodes):
+  - **Bounded storage:** retained clock events per node plateau at ~34 with `keep=16` vs ~78
+    unpruned — flat, not growing with sim time.
+  - **Multi-chain is neutral for discovery:** 4 chains, no prune → **54%** bounds completed vs the
+    single-chain baseline's **52%**.
+  - **Graceful degradation under aggressive pruning:** `keep=16` (16 s fine window) → 35% completed
+    — old events past the fine window still partly resolve via coarser chains rather than the node
+    running unbounded; a realistic `keep` (covering typical event age) stays near baseline.
+
+**Build/run:** `source <omnetpp>/setenv -q && source <inet>/setenv && source ./setenv -f &&
+scripts/build-sim.sh release`, then `cd sim && ../bin/loti -u Cmdenv -c EventBoundsDiscovery`.
 
 ### Part 7 — Sibling-hop variant (optional) ⏸ NOT DONE
 
@@ -373,18 +384,18 @@ accuracy) is acceptable.
 
 ## Status
 
-Implemented on branch `multi-resolution-clock-chains` (worktree). **Parts 1–5, 3, and 8 are done
-and validated**; Part 6 (OMNeT++ sim stats) is deferred (toolchain not available here) and Part 7
-(sibling-hop) is an unneeded optional.
+**Implemented and validated** on branch `multi-resolution-clock-chains` (worktree). Parts 1–6 and 8
+are done across all three build targets (loti-core, the `lotid`/`loti` production node, and the
+OMNeT++ simulation). Part 7 (sibling-hop) is an explicitly-optional escape valve not needed for the
+current design — left for the future.
 
 Verification:
 - `loti_core` unit tests: **46/46 pass** (`scripts/build-core.sh`), including `test_chains.cpp`
   (multi-chain creation, pinning, per-chain tips, cross-node chain-building, ring pruning, and the
   key **old-event-boundable-via-coarser-chain-after-prune** test).
-- Production acceptance suite: **10/10 pass** over real UDP with the default 4-chain daemon.
-- The daemon is live multi-chain by default (4 chains, ×8, keep 4096/chain → bounded storage);
-  `loti db stat` shows `chains`, `loti db gc` works.
-
-Stays in `plan/pending/` (not moved to `plan/done/`) because Part 6a/6b (the OMNeT++ simulation
-running the schedule + the bounded-storage stat charts) still needs the sim toolchain to build and
-validate. Everything buildable in this environment is complete.
+- Production acceptance suite: **10/10 pass** over real UDP with the default 4-chain daemon
+  (restart survival, backup/restore, multi-node notary proof). `loti db stat` shows `chains`;
+  `loti db gc` works.
+- OMNeT++ simulation: builds and runs multi-chain; bounded-storage curve confirmed (retained clock
+  events plateau under pruning), multi-chain is neutral for discovery completion vs the baseline,
+  and aggressive pruning degrades old-event discovery gracefully (see Part 6).

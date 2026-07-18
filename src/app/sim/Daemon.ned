@@ -31,9 +31,18 @@ simple Daemon like IApp
 {
     parameters:
         volatile double createClockEventInterval @unit(s);
+        // Multi-resolution clock chains: the node runs `clockChainCount` independent chains.
+        // The fastest (chain 0) ticks on createClockEventInterval; chain L ticks every
+        // clockChainFactor^L fast ticks. Each chain is ring-pruned to clockChainKeep clock
+        // events, so total clock-event storage stays bounded. clockChainCount=1 reproduces the
+        // original single-chain, never-pruned behavior.
+        int clockChainCount = default(4);
+        int clockChainFactor = default(4);
+        int clockChainKeep = default(512);
         double discoveryExpiryTime @unit(s);
         @display("i=block/app");
         @signal[clockEventCreated];
+        @signal[clockEventsRetained];
         @signal[eventCreated];
         @signal[eventChainDiscoveryStarted];
         @signal[eventChainDiscoveryAborted];
@@ -53,6 +62,7 @@ simple Daemon like IApp
         @signal[eventOrderDiscoveryOrder];
         @statistic[clockEventCreated](title="clock event created count"; source=clockEventCreated; record=count; interpolationmode=none);
         @statistic[clockEventsFileLength](title="clock events file length"; source=sum(clockEventCreated); record=vector; interpolationmode=sample-hold);
+        @statistic[clockEventsRetained](title="retained clock events (all chains)"; source=clockEventsRetained; record=vector,max; interpolationmode=sample-hold);
         @statistic[eventCreatedCount](title="event created count"; source=eventCreated; record=count; interpolationmode=none);
         @statistic[eventsFileLength](title="events file length"; source=sum(eventCreated); record=vector; interpolationmode=sample-hold);
         @statistic[eventChainDiscoveryStartedCount](title="event chain discovery started count"; source=eventChainDiscoveryStarted; record=count; interpolationmode=none);
