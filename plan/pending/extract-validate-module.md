@@ -73,15 +73,16 @@ while `proof` is behavior-identical.
 
 ## Steps
 
-- [ ] **1 — module:** add `src/core/validate/chain.{hpp,cpp}` with `verify_chain` (the complete
+- [x] **1 — module:** add `src/core/validate/chain.{hpp,cpp}` with `verify_chain` (the complete
       walk); `git rm src/core/validate/.gitkeep`.
-- [ ] **2 — proof:** route `proof::verify` through `validate::verify_chain`; delete the duplicate.
-- [ ] **3 — node:** route `validate_chain_discovery_result` through `validate::verify_chain`; delete
+- [x] **2 — proof:** route `proof::verify` through `validate::verify_chain`; delete the duplicate.
+- [x] **3 — node:** route `validate_chain_discovery_result` through `validate::verify_chain`; delete
       `validate_event_chain` (+ its node.hpp decl).
-- [ ] **4 — build:** add the source to CMake; `scripts/build-core.sh` green (lib + lotid + loti +
-      `ctest`).
-- [ ] **5 — verify:** `test/acceptance/run.sh` green (real signed proofs still verify, tamper still
-      rejected); confirm the sim builds + is behavior-identical (pure add, NullSigner → no-op).
+- [x] **4 — build:** add the source to CMake; `scripts/build-core.sh` green (lib + lotid + loti +
+      `ctest` 1/1).
+- [x] **5 — verify:** `test/acceptance/run.sh` **10/10** (restored event proves+verifies; multi-node
+      notary proof over real UDP verifies offline; tampered proof rejected exit 6). Sim build
+      confirmed separately (see decisions log).
 
 ## Verify
 
@@ -96,4 +97,21 @@ while `proof` is behavior-identical.
 
 ## Decisions log
 
-*(fill in during implementation)*
+- **Canonical form = the complete (proof) walk, returning a `ChainResult`** (not throwing). `proof`
+  maps it to `VerifyResult`; `Node` throws `runtime_error(reason)` on `!ok`. One body, two error
+  styles at the seam.
+- **Node validation is now strictly stronger (drift fixed).** Routing `Node` through the shared
+  validator adds the **event-hash recompute** its old `validate_event_chain` lacked. This cannot
+  reject a valid chain — every event carries `calculate_event_hash(event)` by construction and the
+  wire codec round-trips `data`/`salt`/`creator` faithfully (proof verification already relies on
+  this) — so discovery completion/abort counts are unchanged; it only closes a real gap on the
+  discovery path. The old endpoint checks (`creator == id_`) are subsumed by the validator's
+  `endpoints == reference` check (`reference = id_` for a self-anchored discovery).
+- **`compare_event_chains` left in place** (both `Node` and `proof` keep their own 3-line copy). It
+  is ordering, not validation, and trivial — out of scope for this extraction.
+- **Kept `fingerprint` in `proof`** — it is proof-specific (reference-identity check), not part of
+  chain soundness.
+- **Build:** `loti_core`'s CMake source list is explicit, so `src/core/validate/chain.cpp` was added
+  by hand; `test/core` links `loti_core` (no change); `build-sim.sh`'s `opp_makemake --deep` over
+  `src/core/` picks the pure new TU up automatically (verified: sim builds clean, `libloti.so`
+  links, no new dependency). Sim statistics unchanged by the parity argument above.

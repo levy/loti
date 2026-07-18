@@ -30,6 +30,7 @@ add_library(loti_core STATIC
   src/core/loti_core.cpp
   src/core/hash/hashing.cpp
   src/core/wire/packets.cpp
+  src/core/validate/chain.cpp
   src/core/node.cpp
   src/core/proof/proof.cpp
 )

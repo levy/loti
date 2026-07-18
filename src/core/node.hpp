@@ -214,7 +214,6 @@ class Node final : private ChainCallback {
   bool extend_lower_bound_for_neighbor(const domain::Neighbor&, domain::EventChain&) const;
   bool extend_upper_bound_for_neighbor(const domain::Neighbor&, domain::EventChain&) const;
   domain::Order compare_event_chains(const domain::EventChain&, const domain::EventChain&) const;
-  void validate_event_chain(const domain::EventChain&) const;
   void validate_chain_discovery_result(const domain::EventChainDiscovery&) const;
 
   // DAG mutation / lookup — writes go to the store; the small overlay is read from RAM.

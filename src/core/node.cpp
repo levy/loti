@@ -5,6 +5,7 @@
 #include <stdexcept>
 
 #include "hash/hashing.hpp"
+#include "validate/chain.hpp"
 #include "wire/codec.hpp"
 #include "wire/packets.hpp"
 
@@ -576,54 +577,12 @@ Order Node::compare_event_chains(const EventChain& a, const EventChain& b) const
   return Order::undetermined;
 }
 
-void Node::validate_event_chain(const EventChain& chain) const {
-  EventReference prev;  // empty
-  bool have_prev = false;
-  for (auto it = chain.lower_bound.begin(); it != chain.lower_bound.end(); ++it) {
-    const auto& ce = *it;
-    if (hash::calculate_clock_event_hash(ce) != ce.hash)
-      throw std::runtime_error("invalid event hash");
-    if (!signer_.verify(ce.hash, ce.signature, ce.creator))
-      throw std::runtime_error("invalid clock event signature");
-    if (have_prev) {
-      bool found = false;
-      for (const auto& ref : ce.referenced_events)
-        if (ref == prev) { found = true; break; }
-      if (!found) throw std::runtime_error("invalid lower bound");
-    }
-    prev = EventReference{ce.creator, ce.hash};
-    have_prev = true;
-  }
-  {
-    bool found = false;
-    for (const auto& ref : chain.event.referenced_events)
-      if (ref == prev) { found = true; break; }
-    if (!found && !chain.lower_bound.empty()) throw std::runtime_error("invalid event");
-  }
-  if (!signer_.verify(chain.event.hash, chain.event.signature, chain.event.creator))
-    throw std::runtime_error("invalid event signature");
-  prev = EventReference{chain.event.creator, chain.event.hash};
-  for (auto it = chain.upper_bound.begin(); it != chain.upper_bound.end(); ++it) {
-    const auto& ce = *it;
-    if (hash::calculate_clock_event_hash(ce) != ce.hash)
-      throw std::runtime_error("invalid event hash");
-    if (!signer_.verify(ce.hash, ce.signature, ce.creator))
-      throw std::runtime_error("invalid clock event signature");
-    if (it != chain.upper_bound.begin()) {
-      bool found = false;
-      for (const auto& ref : ce.referenced_events)
-        if (ref == prev) { found = true; break; }
-      if (!found) throw std::runtime_error("invalid upper bound");
-    }
-    prev = EventReference{ce.creator, ce.hash};
-  }
-}
-
 void Node::validate_chain_discovery_result(const EventChainDiscovery& discovery) const {
-  const auto& chain = discovery.chain;
-  if (chain.lower_bound.front().creator != id_) throw std::runtime_error("invalid first clock event");
-  if (chain.upper_bound.back().creator != id_) throw std::runtime_error("invalid last clock event");
-  validate_event_chain(chain);
+  // The discovering node is the reference: the chain must be enclosed by two of its own
+  // clock events. The full soundness walk (hashes, linkage, endpoints, signatures) is the
+  // canonical validator shared with offline proof verification (core/validate/chain.hpp).
+  const validate::ChainResult result = validate::verify_chain(discovery.chain, id_, signer_);
+  if (!result.ok) throw std::runtime_error(result.reason);
 }
 
 // ---------------------------------------------------------------------------
