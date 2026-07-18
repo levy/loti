@@ -55,20 +55,28 @@ overflows for values ≥ 4 on 32-bit.
 `loti_core` + LMDB (vendored C) cross-compile cleanly; the fiddly bit is **OpenSSL** (the keystore
 links `OpenSSL::Crypto`) needing a target `libcrypto`.
 
-- [ ] **B1.** Add CMake toolchain files under `cmake/`: `toolchain-aarch64-linux-gnu.cmake` (Zero 2 W,
+- [x] **B1.** Add CMake toolchain files under `cmake/`: `toolchain-aarch64-linux-gnu.cmake` (Zero 2 W,
   64-bit) and `toolchain-armv6-linux-gnueabihf.cmake` (Zero/W: `-march=armv6 -mfpu=vfp -mfloat-abi=hard`).
   Each sets `CMAKE_SYSTEM_NAME/PROCESSOR`, the cross `CC/CXX`, sysroot, and `CMAKE_FIND_ROOT_PATH`.
-- [ ] **B2.** Target OpenSSL: point `CMAKE_FIND_ROOT_PATH` at a Pi sysroot (rsynced from the device) or
+  *Done: both files parse cleanly in CMake (only the absent cross-gcc blocks configure).*
+- [x] **B2.** Target OpenSSL: point `CMAKE_FIND_ROOT_PATH` at a Pi sysroot (rsynced from the device) or
   multiarch cross packages (`libssl-dev:arm64` / `:armhf`) so `find_package(OpenSSL)` resolves the target
-  lib. Document how to obtain the sysroot.
-- [ ] **B3.** `scripts/build-cross.sh <aarch64|armv6>` — configure with the toolchain into `build/<arch>/`
-  and build `lotid`/`loti`. (Host can't run a cross build's `ctest`.)
+  lib. Document how to obtain the sysroot. *Done: toolchains support both a `LOTI_SYSROOT` pure-sysroot
+  mode and a multiarch mode (`CMAKE_LIBRARY_ARCHITECTURE` + FIND_ROOT_PATH BOTH); sysroot acquisition
+  walkthrough lives in doc/embedded.md (Part E).*
+- [x] **B3.** `scripts/build-cross.sh <aarch64|armv6>` — configure with the toolchain into `build/<arch>/`
+  and build `lotid`/`loti`. (Host can't run a cross build's `ctest`.) *Done: Release build of the two
+  runtime targets; detects a missing cross compiler with an install hint.*
 - [ ] **B4.** *(Optional)* `qemu-user-static` to run the cross-built unit tests on the host under emulation
-  (nice for CI); note it as optional.
+  (nice for CI); note it as optional. *Documented in doc/embedded.md as an optional path; not scripted.*
 - [ ] **B5.** Verify: build both targets; the **armv6** build compiles the 32-bit path from Part A. Run the
   binaries on the Pi (or under qemu) — smoke `lotid --store … --store-mapsize 1` + `loti publish`.
-- [ ] **B6.** Capture the concrete build/deploy steps (sysroot acquisition, toolchain invocation, target
-  OpenSSL) — these become the "how to build" part of the embedded guide in **Part E**.
+  *DEFERRED — the cross toolchains, multiarch libssl, and a Pi/qemu need root (`apt`), unavailable in
+  this sandbox. The toolchain files + script are complete and CMake-validated; run B5 on a dev box with
+  the packages installed (steps in doc/embedded.md).*
+- [x] **B6.** Capture the concrete build/deploy steps (sysroot acquisition, toolchain invocation, target
+  OpenSSL) — these become the "how to build" part of the embedded guide in **Part E**. *Done in
+  doc/embedded.md (Part E); inline usage also in each toolchain file and build-cross.sh.*
 
 **Risk:** medium (OpenSSL sysroot friction). No change to on-target runtime behavior.
 
