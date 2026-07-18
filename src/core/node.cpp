@@ -74,6 +74,11 @@ void Node::create_clock_event(std::uint32_t chain) {
   // Advertise this chain's new tip to neighbors. A chain only ticks when its tip changes,
   // so this is inherently change-only per chain.
   for (const auto& [nid, neighbor] : neighbors_) send_clock_event_notification(neighbor, clock_event);
+  // Ring-prune this chain to its retention. Conservative by construction: any event a dropped
+  // clock event referenced is still referenced by a slower chain (events pin into every chain),
+  // so pruning widens an event's bounds to a coarser resolution — it never loses them.
+  if (chain < config_.chains.size() && config_.chains[chain].keep > 0)
+    store_.prune_chain(chain, config_.chains[chain].keep);
 }
 
 void Node::purge_discoveries() {
@@ -613,10 +618,9 @@ Bytes Node::snapshot() const {
   const std::size_t event_count = store_.event_count();
   w.u64(event_count);
   for (std::size_t i = 0; i < event_count; ++i) w.event(store_.event_by_seq(i));
-  const std::size_t clock_count = store_.clock_event_count();
-  w.u64(clock_count);
-  for (std::size_t i = 0; i < clock_count; ++i) {
-    const LocalClockEvent c = store_.clock_event_by_seq(i);
+  const auto clock_events = store_.load_clock_events();  // live, seq order (gap-tolerant after prune)
+  w.u64(clock_events.size());
+  for (const auto& c : clock_events) {
     w.clock_event(c);              // the ClockEvent part
     w.refs(c.referencing_events);  // the learned back-references (LocalClockEvent extra)
   }

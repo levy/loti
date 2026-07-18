@@ -273,7 +273,7 @@ std::uint64_t LmdbStore::Batch::append_clock_event(const domain::LocalClockEvent
     check_write(mdb_put(txn_, store_.referencing_, &rk, &rv, 0), "put referencing");
   }
 
-  pending_chain_tips_[c.chain] = seq;  // this chain's newest tip, applied on commit
+  pending_chain_appends_.emplace_back(c.chain, seq);  // chain tip + ordering, applied on commit
   return seq;
 }
 
@@ -324,8 +324,10 @@ void LmdbStore::Batch::commit() {
   check_write(mdb_txn_commit(t), "txn_commit");
   store_.next_event_seq_ = event_seq_;   // advance only after a durable commit
   store_.next_clock_seq_ = clock_seq_;
-  for (const auto& [chain, seq] : pending_chain_tips_)
+  for (const auto& [chain, seq] : pending_chain_appends_) {
     store_.chain_tip_seq_[chain] = seq;  // seqs only grow, so this is always the newest
+    store_.chain_seqs_[chain].push_back(seq);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -491,9 +493,29 @@ std::vector<std::uint64_t> LmdbStore::clock_events_referencing(const domain::Eve
 }
 
 std::optional<domain::LocalClockEvent> LmdbStore::latest_clock_event() const {
-  const std::size_t n = clock_event_count();
-  if (n == 0) return std::nullopt;
-  return clock_event_by_seq(n - 1);
+  // The newest live clock event = the numerically greatest seq key (gap-tolerant after prune).
+  MDB_txn* txn = nullptr;
+  check(mdb_txn_begin(env_, nullptr, MDB_RDONLY, &txn), "rtxn_begin");
+  MDB_cursor* cur = nullptr;
+  if (int rc = mdb_cursor_open(txn, clock_events_, &cur); rc != MDB_SUCCESS) {
+    mdb_txn_abort(txn);
+    fail_rc("cursor_open", rc);
+  }
+  MDB_val k{}, v{};
+  int rc = mdb_cursor_get(cur, &k, &v, MDB_LAST);
+  std::optional<domain::LocalClockEvent> out;
+  if (rc == MDB_SUCCESS) {
+    domain::Bytes bytes = to_bytes(v);
+    wire::Reader r(bytes);
+    domain::LocalClockEvent c;
+    static_cast<domain::ClockEvent&>(c) = r.clock_event();
+    c.referencing_events = r.refs();
+    out = std::move(c);
+  }
+  mdb_cursor_close(cur);
+  mdb_txn_abort(txn);
+  if (rc != MDB_SUCCESS && rc != MDB_NOTFOUND) fail_rc("cursor_last", rc);
+  return out;
 }
 
 std::optional<domain::LocalClockEvent> LmdbStore::latest_clock_event(std::uint32_t chain) const {
@@ -502,14 +524,54 @@ std::optional<domain::LocalClockEvent> LmdbStore::latest_clock_event(std::uint32
   return clock_event_by_seq(it->second);
 }
 
+void LmdbStore::prune_chain(std::uint32_t chain, std::size_t keep) {
+  auto it = chain_seqs_.find(chain);
+  if (it == chain_seqs_.end() || keep == 0 || it->second.size() <= keep) return;
+  MDB_txn* txn = nullptr;
+  check(mdb_txn_begin(env_, nullptr, 0, &txn), "txn_begin(prune)");
+  try {
+    while (it->second.size() > keep) {
+      const std::uint64_t seq = it->second.front();
+      it->second.pop_front();
+      unsigned char sbuf[8];
+      put_u64_be(sbuf, seq);
+      MDB_val sk{sizeof(sbuf), sbuf};
+      MDB_val cv{};
+      int rc = mdb_get(txn, clock_events_, &sk, &cv);
+      if (rc == MDB_NOTFOUND) continue;  // already gone
+      check(rc, "get clock_event(prune)");
+      domain::Bytes bytes = to_bytes(cv);
+      wire::Reader r(bytes);
+      const domain::ClockEvent ce = r.clock_event();
+      // Drop the reverse-index dups this clock event contributed (referenced hash -> seq).
+      for (const auto& ref : ce.referenced_events) {
+        MDB_val rk{ref.hash.size(), const_cast<std::uint8_t*>(ref.hash.data())};
+        MDB_val rv{sizeof(sbuf), sbuf};
+        if (int drc = mdb_del(txn, referencing_, &rk, &rv); drc != MDB_SUCCESS && drc != MDB_NOTFOUND)
+          fail_rc("del referencing(prune)", drc);
+      }
+      MDB_val hk{ce.hash.size(), const_cast<std::uint8_t*>(ce.hash.data())};
+      if (int drc = mdb_del(txn, clock_index_, &hk, nullptr); drc != MDB_SUCCESS && drc != MDB_NOTFOUND)
+        fail_rc("del clock_index(prune)", drc);
+      check(mdb_del(txn, clock_events_, &sk, nullptr), "del clock_event(prune)");
+    }
+    check(mdb_txn_commit(txn), "txn_commit(prune)");
+  } catch (...) {
+    mdb_txn_abort(txn);
+    throw;
+  }
+}
+
 void LmdbStore::seed_chain_tips() {
   chain_tip_seq_.clear();
+  chain_seqs_.clear();
   for_each(env_, clock_events_, [&](const MDB_val& k, const MDB_val& v) {
     const std::uint64_t seq = get_u64_be(static_cast<const unsigned char*>(k.mv_data));
     domain::Bytes bytes = to_bytes(v);
     wire::Reader r(bytes);
     const domain::ClockEvent c = r.clock_event();
     chain_tip_seq_[c.chain] = seq;  // keys ascend, so the last seen per chain is its newest
+    chain_seqs_[c.chain].push_back(seq);  // ascending → oldest-first, ready for prune
   });
 }
 
@@ -551,6 +613,7 @@ void LmdbStore::reset() {
   next_event_seq_ = 0;
   next_clock_seq_ = 0;
   chain_tip_seq_.clear();
+  chain_seqs_.clear();
 }
 
 void LmdbStore::grow_map() {

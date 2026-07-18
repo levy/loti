@@ -118,3 +118,50 @@ TEST_CASE("cross-node bounds discovery completes and validates with multiple cha
   REQUIRE(bounds_cb.completed);
   CHECK(bounds_cb.lower <= bounds_cb.upper);
 }
+
+TEST_CASE("pruning: a chain's ring bounds its clock-event count") {
+  harness::World w;
+  NodeConfig cfg;
+  cfg.chains.push_back(ChainConfig{/*interval=*/1, /*keep=*/4});
+  Node& n = w.add_node(1, cfg);
+
+  for (int i = 0; i < 20; ++i) {
+    w.set_now(w.now() + 1);
+    n.create_clock_event(0);  // prunes chain 0 to keep=4 after each tick
+  }
+  CHECK(w.store_of(1).clock_event_count() == 4);            // count stays flat at the ring size
+  REQUIRE(w.store_of(1).latest_clock_event(0).has_value());  // the tip is retained
+}
+
+TEST_CASE("pruning: an old event stays boundable via a coarser chain after the fine chain is pruned") {
+  harness::World w;
+  NodeConfig cfg;
+  cfg.chains.push_back(ChainConfig{/*interval=*/1, /*keep=*/3});  // chain 0: fast, small ring
+  cfg.chains.push_back(ChainConfig{/*interval=*/1, /*keep=*/0});  // chain 1: coarse, unbounded
+  Node& n = w.add_node(1, cfg);
+  auto tick = [&](std::uint32_t ch) { w.set_now(w.now() + 1); n.create_clock_event(ch); };
+
+  tick(0);
+  tick(0);
+  tick(1);
+  const auto e = n.publish_event({0xE0});
+  CHECK(e.referenced_events.size() == 2);  // anchored into both chains
+  tick(1);                                 // chain-1 upper pin for e
+  for (int i = 0; i < 10; ++i) tick(0);    // churn chain 0 past its ring → e's chain-0 pins prune away
+
+  auto& store = w.store_of(1);
+  CHECK(store.clock_event_count() == 5);  // chain 0 pinned at 3 + chain 1's 2 events
+
+  harness::RecordingChain cb;
+  n.discover_event_chain(e, cb);  // own-event discovery: local lower + upper bounds
+  w.pump();
+  REQUIRE(cb.completed);
+  CHECK_FALSE(cb.aborted);
+  CHECK(cb.chain.event.hash == e.hash);
+  // Chain 0's pins for e were pruned, so the enclosing chain fell back to chain 1 — the event
+  // is still boundable, just at the coarser resolution. This is the whole feature.
+  REQUIRE(cb.chain.lower_bound.size() >= 1);
+  REQUIRE(cb.chain.upper_bound.size() >= 1);
+  for (const auto& ce : cb.chain.lower_bound) CHECK(ce.chain == 1);
+  for (const auto& ce : cb.chain.upper_bound) CHECK(ce.chain == 1);
+}

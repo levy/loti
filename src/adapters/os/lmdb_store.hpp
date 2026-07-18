@@ -11,10 +11,12 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <deque>
 #include <map>
 #include <optional>
 #include <stdexcept>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include <lmdb.h>
@@ -115,7 +117,7 @@ class LmdbStore final : public ports::Store {
     MDB_txn* txn_;
     std::uint64_t event_seq_;
     std::uint64_t clock_seq_;
-    std::map<std::uint32_t, std::uint64_t> pending_chain_tips_;  // chain -> newest seq this batch
+    std::vector<std::pair<std::uint32_t, std::uint64_t>> pending_chain_appends_;  // (chain, seq)
   };
 
   // Begin a write transaction. Throws if a batch cannot be started.
@@ -128,6 +130,7 @@ class LmdbStore final : public ports::Store {
   void update_clock_event(const domain::LocalClockEvent&) override;
   void put_neighbor(const domain::Neighbor&) override;
   void put_route(domain::NodeId destination, domain::NodeId next_hop) override;
+  void prune_chain(std::uint32_t chain, std::size_t keep) override;
 
   // ---- ports::Store: reads (each in its own read txn; the mmap keeps them zero-copy) ----
   [[nodiscard]] std::optional<domain::Event> event_by_hash(const domain::EventHash&) const override;
@@ -147,7 +150,7 @@ class LmdbStore final : public ports::Store {
   // order; neighbors/routes keyed by node id. (The unreferenced set is not stored — the
   // Node rederives it from the clock events on load.)
   [[nodiscard]] std::vector<domain::Event> load_events() const;
-  [[nodiscard]] std::vector<domain::LocalClockEvent> load_clock_events() const;
+  [[nodiscard]] std::vector<domain::LocalClockEvent> load_clock_events() const override;
   [[nodiscard]] std::map<domain::NodeId, domain::Neighbor> load_neighbors() const override;
   [[nodiscard]] std::map<domain::NodeId, domain::NodeId> load_routes() const override;
 
@@ -206,9 +209,13 @@ class LmdbStore final : public ports::Store {
   std::uint64_t next_event_seq_ = 0;  // next unused key in `events`
   std::uint64_t next_clock_seq_ = 0;  // next unused key in `clock_events`
 
-  // In-RAM per-chain tip: chain/level -> seq of that chain's newest clock event. Seeded at
-  // open and advanced on each durable commit; backs latest_clock_event(chain).
+  // In-RAM per-chain indices, seeded at open and maintained on each durable commit:
+  //  - chain_tip_seq_: chain/level -> seq of that chain's newest clock event (backs
+  //    latest_clock_event(chain));
+  //  - chain_seqs_: chain -> its live seqs oldest-first (backs prune_chain, which pops the
+  //    front and deletes the record + its index entries).
   std::map<std::uint32_t, std::uint64_t> chain_tip_seq_;
+  std::map<std::uint32_t, std::deque<std::uint64_t>> chain_seqs_;
 };
 
 }  // namespace loti::os

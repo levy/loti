@@ -37,6 +37,11 @@ class Store {
   virtual void update_clock_event(const domain::LocalClockEvent&) = 0;
   virtual void put_neighbor(const domain::Neighbor&) = 0;
   virtual void put_route(domain::NodeId destination, domain::NodeId next_hop) = 0;
+  // Ring-prune chain `chain` down to its newest `keep` clock events, deleting the oldest
+  // (and their index / reverse-index entries). `keep == 0` is a no-op (unbounded). Deleting
+  // clock events makes seqs sparse; reads by live seq (via clock_events_referencing) stay
+  // valid because the pruned seqs are removed from the reverse index too.
+  virtual void prune_chain(std::uint32_t chain, std::size_t keep) = 0;
 
   // ---- reads -------------------------------------------------------------------------
   [[nodiscard]] virtual std::optional<domain::Event> event_by_hash(
@@ -61,6 +66,9 @@ class Store {
 
   [[nodiscard]] virtual std::size_t event_count() const = 0;
   [[nodiscard]] virtual std::size_t clock_event_count() const = 0;
+  // All live local clock events in ascending seq order (gap-tolerant after pruning). Used by
+  // snapshot(), which cannot assume a dense 0..count-1 seq range once a chain has been pruned.
+  [[nodiscard]] virtual std::vector<domain::LocalClockEvent> load_clock_events() const = 0;
 
   // Bulk read-back of the small overlay state, loaded into the Node's working set at
   // startup (neighbors carry their learned last-clock-event hash across a restart).

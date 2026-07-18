@@ -248,22 +248,24 @@ seq / gap-tolerant storage is deferred to Part 3 (pruning), which is the first t
 **Risk:** medium — realized. Single-chain (`num_chains == 1`) is byte-for-byte the old behavior
 (all existing tests pass unchanged); `test_chains.cpp` drives 2 chains.
 
-### Part 3 — Conservative-pruning ring (the store)
+### Part 3 — Conservative-pruning ring (the store) ✅ (3a/3b) · 3c/3d pending
 
-- [ ] **3a.** LMDB `clock_events` keying gains the chain/level so per-chain range scans are cheap
-  (schema in [src/adapters/os/lmdb_store.hpp](../../src/adapters/os/lmdb_store.hpp)). Seq stays
-  dense per chain.
-- [ ] **3b.** Per-chain **ring prune**: when chain ℓ exceeds `C` clock events, drop the oldest
-  (and its `clock_index` entries). Assert the conservative-pruning invariant in a debug check
-  (every event referenced by a pruned fast tick is still referenced by a retained slower tick).
-- [ ] **3c.** Implement `db gc [--keep <dur>]` ([doc/cli.md:331](../../doc/cli.md)) to run the
-  ring prune (plus the already-specified trim of expired discovery caches). `--keep` overrides
-  per-chain `C` by age.
-- [ ] **3d.** Rewrite the `db stat` retention string and `store.retain` config to the new
-  invariant ([src/app/lotid/lotid.cpp](../../src/app/lotid/lotid.cpp),
-  [doc/cli.md:433](../../doc/cli.md)).
+- [x] **3a.** Store is now **gap-tolerant**: clock events keyed by a monotonic seq (`std::map`
+  in-memory; keyed record in LMDB) — pruning deletes records, leaving sparse seqs. Reads by live
+  seq (via `clock_events_referencing`) stay valid because prune removes the pruned seqs' reverse
+  -index dups too. Per-chain ordering (`chain_seqs_`) + tip (`chain_tip_seq_`) are in-RAM,
+  seeded at open. `snapshot()` and `latest_clock_event()` were made gap-tolerant.
+- [x] **3b.** `Store::prune_chain(chain, keep)` drops the oldest chain-ℓ clock events (record +
+  `clock_index` + `referencing` dups). `Node::create_clock_event(chain)` calls it after each tick
+  when `keep > 0`. Conservative by construction (events pin into every chain), verified end-to-end
+  by `test_chains.cpp`: after churning chain 0 past its ring, an old event is **still boundable via
+  chain 1**, and the discovered enclosing chain is all chain 1.
+- [ ] **3c.** `db gc [--keep <dur>]` in `lotid` — run the per-chain ring prune.
+- [ ] **3d.** `db stat` retention string / `store.retain` config → the new invariant. Also switch
+  `lotid` to a default multi-resolution schedule (until now it runs a single unbounded chain).
 
-**Risk:** medium. Prune is a bounded range-delete; the invariant check is the safety net.
+**Risk:** medium — realized. Prune is a bounded delete; the reverse-index cleanup is what keeps
+discovery correct (a pruned ref resolves to nullopt and is skipped, selecting the finest survivor).
 
 ### Part 4 — Discovery over multiple chains ✅ (4a/4b) · 4c deferred
 
