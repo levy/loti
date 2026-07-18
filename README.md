@@ -168,6 +168,16 @@ The CLI locates the daemon via `--control <sock>` (or `$LOTI_CONTROL`, default `
 end-to-end by [test/acceptance/run.sh](test/acceptance/run.sh) (restart survival, backup/restore,
 a multi-node notary proof over real UDP).
 
+### Running on a Raspberry Pi (embedded)
+
+`lotid` is small and dependency-light enough to run always-on as a node on a **~$15 Raspberry
+Pi Zero**. The DAG is read through a page-cache-backed store, so a node's memory stays bounded
+as it grows. [doc/embedded.md](doc/embedded.md) is the full guide: cross-compiling for
+**aarch64** (Zero 2 W) and **ARMv6** (Zero / Zero W) with the toolchains in
+[cmake/](cmake/) and [scripts/build-cross.sh](scripts/build-cross.sh), the recommended Pi flags
+(`--store-mapsize`, `--store-sync-interval` for SD-card wear), and the honest limits (the 32-bit
+DAG-lifetime ceiling, cold-read latency, microSD wear).
+
 ## License
 
 GNU General Public License v3 — see [LICENSE](LICENSE). Copyright (c) 2018 Levente Mészáros.

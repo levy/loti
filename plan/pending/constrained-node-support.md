@@ -180,7 +180,7 @@ Tell users — in the project documentation **and** the GitHub Pages landing pag
 match what is **actually implemented** at the time — if D is still pending, state the RAM-growth caveat
 plainly rather than implying bounded memory.
 
-- [ ] **E1.** New `doc/embedded.md` — the full guide:
+- [x] **E1.** New `doc/embedded.md` — the full guide:
   - **Why it fits** — lean C++20 core + vendored LMDB, a single-threaded epoll reactor, no runtime deps
     beyond libc/OpenSSL, a small static-ish binary; a node is cheap, low-power, always-on; proofs are
     portable and verified offline.
@@ -189,14 +189,18 @@ plainly rather than implying bounded memory.
   - **Targets** — Zero 2 W (aarch64, the recommended long-life target) vs Zero / Zero W (ARMv6, 32-bit).
   - **Limits (honest)** — 512 MB RAM (bounded once Part D lands; until then, note the growth caveat);
     the 32-bit ~2 GiB mmap/DAG ceiling; microSD wear + the sync tradeoff (Part C); WiFi-only on Zero W;
-    cold-read latency paging old events from SD.
-- [ ] **E2.** README `## Building and running`: add a short "Running on a Raspberry Pi (embedded)"
-  subsection linking to `doc/embedded.md` (the build mechanics from B6 live in the guide, not inline).
-- [ ] **E3.** Landing page (`index.html`): a concise callout in the **"What it takes"** part of the
+    cold-read latency paging old events from SD. *Done — written for the post-D world (RAM bounded),
+    with the sync-tradeoff table and the full cross-build/sysroot walkthrough (B6).*
+- [x] **E2.** README `## Building and running`: add a short "Running on a Raspberry Pi (embedded)"
+  subsection linking to `doc/embedded.md` (the build mechanics from B6 live in the guide, not inline). *Done.*
+- [x] **E3.** Landing page (`index.html`): a concise callout in the **"What it takes"** part of the
   `#costs` section — "a node runs on a ~$15 Raspberry Pi Zero" as a selling point (cheap / low-power /
   always-on), matching the page's tone, linking to the guide. Keep it self-contained (single static file).
-- [ ] **E4.** Cross-check every figure/claim against the acceptance suite and on-Pi measurements (binary
-  size, steady-state RSS, DB growth rate) so the guide's numbers are measured, not aspirational.
+  *Done — one `<li>` in the cost panel linking to the guide; page stays a single static file.*
+- [x] **E4.** Cross-check every figure/claim against the acceptance suite and on-Pi measurements (binary
+  size, steady-state RSS, DB growth rate) so the guide's numbers are measured, not aspirational. *Done —
+  binary size measured on the x86-64 build host (Release stripped ≈0.6 MB) and explicitly caveated that
+  ARM sizes/RSS/DB-growth must be measured on-device; no aspirational figures quoted.*
 
 **Risk:** low. Public-facing — keep claims honest and tied to measured behavior. Finalize after A–D so
 the limits are accurate.
