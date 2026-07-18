@@ -51,6 +51,30 @@ Start here depending on what you want:
   - **event bounds discovery** — the enclosing chain's endpoint timestamps `(lower, upper)`;
   - **event order discovery** — compare two events' intervals → `-1`, `+1`, or `0`.
 
+## Bounded storage & scalable discovery
+
+Two capabilities keep a node viable as a long-lived, always-on service.
+
+- **Bounded storage.** Each node keeps several independent clock chains at geometrically spaced
+  resolutions — fine-grained for recent events, progressively coarser for older ones — and
+  ring-prunes each to a fixed capacity, so total on-disk storage stays **flat at a configurable
+  budget** — tens of MB on a Pi, tens of GB on a server. No event is ever dropped: old events stay
+  provably orderable and only lose time-bound *precision*, gracefully, with age — recent events are
+  pinned to the second, a decade-old event to about a minute, with a horizon of centuries. `lotid`
+  runs a sensible default schedule; `loti db gc` re-asserts the prune and `loti db stat` reports the
+  chains and retention. See
+  [doc/theory.md](doc/theory.md#bounding-storage-multi-resolution-clock-chains) and
+  [doc/cli.md](doc/cli.md).
+
+- **Scalable, time-aware discovery.** A proof has to trace the overlay *as it was during the target
+  event's time range*, not the current topology — so forwarding is a **time-dependent, pluggable,
+  bounded** routing decision: directed where a routing table exists, degrading to a bounded flood
+  (width, hop-limit, visited-set) over the *historical* neighbor set where it does not, so lookups
+  scale and survive peer churn. Soundness stays free — every returned chain is re-validated by the
+  math, so heuristic routing can only cost completeness, never correctness. See
+  [doc/dynamic-discovery.md](doc/dynamic-discovery.md) and the design in
+  [plan/pending/scalable-pluggable-discovery.md](plan/pending/scalable-pluggable-discovery.md).
+
 ## Simulation model
 
 Each host runs three co-located application modules; one helper module builds the overlay.
@@ -172,8 +196,10 @@ a multi-node notary proof over real UDP).
 
 `lotid` is small and dependency-light enough to run always-on as a node on a **~$15 Raspberry
 Pi Zero**. The DAG is read through a page-cache-backed store, so a node's memory stays bounded
-as it grows. [doc/embedded.md](doc/embedded.md) is the full guide: cross-compiling for
-**aarch64** (Zero 2 W) and **ARMv6** (Zero / Zero W) with the toolchains in
+as it grows — and its on-disk history is bounded too (see
+[Bounded storage & scalable discovery](#bounded-storage--scalable-discovery)), so the node runs
+indefinitely without filling the card. [doc/embedded.md](doc/embedded.md) is the full guide:
+cross-compiling for **aarch64** (Zero 2 W) and **ARMv6** (Zero / Zero W) with the toolchains in
 [cmake/](cmake/) and [scripts/build-cross.sh](scripts/build-cross.sh), the recommended Pi flags
 (`--store-mapsize`, `--store-sync-interval` for SD-card wear), and the honest limits (the 32-bit
 DAG-lifetime ceiling, cold-read latency, microSD wear).

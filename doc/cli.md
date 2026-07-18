@@ -463,7 +463,7 @@ loti verify order.loti
 - ~~What is the exact retention policy that keeps proofs reconstructible years later without
   unbounded storage growth (~3–30 GB/year of clock events per the paper)?~~ **Answered** by
   multi-resolution clock chains (see [`db gc`](#storage--maintenance) above and
-  [plan/pending/multi-resolution-clock-chains.md](../plan/pending/multi-resolution-clock-chains.md)):
+  [plan/done/multi-resolution-clock-chains.md](../plan/done/multi-resolution-clock-chains.md)):
   `N` independent clock chains at geometrically spaced intervals, each ring-pruned to a fixed
   `keep`, bound total clock-event storage to ≈ `chains · keep` — old events are never dropped,
   they degrade from exact to ≈ `a/C` precision of their age (`C` = events kept per chain) once
