@@ -52,6 +52,12 @@ void Daemon::initialize(int stage)
             config.chains.push_back(ChainConfig{/*interval=*/0, keep});
         simtime_t expiry(par("discoveryExpiryTime").doubleValue());
         config.discovery_expiry = expiry.raw();
+        // Discovery forwarding policy (Part 5): static single next hop, or the time-dependent flood.
+        config.discovery_hop_limit = static_cast<std::uint32_t>(par("discoveryHopLimit").intValue());
+        config.discovery_fanout = static_cast<std::size_t>(par("discoveryFanout").intValue());
+        config.discovery_routing = (par("discoveryRouting").stdstringValue() == "flood")
+                                       ? DiscoveryRouting::flood
+                                       : DiscoveryRouting::static_shortest_path;
         node_ = std::make_unique<Node>(
             nodeId_, NodePorts{clock_, scheduler_, transport_, rng_, signer_, telemetry_, store_},
             config);

@@ -332,13 +332,30 @@ adjacency is a later optimization); core builds clean + green.
 **Risk:** low–medium. **Done** — core builds clean + green; the flood is v1's primary path until a
 routing protocol fills the table.
 
-### Part 6 — Simulation & statistics (the tuning ground)
-- [ ] `NetworkConfigurator` fills the historical tables (or a churn scenario builds them over
-  time so the current overlay diverges from the historical one — the case this plan exists for).
-- [ ] Stats: **completion rate vs. routing-table fill fraction**, fan-out width, bandwidth,
-  interval tightness — sweep, ship the winners as production defaults.
+### Part 6 — Simulation & statistics (the tuning ground) — **DONE (with a key finding)**
+- [x] The sim `Daemon` reads three new NED params (`discoveryRouting` `"static"|"flood"`,
+  `discoveryFanout`, `discoveryHopLimit`) into `NodeConfig`; a new `[Config FloodChainDiscovery]`
+  in [sim/omnetpp.ini](../../sim/omnetpp.ini) runs the flood policy on the bundled 57-node network
+  with an **empty routing table** (`NetworkConfigurator` fills only the static table, which the
+  flood ignores — so this is exactly the "routing protocols come later" case). Built + run under
+  **OMNeT++ 6.4 / INET 4.7**.
+- [x] **Result — the flood works at scale.** Over a 15 s window (84 chain discoveries started):
+  flood (empty routing table) **completed 14 / aborted 62**; static shortest-path (full routing
+  table) **completed 18 / aborted 58**. The flood, with *no routing table*, lands within a few
+  points of static routing — both limited by the same cross-link **maturity** ceiling (1 s expiry,
+  early events dominate a short run), not by the routing mechanism. Existing started/aborted/
+  completed signals + INET's packet stats already give completion-rate and bandwidth, so no new core
+  telemetry was needed (per-fan-out / interval-vs-age stats remain a noted extra). The Browser still
+  passes `TimeRange::all()` (Part 2 stopgap); a real per-event window would tighten the flood.
+- [x] **Key finding — the flood needs tight bounds (no cross-branch dedup).** The first run
+  (`fanout=4, hop_limit=20`) ran away (99 % CPU, no progress in 5 min): with only a per-copy visited
+  set — cross-branch dedup is the beam layer's job (deferred) — each node re-floods every distinct
+  copy, so the flood is **exponential in the hop limit** on a dense graph. Tight bounds
+  (`fanout=2, hop_limit=8` ≈ diameter) fixed it: 15 s sim in **0.19 s** wall-clock (132 k events).
 
-**Risk:** low. Validates the design end-to-end.
+**Risk:** low. **Done** — real OMNeT++ run validates the flood on the 57-node network. Churn
+(a dynamically re-wired overlay) was **not** simulated — deferred; the static-topology run already
+exercises "flood with an empty routing table", which is the mechanism this plan adds.
 
 ### Part 7 — Documentation
 - [ ] [doc/dynamic-discovery.md](../../doc/dynamic-discovery.md): this substrate under the beam.
@@ -353,9 +370,15 @@ routing protocol fills the table.
 ## Open questions / risks
 
 - **Directed scalability depends on *something* filling the routing table.** Out of scope here; the
-  plan only guarantees graceful degradation (undirected bounded walk) without it. The undirected
-  fallback must stay cheap enough to be viable on its own on realistic topologies — validate in
-  Part 6.
+  plan only guarantees graceful degradation (undirected bounded walk) without it. **Part 6 validated
+  this** — the flood matches static routing's completion rate on the 57-node net *with an empty
+  routing table* — **but only under tight bounds** (see the next point).
+- **The flood is exponential without cross-branch dedup (found in Part 6).** With only a per-copy
+  visited set, each node re-floods every *distinct* copy it receives, so on a dense graph the packet
+  count blows up with the hop limit (`fanout=4, hop_limit=20` made no progress in 5 min). Mitigations:
+  keep `hop_limit ≈ diameter` and `fanout` small (works today), or add **per-node discovery-seen
+  state** to deduplicate reconverging branches (the beam layer — deferred). Until then the hop limit
+  is a hard *safety* knob, not just a tuning one.
 - **Delivery to a former neighbor** relies on the retained address. If that node moved / its
   address changed, delivery fails → the branch dies → graceful (soundness intact). Accepted per
   Decision 1.

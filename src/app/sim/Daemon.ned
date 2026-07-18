@@ -40,6 +40,11 @@ simple Daemon like IApp
         int clockChainFactor = default(4);
         int clockChainKeep = default(512);
         double discoveryExpiryTime @unit(s);
+        // Discovery forwarding policy: "static" (the single shortest-path next hop) or "flood"
+        // (the time-dependent neighbor-history flood, width-capped). See routing/discovery_router.hpp.
+        string discoveryRouting = default("static");
+        int discoveryFanout = default(0);    // flood fan-out width cap k (0 = unlimited)
+        int discoveryHopLimit = default(0);  // flood hop limit (0 = unlimited)
         @display("i=block/app");
         @signal[clockEventCreated];
         @signal[clockEventsRetained];
