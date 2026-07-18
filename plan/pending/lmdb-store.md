@@ -112,14 +112,20 @@ Work in the dedicated `lmdb-store` worktree at `../loti-lmdb-store`, not the mai
   the env (`MDB_NOSUBDIR` single file, 16 GiB default mapsize, 8 named sub-DBs), stamps/checks the
   `meta` format version, RAII close. doctest `test_lmdb_store.cpp`: fresh-open stamps v1, reopen reads
   it back. Wired into the test target (links `loti_lmdb`).
-- [ ] **Step 2 — Write path.** `append_event`, `append_clock_event`, `put_neighbor`,
-  `remove_neighbor`, `put_route`, mark/clear `unreferenced`, all in durable txns reusing the wire
-  codec. doctest: write a mix of records, reopen, read raw back → equal.
-- [ ] **Step 3 — Replay / bulk-load.** Add a `Node` load API (e.g. `Node::load(...)` or a
-  `LoadSession`) that populates the same members `restore()` does and calls the **same private index
-  rebuild**; reimplement `restore(blob)` on top of it so behavior is provably identical.
-  `LmdbStore::replay()` streams records into it. doctest: build a DAG, persist incrementally, reopen
-  → loaded state deep-equals the source (event/clock counts, hashes, neighbors, routes).
+- [x] **Step 2 — Write path + read-back.** `LmdbStore::Batch` groups mutations into one durable
+  commit: `append_event`/`append_clock_event` (assign a monotonic seq, write record + hash→seq index
+  atomically, reusing the wire codec), `mark/clear_unreferenced`, `put_neighbor`, `put_route`. Seq
+  counters seed from the logs on open and advance only on commit (aborted batch = no gap). Added the
+  bulk readers `load_events`/`load_clock_events`/`load_unreferenced`/`load_neighbors`/`load_routes` +
+  `event_count`/`clock_event_count`. doctest: committed round-trip (events, clock events, neighbor,
+  route, unreferenced) survives reopen; aborted batch leaves nothing and no seq gap. (`remove_neighbor`
+  skipped — the Node never removes a neighbor.)
+- [ ] **Step 3 — Node bulk-load from the store.** The store-side readers exist (Step 2). Add a `Node`
+  load API (e.g. `Node::load(events, clock_events, unreferenced_hashes, neighbors, routes)`) that
+  populates the same members `restore()` does and calls the **same private index rebuild**; reimplement
+  `restore(blob)` on top of it so behavior is provably identical. The daemon feeds it the `load_*`
+  results at startup. doctest: build a DAG, persist incrementally via a Batch, reopen, load into a
+  fresh Node → its `snapshot()` equals the original's.
 - [ ] **Step 4 — Node persistence listener.** There is **no** general Node observer to reuse:
   `ChainCallback`/`BoundsCallback`/`OrderCallback` (`src/core/node.hpp:27-45`) are per-discovery result
   callbacks the daemon passes into `discover_*`, not lifecycle hooks. So add a dedicated
@@ -198,3 +204,7 @@ Work in the dedicated `lmdb-store` worktree at `../loti-lmdb-store`, not the mai
 - **Design correction (found in Step 1):** no general Node observer exists — the `*Callback` classes
   are per-discovery result callbacks. Step 4 will add a dedicated nullable `PersistenceListener`
   driven from `insert_event`/`insert_clock_event`. Plan Step 4 / risks updated accordingly.
+- **Step 2 done** — `LmdbStore::Batch` write txn (append event/clock event with an atomic hash index,
+  unreferenced set, neighbor/route upserts), seq counters that seed on open and advance only on
+  commit, plus the `load_*` bulk readers and entry counts. Round-trip and abort-no-gap tests pass
+  (21 assertions, no warnings). Step 3 narrowed to the Node-side load API since the readers now exist.

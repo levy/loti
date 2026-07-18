@@ -11,7 +11,9 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <map>
 #include <string>
+#include <vector>
 
 #include <lmdb.h>
 
@@ -35,6 +37,57 @@ class LmdbStore {
   LmdbStore(const LmdbStore&) = delete;
   LmdbStore& operator=(const LmdbStore&) = delete;
 
+  // A write transaction grouping several mutations into one durable commit (which
+  // amortizes the fsync). LMDB permits a single writer at a time, so at most one Batch
+  // may be open per store. A Batch left uncommitted on destruction is aborted, and the
+  // store's sequence counters are only advanced by a successful commit() — so an
+  // aborted batch leaves no gaps.
+  class Batch {
+   public:
+    ~Batch();
+    Batch(const Batch&) = delete;
+    Batch& operator=(const Batch&) = delete;
+
+    // Append an event / local clock event to its log; returns the assigned sequence
+    // number. Also writes the hash→seq index entry, atomically in the same txn.
+    std::uint64_t append_event(const domain::Event&);
+    std::uint64_t append_clock_event(const domain::LocalClockEvent&);
+
+    // Set/clear an event's membership in the unreferenced-event set (keyed by hash).
+    void mark_unreferenced(const domain::EventHash&);
+    void clear_unreferenced(const domain::EventHash&);
+
+    // Upsert overlay state.
+    void put_neighbor(const domain::Neighbor&);
+    void put_route(domain::NodeId destination, domain::NodeId next_hop);
+
+    // Durably commit the transaction. The Batch is spent afterwards.
+    void commit();
+
+   private:
+    friend class LmdbStore;
+    Batch(LmdbStore& store, MDB_txn* txn);
+
+    LmdbStore& store_;
+    MDB_txn* txn_;
+    std::uint64_t event_seq_;
+    std::uint64_t clock_seq_;
+  };
+
+  // Begin a write transaction. Throws if a batch cannot be started.
+  [[nodiscard]] Batch begin();
+
+  // Bulk read-back for startup replay. Events and clock events come back in sequence
+  // order; neighbors/routes keyed by node id; unreferenced as the set of event hashes.
+  [[nodiscard]] std::vector<domain::Event> load_events() const;
+  [[nodiscard]] std::vector<domain::LocalClockEvent> load_clock_events() const;
+  [[nodiscard]] std::vector<domain::EventHash> load_unreferenced() const;
+  [[nodiscard]] std::map<domain::NodeId, domain::Neighbor> load_neighbors() const;
+  [[nodiscard]] std::map<domain::NodeId, domain::NodeId> load_routes() const;
+
+  [[nodiscard]] std::size_t event_count() const;
+  [[nodiscard]] std::size_t clock_event_count() const;
+
   [[nodiscard]] const std::string& path() const noexcept { return path_; }
   [[nodiscard]] std::uint64_t format_version() const noexcept { return format_version_; }
 
@@ -53,6 +106,8 @@ class LmdbStore {
   MDB_dbi routes_ = 0;
 
   std::uint64_t format_version_ = 0;
+  std::uint64_t next_event_seq_ = 0;  // next unused key in `events`
+  std::uint64_t next_clock_seq_ = 0;  // next unused key in `clock_events`
 };
 
 }  // namespace loti::os
