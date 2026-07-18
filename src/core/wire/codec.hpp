@@ -90,6 +90,7 @@ class Reader {
 
   std::vector<domain::EventReference> refs() {
     std::uint32_t n = u32();
+    ensure_count(n, 12);  // each ref is ≥12 wire bytes (u64 creator + u32 blob length)
     std::vector<domain::EventReference> out;
     out.reserve(n);
     for (std::uint32_t i = 0; i < n; ++i) {
@@ -119,8 +120,12 @@ class Reader {
   domain::EventChain chain() {
     domain::EventChain ch;
     ch.event = event();
-    for (std::uint32_t n = u32(), i = 0; i < n; ++i) ch.lower_bound.push_back(clock_event());
-    for (std::uint32_t n = u32(), i = 0; i < n; ++i) ch.upper_bound.push_back(clock_event());
+    std::uint32_t lo = u32();
+    ensure_count(lo, 44);  // each clock event is ≥44 wire bytes
+    for (std::uint32_t i = 0; i < lo; ++i) ch.lower_bound.push_back(clock_event());
+    std::uint32_t hi = u32();
+    ensure_count(hi, 44);
+    for (std::uint32_t i = 0; i < hi; ++i) ch.upper_bound.push_back(clock_event());
     return ch;
   }
 
@@ -133,6 +138,7 @@ class Reader {
 
   std::vector<domain::NodeId> node_ids() {
     std::uint32_t n = u32();
+    ensure_count(n, 8);  // each id is 8 wire bytes
     std::vector<domain::NodeId> out;
     out.reserve(n);
     for (std::uint32_t i = 0; i < n; ++i) out.push_back(u64());
@@ -150,6 +156,13 @@ class Reader {
   }
   void need(std::size_t n) const {
     if (pos_ + n > buf_.size()) throw std::runtime_error("wire: truncated datagram");
+  }
+  // Reject an element count that could not possibly fit in the remaining bytes, BEFORE
+  // reserving for it — an attacker-supplied length prefix must not trigger a huge
+  // allocation. Division (not multiplication) avoids overflow on a 32-bit size_t.
+  void ensure_count(std::uint32_t n, std::size_t min_elem_bytes) const {
+    if (n > (buf_.size() - pos_) / min_elem_bytes)
+      throw std::runtime_error("wire: element count exceeds datagram");
   }
   const domain::Bytes& buf_;
   std::size_t pos_ = 0;

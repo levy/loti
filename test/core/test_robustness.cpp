@@ -11,6 +11,8 @@
 //     must abort the discovery, not crash the node.
 #include "doctest.h"
 
+#include <stdexcept>
+
 #include "harness/world.hpp"
 #include "wire/codec.hpp"
 #include "wire/packets.hpp"
@@ -43,6 +45,21 @@ TEST_CASE("T1: malformed datagrams are dropped, never fatal") {
     CAPTURE(datagram.size());
     CHECK_NOTHROW(n.on_packet_received(datagram));
   }
+}
+
+// A length prefix must be sanity-checked against the datagram before any allocation:
+// otherwise a ~20-byte packet claiming billions of elements triggers a multi-GB reserve
+// (a down payment on Phase 3.1).
+TEST_CASE("T1b: an implausible length prefix is rejected without a huge allocation") {
+  domain::Bytes d(53, 0);                          // a chain_request header up to the path count
+  d[0] = 0x01;                                     // wire::Type::chain_request
+  for (int i = 0; i < 4; ++i) d.push_back(0xFF);   // path node-id count = 0xFFFFFFFF
+  CHECK_THROWS_AS(wire::decode(d), std::runtime_error);
+
+  harness::World w;
+  Node& n = w.add_node(domain::NodeId(1), NodeConfig{});
+  n.add_neighbor(domain::NodeId(2));
+  CHECK_NOTHROW(n.on_packet_received(d));          // and it is simply dropped at the entry point
 }
 
 // --- T2 -------------------------------------------------------------------

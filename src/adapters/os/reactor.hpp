@@ -14,6 +14,7 @@
 #include <cerrno>
 #include <climits>
 #include <cstdint>
+#include <cstdio>
 #include <ctime>
 #include <functional>
 #include <map>
@@ -86,12 +87,25 @@ class Reactor {
       }
       for (int i = 0; i < n; ++i) {
         auto it = readers_.find(events[i].data.fd);
-        if (it != readers_.end()) it->second();
+        if (it != readers_.end()) safe_call(it->second);
       }
     }
   }
 
  private:
+  // Run one reactor callback, containing any exception it throws. A timer or fd handler
+  // that fails (a bad packet, a transient I/O error) must never unwind out of the event
+  // loop and terminate the daemon — it is logged and dropped (hardening plan, Phase 1.1).
+  static void safe_call(const std::function<void()>& cb) {
+    try {
+      cb();
+    } catch (const std::exception& e) {
+      std::fprintf(stderr, "[lotid] reactor: dropped a failing callback: %s\n", e.what());
+    } catch (...) {
+      std::fprintf(stderr, "[lotid] reactor: dropped a failing callback (unknown)\n");
+    }
+  }
+
   static domain::Timestamp now_ns() {
     timespec ts{};
     clock_gettime(CLOCK_REALTIME, &ts);
@@ -105,7 +119,7 @@ class Reactor {
       auto cb = std::move(it->second.second);
       timer_due_.erase(it->second.first);
       timers_.erase(it);
-      cb();  // one-shot; may arm new timers
+      safe_call(cb);  // one-shot; may arm new timers
       if (!running_) break;
     }
   }

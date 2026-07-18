@@ -306,7 +306,13 @@ class Lotid final : public ChainCallback, public BoundsCallback, public OrderCal
       for (;;) {
         domain::Bytes datagram = transport_.receive();
         if (datagram.empty()) break;
-        node_->on_packet_received(datagram);
+        // on_packet_received already drops malformed datagrams; this catch is a
+        // belt-and-suspenders backstop so one bad packet never breaks the drain loop.
+        try {
+          node_->on_packet_received(datagram);
+        } catch (const std::exception& e) {
+          std::fprintf(stderr, "[lotid] dropped a bad datagram: %s\n", e.what());
+        }
       }
     });
     reactor_.add_reader(STDIN_FILENO, [this] { on_stdin_readable(); });
@@ -620,7 +626,7 @@ class Lotid final : public ChainCallback, public BoundsCallback, public OrderCal
       stdin_buf_.erase(0, nl + 1);
       const auto args = tokenize(line);
       if (args.empty()) continue;
-      const Reply r = dispatch(args, -1);
+      const Reply r = dispatch_guarded(args, -1);
       if (!r.error.empty())
         std::printf("error(%d): %s\n", r.code, r.error.c_str());
       else
@@ -662,8 +668,19 @@ class Lotid final : public ChainCallback, public BoundsCallback, public OrderCal
       respond(fd, {kUsage, false, "empty request", {}});
       return;
     }
-    const Reply r = dispatch(args, fd);
+    const Reply r = dispatch_guarded(args, fd);
     if (!r.deferred) respond(fd, r);  // deferred replies come from a discovery callback
+  }
+
+  // Run a command, containing any exception it throws into an ERR reply. A malformed
+  // argument (e.g. `peer add <bad-ip>`, which throws from the transport) must fail the
+  // one command, not the whole daemon (hardening plan, Phase 1.5).
+  Reply dispatch_guarded(const std::vector<std::string>& args, int reply_fd) {
+    try {
+      return dispatch(args, reply_fd);
+    } catch (const std::exception& e) {
+      return Reply{kUsage, false, std::string("command failed: ") + e.what(), {}};
+    }
   }
   void respond(int fd, const Reply& r) {
     if (!client_buf_.count(fd)) return;  // client already gone
