@@ -4,8 +4,8 @@ This document describes how to structure LOTI so that **a single implementation 
 protocol** serves two very different runtimes from the same source:
 
 1. a **discrete-event simulation** (OMNeT++ / INET) for experimenting with behavior on large
-   networks and collecting statistics — what the repository is today
-   ([implementation.md](implementation.md), [simulation.md](simulation.md)); and
+   networks and collecting statistics ([implementation.md](implementation.md),
+   [simulation.md](simulation.md)); and
 2. a **real, deployable node** (`lotid`) driven by the [product CLI](cli.md) (`loti`).
 
 The two runtimes disagree about almost every *environmental* concern — time, networking,
@@ -15,14 +15,13 @@ the DAG grows, how the three discoveries route and build chains, and how chains 
 The architecture's whole job is to isolate the first set of concerns so the second can be
 written once.
 
-> **Status (MVP, 2026-07):** this architecture is **realized**. The pure core (`src/core/`, no
-> OMNeT++/INET/OS deps) runs behind six ports; the simulation drives it via `src/adapters/sim/` +
-> `src/app/sim/`, and the production node via `src/adapters/os/` + `src/app/lotid` + `src/app/loti`. Both targets
-> are green: the OMNeT++ `SimpleNetwork` example runs on the core with unchanged statistics, and
-> the production node passes an end-to-end acceptance suite (restart survival, backup/restore,
-> and a multi-node offline-verifiable proof over real UDP —
-> [test/acceptance/run.sh](../test/acceptance/run.sh)). The MVP command surface and its deviations
-> from the design are tracked in [cli.md → Implementation status](cli.md#implementation-status-mvp).
+> **The layout in one place:** the pure core lives in `src/core/` (no OMNeT++/INET/OS deps) and
+> runs behind six ports; the simulation drives it through `src/adapters/sim/` + `src/app/sim/`, and
+> the production node (`lotid`/`loti`) through `src/adapters/os/` + `src/app/lotid` + `src/app/loti`.
+> Both targets are covered in CI — the OMNeT++ `SimpleNetwork` example runs on the core, and the
+> production node passes the acceptance suite ([test/acceptance/run.sh](../test/acceptance/run.sh)).
+> The MVP command surface and where it deviates from this document are in
+> [cli.md → Implementation status](cli.md#implementation-status-mvp).
 
 ## The core idea: functional core, imperative shell
 
@@ -34,7 +33,7 @@ in simulation, and the RPC/CLI in production.
 
 ```
         ┌──────────────── frontends ────────────────┐
-        │  OMNeT++ apps (Publisher/Browser)   loti CLI ⇄ RPC server │
+        │  OMNeT++ apps (Publisher/Browser)   loti CLI ⇄ control socket │
         └───────────────┬───────────────────────┬────┘
                         │        core API        │
                 ┌───────▼────────────────────────▼───────┐
@@ -44,7 +43,7 @@ in simulation, and the RPC/CLI in production.
                 │  hashing · canonical serialization      │
                 └───────┬───────────────────────┬─────────┘
                         │        ports           │   (abstract interfaces)
-        Clock · Scheduler · Transport · Rng · Store · Signer · Config · Telemetry
+        Clock · Scheduler · Transport · Rng · Signer · Telemetry
                         │                       │
         ┌───────────────▼───────┐   ┌───────────▼──────────────┐
         │  simulation adapters  │   │   production adapters     │
@@ -78,8 +77,7 @@ Three properties fall out of "core depends only on ports," and all three are loa
 the logic that is *identical* in both runtimes:
 
 - **Domain model** — `Event`, `ClockEvent`, `LocalClockEvent`, `EventReference`, `EventChain`,
-  and the discovery records, as plain structs (today these are OMNeT++ message classes in
-  [`types.hpp`](../src/core/domain/types.hpp); see [Migration](#migration-from-the-current-code)).
+  and the discovery records, as plain structs in [`types.hpp`](../src/core/domain/types.hpp).
 - **Hashing & canonical serialization** — SHA-256 over the fixed byte layout in
   `calculateEventHash` / `calculateClockEventHash`, using the already-portable header-only
   [`picosha2.hpp`](../src/core/hash/picosha2.hpp). The wire encoding of every packet lives here too, so both
@@ -100,8 +98,8 @@ singletons, no thread-locals, no `static` mutable data.
 
 ### Core public API
 
-The core exposes the same surface the current [`Daemon`](../src/core/node.hpp) exposes to its
-sibling modules, plus the peering hooks — this is what both frontends call:
+[`Node`](../src/core/node.hpp) exposes this surface to the frontends (the shape below is
+illustrative; the code uses `snake_case`):
 
 ```cpp
 class Node {
@@ -131,61 +129,52 @@ environment directly.
 Each port is a small abstract interface. The core is constructed with a bundle of port
 implementations (`Ports`), so swapping runtimes is swapping that bundle.
 
-| Concern | Core port (sketch) | Simulation adapter | Production adapter | Coupled today in `Daemon` |
-| --- | --- | --- | --- | --- |
-| **Time** | `Timestamp Clock::now()` | OMNeT++ `simTime()` | `system_clock::now()` | `simTime()` |
-| **Scheduling** | `TimerId Scheduler::after(Duration, cb)`, `cancel(TimerId)` | `scheduleAt` + self-messages | event loop / `timerfd` | `scheduleCreateClockEventTimer`, `purgeDiscoveriesTimer` |
-| **Transport** | `void Transport::send(NodeId, Bytes)`; delivers via `onPacketReceived` | `UdpSocket::sendTo` | real UDP / QUIC socket | `socket`, `sendToNeighbor` |
-| **Randomness** | `void Rng::fill(span)` (→ `salt()`) | seeded `intuniform` (reproducible) | CSPRNG | `generateSalt` (`intuniform`) |
-| **Storage** | `Store` — append/get events, clock chain, indices, discoveries | in-RAM vectors/maps | LMDB / RocksDB / SQLite | the `vector`/`map` members of `Daemon` |
-| **Identity/crypto** | `Signer::sign/verify`; `Hasher::sha256` (shared, deterministic) | stub or cheap keys | Ed25519 + keystore | none (hashing only, no signing) |
-| **Configuration** | `Duration Config::duration(key)`, `int Config::integer(key)`, … | NED `par()` / `omnetpp.ini` | `config.toml` + flags + env | `par("createClockEventInterval")` etc. |
-| **Telemetry** | `Telemetry::record(Signal, const Record&)` hooks | `emit(signal, obj)` → result recorders | structured logs + metrics | `emit(clockEventCreatedSignal, …)` etc. |
+| Concern | Core port | Simulation adapter | Production adapter |
+| --- | --- | --- | --- |
+| **Time** | `Timestamp Clock::now()` | OMNeT++ `simTime()` | `CLOCK_REALTIME` nanoseconds |
+| **Scheduling** | `Scheduler::after(Duration, cb)`, `cancel(TimerId)` | `scheduleAt` + self-messages | epoll reactor + a timer queue |
+| **Transport** | `Transport::send(NodeId, Bytes)` + `receive()` | INET `UdpSocket` (`BytesChunk`) | non-blocking UDP socket |
+| **Randomness** | `Rng::next_salt()` | seeded `intuniform` (reproducible) | `getrandom(2)` CSPRNG |
+| **Signing** | `Signer::sign/verify` | `NullSigner` (unsigned) | Ed25519 keystore (OpenSSL) |
+| **Telemetry** | `Telemetry::record(...)` hooks | scalar `@statistic` signals | structured stderr log lines |
 
-Notes:
+The DAG state and configuration are **not** ports: the `Node` holds its events, clock chain, and
+indices directly, and takes a small config struct. Production makes that state durable by
+snapshotting the whole DAG through the wire codec (the file-store adapter); the simulation keeps
+it in RAM. Hashing is shared, not swapped — it must be identical everywhere; only signing differs
+(unsigned in the simulation, Ed25519 in production).
 
-- **`Hasher` is shared, not swapped.** Hashing must be identical everywhere, so both runtimes
-  use the same implementation; only *keys/signatures* differ (stubbed in sim, real in prod).
-- **`Rng` has one interface, two guarantees.** In simulation it is the seeded OMNeT++ RNG so
-  runs replay exactly; in production it is a CSPRNG because salts (and keys) are
-  security-critical. The core just asks for a salt.
-- **`Store` is where "ephemeral vs durable" lives.** The simulation uses an in-RAM store (state
-  dies with the run, which is fine); production uses a persistent store that survives restarts
-  and backs every future proof. The core's access pattern is identical.
-- **Neighbor/routing state** is core state fed through `addNeighbor` / `learnRoute`. The
-  simulation's [`NetworkConfigurator`](../src/app/sim/NetworkConfigurator.cpp) computes it once globally;
-  the production peering subsystem calls the same methods as peers come and go.
+Neighbor/routing state is core state fed through `add_neighbor` / `learn_route`: the simulation's
+[`NetworkConfigurator`](../src/app/sim/NetworkConfigurator.cpp) computes it once globally; the
+production peering commands (`peer add`) call the same methods.
 
 ## Assembling the two runtimes
 
 ### Simulation target
 
-The existing OMNeT++ modules become **thin adapters**:
+The OMNeT++ modules are **thin adapters**:
 
-- [`Daemon`](../src/app/sim/Daemon.cpp) shrinks to: own a `Node`, construct it with the simulation port
-  bundle (`SimClock`, `SimScheduler`, `SimTransport`, `SimRng`, `InMemoryStore`, `StubSigner`,
-  `NedConfig`, `SignalTelemetry`), forward `handleMessage` self-messages to `Node::onTimer`,
-  forward `socketDataArrived` bytes to `Node::onPacketReceived`, and expose `Node`'s API to
+- [`Daemon`](../src/app/sim/Daemon.cpp) owns a `Node`, constructs it with the simulation port
+  adapters ([`src/adapters/sim/`](../src/adapters/sim)), forwards `handleMessage` self-messages to
+  the `Node`'s timer and received bytes to its packet handler, and exposes the `Node` API to
   `Publisher`/`Browser`.
-- [`Publisher`](../src/app/sim/Publisher.cpp) / [`Browser`](../src/app/sim/Browser.cpp) keep their timers but call
-  the `Node` API (`publishEvent`, `discover*`) instead of protocol internals.
-- [`NetworkConfigurator`](../src/app/sim/NetworkConfigurator.cpp) calls `addNeighbor`/`learnRoute` on each
-  node instead of writing private fields.
-- `SignalTelemetry` translates core telemetry hooks into the exact `@signal`/`@statistic`
-  declarations already in [`Daemon.ned`](../src/app/sim/Daemon.ned) — so all existing charts keep
-  working unchanged.
+- [`Publisher`](../src/app/sim/Publisher.cpp) / [`Browser`](../src/app/sim/Browser.cpp) run their
+  timers and call the `Node` API (`publish_event`, `discover_*`).
+- [`NetworkConfigurator`](../src/app/sim/NetworkConfigurator.cpp) calls `add_neighbor`/`learn_route`
+  on each node.
+- the simulation telemetry adapter emits the `@signal`/`@statistic` declarations in
+  [`Daemon.ned`](../src/app/sim/Daemon.ned), so the `.anf` charts read them by name.
 
 Thousands of `Node` instances run in one process under the OMNeT++ scheduler; virtual time and
 seeded RNG make every run reproducible.
 
 ### Production target
 
-`lotid` is a small program that constructs **one** `Node` with the OS port bundle (`WallClock`,
-`ReactorScheduler`, `UdpTransport`, `SecureRng`, `PersistentStore`, `Ed25519Signer`,
-`FileConfig`, `LogMetricsTelemetry`) and runs a single-threaded reactor (see
-[Execution model](#execution-model)). A **control-socket RPC server** exposes the `Node` API to
-the `loti` CLI. `loti verify` links the core's validation/proof code directly and needs no
-daemon and no network.
+`lotid` constructs **one** `Node` with the OS port adapters ([`src/adapters/os/`](../src/adapters/os):
+wall clock, epoll reactor/scheduler, UDP transport, CSPRNG, file store, Ed25519 keystore, logging
+telemetry) and runs a single-threaded reactor (see [Execution model](#execution-model)). A
+**control socket** exposes the `Node` API to the `loti` CLI. `loti verify` links the core's
+validation/proof code directly and needs no daemon and no network.
 
 Everything below the API line — the DAG, discoveries, validation, hashing, serialization — is
 the *same compiled logic* in both targets.
@@ -225,18 +214,19 @@ serializer.
 
 ## Configuration mapping
 
-Both runtimes present parameters through the `Config` port, so the core reads
-`config.duration("clock.interval")` and neither knows nor cares where the value came from:
+The core takes a small `NodeConfig` struct (`clock_event_interval`, `discovery_expiry`); each
+frontend fills it from its own source, and the core neither knows nor cares where the value came
+from:
 
-| Core key | Simulation source | Production source |
+| Core setting | Simulation source | Production source |
 | --- | --- | --- |
-| `clock.interval` | `par("createClockEventInterval")` | `config.toml` `clock.interval` |
-| `discovery.expiry` | `par("discoveryExpiryTime")` | `config.toml` `discovery.expiry` |
-| `publish.content_length` | `par("contentLength")` (Publisher) | CLI `loti publish` input |
-| `discovery.*_interval` | `par("discover*Interval")` (Browser) | driven by CLI calls |
+| `clock_event_interval` | NED `par("createClockEventInterval")` | `lotid --clock-interval` |
+| `discovery_expiry` | NED `par("discoveryExpiryTime")` | `lotid --expiry` |
+| event content | `par("contentLength")` (Publisher) | `loti publish` input |
+| discovery cadence | `par("discover*Interval")` (Browser) | driven by `loti` calls |
 
-The simulation's `omnetpp.ini` configurations (`EventBoundsDiscovery`, …) and the production
-`config.toml` are two skins over the same key set.
+The simulation's `omnetpp.ini` configurations (`EventBoundsDiscovery`, …) and the `lotid` flags
+(plus the `loti init` config file) are two skins over the same settings.
 
 ## Telemetry and statistics parity
 
@@ -244,12 +234,11 @@ The core calls `Telemetry::record(...)` at fixed points — event created, clock
 each discovery started / aborted / completed, chain length/interval, discovery latency. One set
 of hook points, two sinks:
 
-- **Simulation:** `SignalTelemetry` emits the OMNeT++ signals in [`Daemon.ned`](../src/app/sim/Daemon.ned)
-  and the derived quantities computed by the result filters (removed — the sim now emits
-  precomputed scalar signals directly; see [`src/adapters/sim/telemetry.hpp`](../src/adapters/sim/telemetry.hpp)); the
-  existing `.anf`/charts are unchanged.
-- **Production:** `LogMetricsTelemetry` writes structured logs and Prometheus counters/histograms
-  (surfaced by `loti stats` / `loti metrics`).
+- **Simulation:** the telemetry adapter ([`src/adapters/sim/telemetry.hpp`](../src/adapters/sim/telemetry.hpp))
+  emits precomputed scalar signals for the `@statistic` declarations in
+  [`Daemon.ned`](../src/app/sim/Daemon.ned); the `.anf` charts read them by name.
+- **Production:** the logging telemetry adapter writes structured stderr lines (a metrics/Prometheus
+  sink is a post-MVP item).
 
 Because both sinks are fed from the same call sites, the statistics you validate at scale in
 simulation are the very metrics you monitor in production.
@@ -260,38 +249,40 @@ One source tree, three link targets:
 
 - **`loti-core`** — a library with **zero** OMNeT++/INET/OS dependencies. Builds standalone;
   unit-testable on its own; cross-compilable.
-- **`loti-sim`** — links `loti-core` + the OMNeT++ adapter modules; built with the existing
-  OMNeT++ `opp_makemake` flow ([`.oppbuildspec`](../.oppbuildspec), [`makefrag`](../makefrag)).
-- **`lotid` / `loti`** — links `loti-core` + the OS adapters + the RPC server / CLI; built with
-  CMake (or the project's chosen native build).
+- **the OMNeT++ simulation** — links `loti-core` + the OMNeT++ adapter modules; built by
+  [`scripts/build-sim.sh`](../scripts/build-sim.sh) (`opp_makemake`; [`.oppbuildspec`](../.oppbuildspec),
+  [`makefrag`](../makefrag)).
+- **`lotid` / `loti`** — link `loti-core` + the OS adapters + the control socket / CLI; built by
+  [`scripts/build-core.sh`](../scripts/build-core.sh) (CMake).
 
 The core builds under both `make MODE=debug/release` (for the sim) and the native build (for the
 product); it must not require OMNeT++ to compile, which is the concrete test that the dependency
 rule is being honored.
 
-## Proposed directory layout
+## Directory layout
 
 ```
 src/
   core/                  loti-core — pure protocol, no OMNeT++/OS deps
     domain/                Event, ClockEvent, EventChain, … (plain structs)
-    hash/                  picosha.h + canonical serialization
-    dag/                   insertEvent/insertClockEvent, cross-links, indices
-    discovery/             chain/bounds/order + the four chain primitives
-    validate/              chain validation + proof build/verify
-    ports/                 Clock, Scheduler, Transport, Rng, Store, Signer, Config, Telemetry (abstract)
-    node.{h,cpp}           the Node API and orchestration
+    hash/                  picosha2.hpp + canonical serialization (hashing, byte sizes)
+    wire/                  length-prefixed codec + the three datagram types
+    ports/                 Clock, Scheduler, Transport, Rng, Signer, Telemetry (abstract)
+    proof/                 portable proof serialization + offline verification
+    node.{hpp,cpp}         the Node — DAG, discoveries, validation, orchestration
   adapters/
-    sim/                   OMNeT++ port implementations
-    os/                    wall-clock, reactor, UDP/QUIC, CSPRNG, persistent store, Ed25519, toml
+    sim/                   OMNeT++ port implementations (header-only)
+    os/                    wall clock, epoll reactor, UDP, CSPRNG, file store, Ed25519 keystore, control socket
   app/
     sim/                   Daemon/Publisher/Browser/NetworkConfigurator (thin cSimpleModules) + .ned
-    lotid/                 the daemon main + RPC server
+    lotid/                 the node daemon (control socket + reactor)
     loti/                  the CLI client (+ offline verify)
-sim/                     example networks, omnetpp.ini, Analysis.anf  (unchanged)
+sim/                     example network, omnetpp.ini, Analysis.anf
 test/
-  core/                  fast unit tests of loti-core with fake ports
-  harness/               in-process multi-node deterministic integration tests
+  core/                  fast unit tests of loti-core (doctest, fake ports)
+  harness/               in-process multi-node deterministic integration world
+  acceptance/            production integration (real sockets, disk, restart)
+bin/  doc/  plan/  scripts/     run wrappers · docs · plans · build scripts
 ```
 
 ## Testing strategy
@@ -299,8 +290,8 @@ test/
 Three tiers, each using the same core:
 
 1. **Core unit tests** — instantiate a `Node` with **fake ports** (`FakeClock`,
-   `FakeScheduler`, `RecordingTransport`, `SeededRng`, `InMemoryStore`) and assert protocol
-   behavior directly. Milliseconds, no OMNeT++.
+   `FakeScheduler`, `FakeTransport`, `SeededRng`, `NullSigner`, `NoopTelemetry`) and assert
+   protocol behavior directly. Milliseconds, no OMNeT++.
 2. **In-process multi-node harness** — wire N cores together through a `FakeTransport` that
    routes bytes between them with a scriptable delay/loss model, driven by a tiny deterministic
    scheduler. This gives fast, fully reproducible multi-node integration tests (chain discovery
@@ -327,50 +318,6 @@ its port inputs. Two payoffs:
 - **Production** can *record* the sequence of port inputs a `Node` saw (received packets, timer
   firings, clock readings, RNG draws) and later *replay* it against the same core build to
   reproduce a bug offline — turning a live incident into a deterministic test.
-
-## Migration from the current code
-
-The current [`Daemon.cc`](../src/core/node.cpp) already isolates most protocol logic in private
-methods; it is coupled to OMNeT++ mainly at a handful of seams. An incremental path:
-
-1. **De-OMNeT++ the domain model.** Replace the `cObject`-derived types in
-   [`Data.msg`](../src/core/domain/types.hpp) with plain structs in `src/core/domain/`, and move
-   `calculateEventHash` / serialization off INET's `MemoryOutputStream` onto a core serializer
-   (picosha stays). Keep the `.msg` packet types only as a thin sim-transport wrapper around the
-   core's canonical bytes.
-2. **Introduce the ports** and route the existing seams through them: `simTime()` → `Clock`,
-   `scheduleAt`/self-messages → `Scheduler`, `socket`/`sendToNeighbor` → `Transport`,
-   `generateSalt` → `Rng`, the member `vector`/`map`s → `Store`, `par(...)` → `Config`,
-   `emit(...)` → `Telemetry`.
-3. **Extract `Node`.** Move the protocol methods verbatim into `src/core/node`, taking ports by
-   reference; shrink `Daemon` to the adapter described above. This is mostly mechanical because
-   the logic already lives in free-standing helpers.
-4. **Add the production adapters and `lotid`/`loti`**, plus persistence and signing (the
-   [gap items](paper-vs-implementation.md)); ship the CLI in [cli.md](cli.md).
-
-A concrete before/after of one seam — creating a clock event:
-
-```cpp
-// before (Daemon.cc): environment baked in
-clockEvent.setTimestamp(simTime());
-clockEvent.setSalt(generateSalt());                 // intuniform
-...
-scheduleAt(simTime() + par("createClockEventInterval"), &createClockEventTimer);
-emit(clockEventCreatedSignal, &clockEvent);
-for (auto& n : neighbors) sendClockEventNotification(n.second, clockEvent);
-
-// after (core Node): environment injected through ports
-clockEvent.timestamp = clock.now();
-clockEvent.salt      = rng.salt();
-...
-scheduler.after(config.duration("clock.interval"), [this]{ onCreateClockEventTimer(); });
-telemetry.record(Signal::ClockEventCreated, clockEvent);
-for (auto& n : neighbors) transport.send(n.first, encodeClockEventNotification(clockEvent));
-```
-
-The protocol statements are unchanged; only the *effectful* calls now go through ports, which is
-precisely what lets the same lines run inside a 10,000-node simulation and inside a single
-production daemon.
 
 ## Risks and things to get right
 
