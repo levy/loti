@@ -31,9 +31,19 @@ Node::Node(NodeId id, NodePorts ports, NodeConfig config)
       config_(config),
       num_chains_(std::max<std::size_t>(1, config.chains.size())) {
   clock_timers_.assign(num_chains_, 0);
-  // Default forwarding policy: reproduce the historical single-shortest-path behavior.
-  // Holds references to neighbors_ / destination_to_next_hop_, which already exist.
-  router_ = std::make_unique<routing::StaticShortestPathRouter>(neighbors_, destination_to_next_hop_);
+  // Build the forwarding policy from config. Static (default) reproduces the historical single
+  // next hop; flood builds the time-dependent stack (neighbor-history → routing table → width
+  // cap). All routers hold references to members that already exist.
+  if (config_.discovery_routing == DiscoveryRouting::flood) {
+    history_router_ = std::make_unique<routing::NeighborHistoryRouter>(id_, store_, neighbors_);
+    routing_table_router_ =
+        std::make_unique<routing::RoutingTableRouter>(timed_routes_, *history_router_);
+    router_ = std::make_unique<routing::ProbabilisticRouter>(*routing_table_router_, rng_,
+                                                             config_.discovery_fanout);
+  } else {
+    router_ =
+        std::make_unique<routing::StaticShortestPathRouter>(neighbors_, destination_to_next_hop_);
+  }
   hydrate_working_state();  // recover overlay + unreferenced tails from the store (empty if fresh)
 }
 
@@ -180,6 +190,16 @@ void Node::send_chain_request(const Neighbor& to, const wire::ChainRequest& m) {
   transport_.send(to.node_id, wire::encode(id_, m));
 }
 
+void Node::flood_chain_request(NodeId dest, const routing::RouteContext& ctx,
+                               wire::ChainRequest base) {
+  const std::vector<NodeId> incoming = base.path;  // the breadcrumb before we append ourselves
+  base.path.push_back(id_);
+  for (NodeId hop : router_->next_hops(dest, ctx)) {
+    if (hop == id_ || contains(incoming, hop)) continue;  // never forward back onto the breadcrumb
+    if (const auto* nb = neighbor_by_id(hop)) send_chain_request(*nb, base);
+  }
+}
+
 void Node::process_chain_request(const Neighbor& sender, const wire::ChainRequest& m) {
   if (m.event.creator == id_) {
     // Creator: seed the enclosing chain and reflect it back along the reverse-path breadcrumb.
@@ -193,14 +213,11 @@ void Node::process_chain_request(const Neighbor& sender, const wire::ChainReques
     if (!extend_upper_bound_for_neighbor(sender, chain)) return;
     send_chain_response_retrace(m.originator, chain, m.path);
   } else {
-    // Intermediate: forward toward the creator, appending ourself to the breadcrumb. The
-    // breadcrumb is also the per-copy visited set (loop avoidance) and bounds the flood depth.
+    // Intermediate: fan out toward the creator, appending ourself to the breadcrumb (which is also
+    // the per-copy visited set for loop avoidance and bounds the flood depth).
     if (contains(m.path, id_)) return;                            // already visited — loop, drop
     if (m.hop_limit > 0 && m.path.size() >= m.hop_limit) return;  // hop-limit cap
-    wire::ChainRequest fwd = m;
-    fwd.path.push_back(id_);
-    if (const auto* next = find_next_hop_neighbor(m.event.creator, routing::RouteContext{m.range}))
-      if (!contains(m.path, next->node_id)) send_chain_request(*next, fwd);
+    flood_chain_request(m.event.creator, routing::RouteContext{m.range}, m);
   }
 }
 
@@ -283,14 +300,15 @@ void Node::discover_event_chain(const Event& event, TimeRange range, ChainCallba
     } else {
       complete_chain_discovery(event.hash);
     }
-  } else if (const auto* next = find_next_hop_neighbor(event.creator, routing::RouteContext{range})) {
+  } else {
     wire::ChainRequest req;
     req.originator = id_;
     req.event = EventReference{event.creator, event.hash};
     req.range = range;
     req.hop_limit = config_.discovery_hop_limit;
-    req.path = {id_};  // seed the breadcrumb with the originator
-    send_chain_request(*next, req);
+    // flood_chain_request seeds the breadcrumb with id_ and sends a copy to each candidate
+    // toward the creator (Static → the one next hop; flood → all cross-linked neighbors).
+    flood_chain_request(event.creator, routing::RouteContext{range}, req);
   }
 }
 
@@ -645,14 +663,6 @@ LocalClockEvent Node::insert_clock_event(std::uint32_t chain) {
 // that is a known neighbor. The default StaticShortestPathRouter returns exactly the one
 // static next hop (already filtered to a known neighbor), so this preserves the historical
 // single-path behavior; later parts return more candidates, which fan-out (Part 5) consumes.
-const Neighbor* Node::find_next_hop_neighbor(NodeId node, const routing::RouteContext& ctx) const {
-  for (NodeId hop : router_->next_hops(node, ctx)) {
-    auto jt = neighbors_.find(hop);
-    if (jt != neighbors_.end()) return &jt->second;
-  }
-  return nullptr;
-}
-
 const Neighbor* Node::neighbor_by_id(NodeId id) const {
   auto it = neighbors_.find(id);
   return it == neighbors_.end() ? nullptr : &it->second;

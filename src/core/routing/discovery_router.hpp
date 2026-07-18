@@ -14,11 +14,14 @@
 #pragma once
 
 #include <algorithm>
+#include <cstddef>
 #include <map>
 #include <set>
+#include <utility>
 #include <vector>
 
 #include "domain/types.hpp"
+#include "ports/rng.hpp"
 #include "ports/store.hpp"
 
 namespace loti::routing {
@@ -153,6 +156,35 @@ class RoutingTableRouter final : public DiscoveryRouter {
   }
   const TimedRouteTable& table_;
   const DiscoveryRouter& fallback_;
+};
+
+// The scalability lid on the flood: caps the fan-out to width `k`. With `k == 0` (or `k >=` the
+// candidate count) it is a pass-through — the full flood, or the width-1 anchor when the inner
+// router already returns a single directed hop. Otherwise it samples `k` candidates uniformly at
+// random via the Rng port (seeded ⇒ deterministic in tests), which spreads load and diversifies
+// paths so one node's churn does not kill every branch. (Score-weighted sampling ∝ exp(−f/τ) is
+// the beam layer's job — it needs a per-candidate `g`/`h`, deferred beyond this plan.)
+class ProbabilisticRouter final : public DiscoveryRouter {
+ public:
+  ProbabilisticRouter(const DiscoveryRouter& inner, ports::Rng& rng, std::size_t k)
+      : inner_(inner), rng_(rng), k_(k) {}
+
+  [[nodiscard]] std::vector<domain::NodeId> next_hops(
+      domain::NodeId destination, const RouteContext& ctx) const override {
+    std::vector<domain::NodeId> cand = inner_.next_hops(destination, ctx);
+    if (k_ == 0 || cand.size() <= k_) return cand;
+    for (std::size_t i = 0; i < k_; ++i) {  // partial Fisher–Yates: k without replacement
+      const std::size_t j = i + static_cast<std::size_t>(rng_.next_salt() % (cand.size() - i));
+      std::swap(cand[i], cand[j]);
+    }
+    cand.resize(k_);
+    return cand;
+  }
+
+ private:
+  const DiscoveryRouter& inner_;
+  ports::Rng& rng_;
+  std::size_t k_;
 };
 
 }  // namespace loti::routing

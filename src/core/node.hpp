@@ -56,12 +56,20 @@ struct ChainConfig {
   std::size_t keep = 0;           // retained clock events for this chain (0 = unbounded)
 };
 
+// Which forwarding policy a Node uses for discoveries (see routing/discovery_router.hpp).
+enum class DiscoveryRouting {
+  static_shortest_path,  // the historical single static next hop (width-1 anchor); the default
+  flood,                 // time-dependent stack: routing table → neighbor-history flood, width-capped
+};
+
 struct NodeConfig {
   // The chain schedule, index = chain/level (0 = fastest). Empty → a single implicit chain
   // (chain 0) with no timer — the caller drives create_clock_event() by hand (sim / tests).
   std::vector<ChainConfig> chains;
   domain::Duration discovery_expiry = 0;    // > 0 → auto-purge stale discoveries
   std::uint32_t discovery_hop_limit = 0;    // max discovery forward hops (0 = unlimited) — flood cap
+  DiscoveryRouting discovery_routing = DiscoveryRouting::static_shortest_path;
+  std::size_t discovery_fanout = 0;         // max fan-out width k (0 = unlimited = full flood)
 };
 
 // Non-owning references to the ports a Node runs on. The Store holds the whole DAG — the
@@ -173,6 +181,10 @@ class Node final : private ChainCallback {
                                         const Hash& last_clock_event_hash,
                                         const Hash& neighbor_last_clock_event_hash);
   void send_chain_request(const domain::Neighbor& to, const wire::ChainRequest& m);
+  // Fan out a chain request toward `dest`: append ourselves to the breadcrumb, then send a copy to
+  // every router candidate not already on the breadcrumb (Static → one hop; flood → many).
+  void flood_chain_request(domain::NodeId dest, const routing::RouteContext& ctx,
+                           wire::ChainRequest base);
   void process_chain_request(const domain::Neighbor& sender, const wire::ChainRequest& m);
   void send_chain_response(const domain::Neighbor& to, const wire::ChainResponse& m);
   void process_chain_response(const domain::Neighbor& sender, const wire::ChainResponse& m);
@@ -207,8 +219,6 @@ class Node final : private ChainCallback {
   // DAG mutation / lookup — writes go to the store; the small overlay is read from RAM.
   domain::Event insert_event(domain::Bytes data);
   domain::LocalClockEvent insert_clock_event(std::uint32_t chain);
-  [[nodiscard]] const domain::Neighbor* find_next_hop_neighbor(
-      domain::NodeId, const routing::RouteContext&) const;
   [[nodiscard]] const domain::Neighbor* neighbor_by_id(domain::NodeId) const;
 
   // ports & config
@@ -237,10 +247,14 @@ class Node final : private ChainCallback {
   // RoutingTableRouter. In-RAM only for now; filled by learn_route_at (a future routing protocol).
   routing::TimedRouteTable timed_routes_;
 
-  // Forwarding policy — the "where do we forward a discovery" seam. Holds const
-  // references to the two overlay tables above, so it is declared after them (and thus
-  // destroyed before them). Default = the width-1 StaticShortestPathRouter; later parts
-  // swap in the time-dependent / probabilistic routers.
+  // Forwarding policy stack — the "where do we forward a discovery" seam. It holds const
+  // references to the overlay tables / ports above, so it is declared after them. For the flood
+  // policy: history_router_ (DAG-derived candidates) is wrapped by routing_table_router_
+  // (directional, falls back to history) and capped by router_ (ProbabilisticRouter). Declared
+  // bottom-up so member destruction (reverse order) tears the stack down top-first. For the static
+  // policy only router_ is set (a StaticShortestPathRouter). Default = static (width-1 anchor).
+  std::unique_ptr<routing::NeighborHistoryRouter> history_router_;
+  std::unique_ptr<routing::RoutingTableRouter> routing_table_router_;
   std::unique_ptr<routing::DiscoveryRouter> router_;
 
   // in-flight discoveries (transient; not persisted)

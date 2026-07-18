@@ -2,13 +2,25 @@
 // forwarding policies the Node consults to decide where to send a discovery.
 #include "doctest.h"
 
+#include <algorithm>
 #include <map>
 #include <set>
+#include <vector>
 
 #include "harness/world.hpp"
 #include "routing/discovery_router.hpp"
 
 using namespace loti;
+
+namespace {
+// A router with a fixed candidate list, for exercising the wrapping routers in isolation.
+struct FixedRouter final : routing::DiscoveryRouter {
+  std::vector<domain::NodeId> ids;
+  std::vector<domain::NodeId> next_hops(domain::NodeId, const routing::RouteContext&) const override {
+    return ids;
+  }
+};
+}  // namespace
 
 TEST_CASE("NeighborHistoryRouter returns the neighbors cross-linked within the window") {
   harness::World w;
@@ -81,5 +93,30 @@ TEST_CASE("RoutingTableRouter directs on a hit and falls back on a miss") {
     routing::RouteContext narrow;
     narrow.range = domain::TimeRange{1, 100};
     CHECK(r.next_hops(4, narrow) == history.next_hops(4, narrow));
+  }
+}
+
+TEST_CASE("ProbabilisticRouter caps the fan-out width") {
+  FixedRouter inner;
+  inner.ids = {1, 2, 3, 4, 5};
+  harness::SeededRng rng{0xABCDEF};
+  routing::RouteContext ctx;
+
+  SUBCASE("k == 0 → pass-through (full flood)") {
+    routing::ProbabilisticRouter r(inner, rng, 0);
+    CHECK(r.next_hops(0, ctx) == inner.ids);
+  }
+  SUBCASE("k >= candidate count → all candidates") {
+    routing::ProbabilisticRouter r(inner, rng, 10);
+    CHECK(r.next_hops(0, ctx) == inner.ids);
+  }
+  SUBCASE("k < candidate count → exactly k distinct, all from the inner set") {
+    routing::ProbabilisticRouter r(inner, rng, 2);
+    const auto hops = r.next_hops(0, ctx);
+    REQUIRE(hops.size() == 2);
+    const std::set<domain::NodeId> uniq(hops.begin(), hops.end());
+    CHECK(uniq.size() == 2);  // sampled without replacement
+    for (domain::NodeId h : hops)
+      CHECK(std::find(inner.ids.begin(), inner.ids.end(), h) != inner.ids.end());
   }
 }

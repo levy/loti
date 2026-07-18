@@ -310,14 +310,27 @@ adjacency is a later optimization); core builds clean + green.
 
 **Risk:** medium. **Done** — core builds clean + green.
 
-### Part 5 — Bounded probabilistic fan-out (the flood controls)
-- [ ] `ProbabilisticRouter`: width `k`, temperature `τ`, hop limit, visited-node set (dedup).
-- [ ] Expose `k` / `b` / `τ` / hop-limit as config (mirrors `dynamic-discovery.md`'s knobs). `k = degree`
-  = full flood (the no-routing-table completion guarantee); `k = 1, τ → 0` = the width-1 anchor.
+### Part 5 — Bounded probabilistic fan-out (the flood controls) — **DONE**
+- [x] `ProbabilisticRouter(inner, rng, k)`
+  ([routing/discovery_router.hpp](../../src/core/routing/discovery_router.hpp)) caps the fan-out to
+  width `k`: `k == 0` (or `k ≥` candidates) is a pass-through (full flood / the width-1 anchor);
+  otherwise it samples `k` candidates uniformly at random via the Rng port (seeded ⇒ deterministic).
+  **Decision:** the plan's `τ`-softmax `∝ exp(−f/τ)` needs a per-candidate `g`/`h` score (the
+  A*/beam layer, deferred), so Part 5 does *uniform* bounded sampling — the scalability lid — not
+  score-weighted. Hop limit + visited-set were already carried (Part 2).
+- [x] The request sites now **fan out**: `flood_chain_request` appends this node to the breadcrumb
+  and sends a copy to *every* router candidate not already on it (Static → the one next hop; flood →
+  all cross-linked neighbors). Single-pick `find_next_hop_neighbor` retired. `NodeConfig` gains
+  `discovery_routing` (`static_shortest_path` default | `flood`) and `discovery_fanout` (`k`); the
+  ctor builds the stack (`NeighborHistory → RoutingTable → Probabilistic`) for `flood`, else Static.
+- [x] **Completion guarantee verified end-to-end:** a 4-node ring with **no routing table** (flood
+  policy, only neighbors + gossip) completes an `n3 → n1` chain discovery purely by flooding and
+  retracing the breadcrumb home ([test_discovery.cpp](../../test/core/test_discovery.cpp)); the
+  visited-set + creator-terminates keep the flood bounded. `ProbabilisticRouter` unit-tested
+  ([test_routing.cpp](../../test/core/test_routing.cpp)).
 
-**Risk:** low–medium. Load-bearing for v1 (the flood is the primary path until routing lands).
-The reverse-path breadcrumb that makes the request-leg flood *complete* is mandatory and lands in
-Part 2, not here.
+**Risk:** low–medium. **Done** — core builds clean + green; the flood is v1's primary path until a
+routing protocol fills the table.
 
 ### Part 6 — Simulation & statistics (the tuning ground)
 - [ ] `NetworkConfigurator` fills the historical tables (or a churn scenario builds them over

@@ -78,3 +78,35 @@ TEST_CASE("event order discovery: an earlier event is ordered before a later one
   CHECK_FALSE(cb.aborted);
   CHECK(cb.order == domain::Order::before);
 }
+
+TEST_CASE("flood discovery completes with no routing table (ring, breadcrumb retrace)") {
+  harness::World w;
+  NodeConfig cfg;
+  cfg.discovery_routing = DiscoveryRouting::flood;  // no learn_route → the routing table is empty
+  cfg.discovery_hop_limit = 16;
+
+  // A 4-node ring n1—n2—n3—n4—n1. n3 is two hops from n1 either way; with an empty routing
+  // table the discovery can only succeed by flooding the neighbor history and retracing home.
+  std::vector<Node*> ring;
+  for (int i = 0; i < 4; ++i) ring.push_back(&w.add_node(domain::NodeId(i + 1), cfg));
+  for (int i = 0; i < 4; ++i) {
+    Node& a = *ring[i];
+    Node& b = *ring[(i + 1) % 4];
+    a.add_neighbor(b.id());
+    b.add_neighbor(a.id());
+  }
+
+  harness::gossip(w, ring, 10);
+  const auto event = ring[0]->publish_event({0xAB, 0xCD});  // event lives on n1
+  harness::gossip(w, ring, 10);
+
+  harness::RecordingChain cb;
+  ring[2]->discover_event_chain(event, domain::TimeRange::all(), cb);  // n3 is the reference node
+  w.pump();
+
+  REQUIRE(cb.completed);
+  CHECK_FALSE(cb.aborted);
+  CHECK(cb.chain.event.hash == event.hash);
+  CHECK(cb.chain.lower_bound.front().creator == ring[2]->id());
+  CHECK(cb.chain.upper_bound.back().creator == ring[2]->id());
+}
