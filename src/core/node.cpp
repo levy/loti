@@ -162,7 +162,12 @@ void Node::send_clock_event_notification(const Neighbor& neighbor, const ClockEv
 }
 
 void Node::on_packet_received(const Bytes& datagram) {
-  const wire::Datagram dg = wire::decode(datagram);
+  wire::Datagram dg;
+  try {
+    dg = wire::decode(datagram);
+  } catch (const std::exception&) {
+    return;  // malformed datagram (from anyone, pre-neighbor-check) — drop, never fatal
+  }
   auto it = neighbors_.find(dg.sender);
   if (it == neighbors_.end()) return;  // packet from unknown neighbor — ignore
   Neighbor& neighbor = it->second;
@@ -434,9 +439,16 @@ void Node::complete_chain_discovery(const Hash& hash) {
   assert(it != chain_discoveries_.end());
   auto& d = it->second.discovery;
   assert(d.state == DiscoveryState::in_progress);
+  // Validate before completing: a chain that fails the soundness walk — a Byzantine or
+  // buggy peer, or a lost reverse edge — aborts the discovery. It must never be fatal,
+  // since a trustless network expects dishonest chains. (The offline proof path likewise
+  // returns a verdict rather than throwing; the two are now symmetric.)
+  if (!validate_chain_discovery_result(d)) {
+    abort_chain_discovery(hash);
+    return;
+  }
   d.end_time = clock_.now();
   d.state = DiscoveryState::completed;
-  validate_chain_discovery_result(d);
   for (auto* cb : it->second.callbacks) cb->on_chain_completed(d.event, d.chain);
   telemetry_.on_chain_discovery_completed(d);
 }
@@ -577,12 +589,12 @@ Order Node::compare_event_chains(const EventChain& a, const EventChain& b) const
   return Order::undetermined;
 }
 
-void Node::validate_chain_discovery_result(const EventChainDiscovery& discovery) const {
+bool Node::validate_chain_discovery_result(const EventChainDiscovery& discovery) const {
   // The discovering node is the reference: the chain must be enclosed by two of its own
   // clock events. The full soundness walk (hashes, linkage, endpoints, signatures) is the
   // canonical validator shared with offline proof verification (core/validate/chain.hpp).
-  const validate::ChainResult result = validate::verify_chain(discovery.chain, id_, signer_);
-  if (!result.ok) throw std::runtime_error(result.reason);
+  // Returns the verdict; the caller aborts an unsound discovery rather than crashing.
+  return validate::verify_chain(discovery.chain, id_, signer_).ok;
 }
 
 // ---------------------------------------------------------------------------

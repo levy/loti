@@ -11,6 +11,7 @@ add_executable(loti_core_tests
   test_keystore.cpp
   test_proof.cpp
   test_lmdb_store.cpp
+  test_robustness.cpp
   ${CMAKE_SOURCE_DIR}/src/adapters/os/keystore.cpp     # the crypto adapter under test
   ${CMAKE_SOURCE_DIR}/src/adapters/os/lmdb_store.cpp   # the LMDB store adapter under test
 )
