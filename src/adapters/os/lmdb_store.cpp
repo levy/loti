@@ -104,7 +104,14 @@ LmdbStore::LmdbStore(std::string path, std::size_t map_size) : path_(std::move(p
   }
   // MDB_NOSUBDIR: `path` is a single file (like the old snapshot), not a directory.
   if (int rc = mdb_env_open(env_, path_.c_str(), MDB_NOSUBDIR, 0644); rc != MDB_SUCCESS) {
-    mdb_env_close(env_); env_ = nullptr; fail_rc("env_open", rc);
+    mdb_env_close(env_);
+    env_ = nullptr;
+    if (rc == MDB_INVALID)  // e.g. pointed at a pre-LMDB snapshot blob — guide the migration.
+      throw std::runtime_error(
+          "lmdb: '" + path_ +
+          "' is not a valid LMDB store. If it is an old snapshot file, start with a fresh --store "
+          "path and import it with `loti db restore " + path_ + "`.");
+    fail_rc("env_open", rc);
   }
 
   // Open (creating) every sub-DB, read-or-initialize the format version, and seed the

@@ -150,11 +150,14 @@ Work in the dedicated `lmdb-store` worktree at `../loti-lmdb-store`, not the mai
   blob and `rebuild_store()`s the live store; `db_stat` reports store path + counts + disk bytes.
   **Verified end-to-end**: publish 3 events + let the clock chain tick → `kill -9` → restart on the same
   store → events and clock chain survive with identical hashes. Unit suite green (118 assertions).
-- [ ] **Step 6 — Backup/restore + migration.** `db-backup` → `mdb_env_copy2(..., MDB_CP_COMPACT)`
-  (consistent hot copy). `db-restore` → replace the env dir (or import). Keep `snapshot()`/`restore()`
-  as a **portable blob export/import** format (this also gives a one-time importer for an existing
-  `state.snap`: `loti db restore state.snap` → `restore(blob)` → re-persist into LMDB). Retire
-  `FileStore` from the hot path but keep the blob file I/O for export.
+- [x] **Step 6 — Backup/restore + migration.** Kept the **portable snapshot blob** for `db-backup`
+  (FileStore) rather than an `mdb_env_copy2` env copy — it is format-stable, decoupled from LMDB, and is
+  exactly the old `state.snap` format, so migration is free: `loti db restore old.state.snap` imports a
+  pre-LMDB snapshot (→ `node_->restore` → `rebuild_store` into the live LMDB store). Opening the daemon
+  directly on an old blob (`--store old.state.snap`) now fails with a clear hint pointing at that
+  procedure (MDB_INVALID → migration message). **Verified**: the production acceptance suite passes 10/10
+  on LMDB — restart survival, backup→diverge→restore reverts, and multi-node UDP notary proof (which
+  live-exercises the neighbor + clock-update persistence hooks).
 - [ ] **Step 7 — Config & robustness.** `--store` now names an **LMDB env directory** (or use
   `MDB_NOSUBDIR` for a single file to keep the flag's file-path shape). Add `--store-mapsize`
   (default e.g. 16 GiB — virtual only, backed as used). Handle `MDB_MAP_FULL` by growing (reopen with
@@ -239,3 +242,7 @@ Work in the dedicated `lmdb-store` worktree at `../loti-lmdb-store`, not the mai
   `lmdb_store.cpp` added to the `lotid` CMake target. Startup loads via `node_->load`; the 5-s full rewrite
   is gone. End-to-end `kill -9` + restart proves events and the local clock chain survive. `db-backup`
   keeps exporting a portable blob; `db-restore` rebuilds the live store from a blob. Unit suite still green.
+- **Step 6 done** — backup/restore kept on the portable snapshot blob (more portable than an LMDB env
+  copy; old `state.snap` files migrate via `db restore`). Daemon gives a migration hint when `--store`
+  points at a non-LMDB file. Production acceptance suite 10/10 green on LMDB (restart, backup/restore,
+  multi-node notary).
