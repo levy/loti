@@ -16,6 +16,7 @@ void write_header(Writer& w, Type type, domain::NodeId sender) {
 domain::Bytes encode(domain::NodeId sender, const ClockNotification& m) {
   Writer w;
   write_header(w, Type::clock_notification, sender);
+  w.u64(m.chain);
   w.blob(m.last_clock_event_hash);
   w.blob(m.neighbor_last_clock_event_hash);
   return w.bytes();
@@ -46,6 +47,7 @@ Datagram decode(const domain::Bytes& datagram) {
   switch (type) {
     case Type::clock_notification: {
       ClockNotification m;
+      m.chain = static_cast<std::uint32_t>(r.u64());
       m.last_clock_event_hash = r.blob();
       m.neighbor_last_clock_event_hash = r.blob();
       out.payload = std::move(m);

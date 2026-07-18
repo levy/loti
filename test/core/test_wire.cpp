@@ -8,11 +8,12 @@
 using namespace loti;
 
 TEST_CASE("clock notification round-trips") {
-  wire::ClockNotification m{domain::EventHash(32, 0x11), domain::EventHash(32, 0x22)};
+  wire::ClockNotification m{/*chain=*/2, domain::EventHash(32, 0x11), domain::EventHash(32, 0x22)};
   const auto dg = wire::decode(wire::encode(/*sender=*/7, m));
   CHECK(dg.sender == 7);
   const auto* got = std::get_if<wire::ClockNotification>(&dg.payload);
   REQUIRE(got != nullptr);
+  CHECK(got->chain == m.chain);
   CHECK(got->last_clock_event_hash == m.last_clock_event_hash);
   CHECK(got->neighbor_last_clock_event_hash == m.neighbor_last_clock_event_hash);
 }

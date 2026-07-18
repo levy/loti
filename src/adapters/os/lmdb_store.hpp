@@ -51,7 +51,9 @@ class LmdbStore final : public ports::Store {
 
   // On-disk layout version, stamped in the `meta` sub-DB; bump only on a format change.
   // v2 added the `referencing` reverse-index sub-DB (a v1 store is migrated on first open).
-  static constexpr std::uint64_t kFormatVersion = 2;
+  // v3 added the per-clock-event `chain`/level field (multi-resolution chains); back-compat
+  // with pre-v3 stores is out of scope — a mismatched store is rejected, not migrated.
+  static constexpr std::uint64_t kFormatVersion = 3;
 
   // Hard ceiling on the env's mapsize. The map is virtual address space, so on 64-bit
   // this is effectively unbounded and left at 0 = "no cap". On 32-bit the mmap must fit
@@ -113,6 +115,7 @@ class LmdbStore final : public ports::Store {
     MDB_txn* txn_;
     std::uint64_t event_seq_;
     std::uint64_t clock_seq_;
+    std::map<std::uint32_t, std::uint64_t> pending_chain_tips_;  // chain -> newest seq this batch
   };
 
   // Begin a write transaction. Throws if a batch cannot be started.
@@ -137,6 +140,8 @@ class LmdbStore final : public ports::Store {
   [[nodiscard]] std::vector<std::uint64_t> clock_events_referencing(
       const domain::EventHash&) const override;
   [[nodiscard]] std::optional<domain::LocalClockEvent> latest_clock_event() const override;
+  [[nodiscard]] std::optional<domain::LocalClockEvent> latest_clock_event(
+      std::uint32_t chain) const override;
 
   // Bulk read-back for startup replay. Events and clock events come back in sequence
   // order; neighbors/routes keyed by node id. (The unreferenced set is not stored — the
@@ -172,6 +177,10 @@ class LmdbStore final : public ports::Store {
   // clock event's referenced_events, within the caller's open write transaction.
   void rebuild_referencing_index(MDB_txn* txn);
 
+  // Rebuild the in-RAM per-chain tip map (chain -> newest seq) by scanning the clock
+  // events. Called once at open (after the constructor's txn commits).
+  void seed_chain_tips();
+
   // Fetch a single record's bytes within a read txn; nullopt if the key is absent.
   [[nodiscard]] std::optional<domain::Bytes> get_bytes(MDB_dbi dbi, const void* key,
                                                        std::size_t key_len) const;
@@ -196,6 +205,10 @@ class LmdbStore final : public ports::Store {
   std::uint64_t format_version_ = 0;
   std::uint64_t next_event_seq_ = 0;  // next unused key in `events`
   std::uint64_t next_clock_seq_ = 0;  // next unused key in `clock_events`
+
+  // In-RAM per-chain tip: chain/level -> seq of that chain's newest clock event. Seeded at
+  // open and advanced on each durable commit; backs latest_clock_event(chain).
+  std::map<std::uint32_t, std::uint64_t> chain_tip_seq_;
 };
 
 }  // namespace loti::os

@@ -202,6 +202,8 @@ LmdbStore::LmdbStore(std::string path, std::size_t map_size, SyncPolicy sync)
     env_ = nullptr;
     throw;
   }
+
+  seed_chain_tips();  // build the per-chain tip map from the committed clock events
 }
 
 LmdbStore::~LmdbStore() {
@@ -271,6 +273,7 @@ std::uint64_t LmdbStore::Batch::append_clock_event(const domain::LocalClockEvent
     check_write(mdb_put(txn_, store_.referencing_, &rk, &rv, 0), "put referencing");
   }
 
+  pending_chain_tips_[c.chain] = seq;  // this chain's newest tip, applied on commit
   return seq;
 }
 
@@ -296,8 +299,11 @@ void LmdbStore::Batch::put_neighbor(const domain::Neighbor& n) {
   unsigned char kbuf[8];
   put_u64_be(kbuf, n.node_id);
   MDB_val k{sizeof(kbuf), kbuf};
-  MDB_val v{n.last_clock_event_hash.size(),
-            const_cast<std::uint8_t*>(n.last_clock_event_hash.data())};
+  // Value: the per-chain tip hashes as a length-prefixed list (index = chain/level).
+  wire::Writer w;
+  w.u64(n.last_clock_event_hashes.size());
+  for (const auto& h : n.last_clock_event_hashes) w.blob(h);
+  MDB_val v{w.bytes().size(), const_cast<std::uint8_t*>(w.bytes().data())};
   check_write(mdb_put(txn_, store_.neighbors_, &k, &v, 0), "put_neighbor");
 }
 
@@ -318,6 +324,8 @@ void LmdbStore::Batch::commit() {
   check_write(mdb_txn_commit(t), "txn_commit");
   store_.next_event_seq_ = event_seq_;   // advance only after a durable commit
   store_.next_clock_seq_ = clock_seq_;
+  for (const auto& [chain, seq] : pending_chain_tips_)
+    store_.chain_tip_seq_[chain] = seq;  // seqs only grow, so this is always the newest
 }
 
 // ---------------------------------------------------------------------------
@@ -352,7 +360,9 @@ std::map<domain::NodeId, domain::Neighbor> LmdbStore::load_neighbors() const {
   for_each(env_, neighbors_, [&](const MDB_val& k, const MDB_val& v) {
     domain::Neighbor n;
     n.node_id = get_u64_be(static_cast<const unsigned char*>(k.mv_data));
-    n.last_clock_event_hash = to_bytes(v);
+    domain::Bytes bytes = to_bytes(v);
+    wire::Reader r(bytes);
+    for (auto m = r.u64(); m > 0; --m) n.last_clock_event_hashes.push_back(r.blob());
     out[n.node_id] = std::move(n);
   });
   return out;
@@ -486,6 +496,23 @@ std::optional<domain::LocalClockEvent> LmdbStore::latest_clock_event() const {
   return clock_event_by_seq(n - 1);
 }
 
+std::optional<domain::LocalClockEvent> LmdbStore::latest_clock_event(std::uint32_t chain) const {
+  auto it = chain_tip_seq_.find(chain);
+  if (it == chain_tip_seq_.end()) return std::nullopt;
+  return clock_event_by_seq(it->second);
+}
+
+void LmdbStore::seed_chain_tips() {
+  chain_tip_seq_.clear();
+  for_each(env_, clock_events_, [&](const MDB_val& k, const MDB_val& v) {
+    const std::uint64_t seq = get_u64_be(static_cast<const unsigned char*>(k.mv_data));
+    domain::Bytes bytes = to_bytes(v);
+    wire::Reader r(bytes);
+    const domain::ClockEvent c = r.clock_event();
+    chain_tip_seq_[c.chain] = seq;  // keys ascend, so the last seen per chain is its newest
+  });
+}
+
 void LmdbStore::rebuild_referencing_index(MDB_txn* txn) {
   MDB_cursor* cur = nullptr;
   check(mdb_cursor_open(txn, clock_events_, &cur), "cursor_open(migrate)");
@@ -523,6 +550,7 @@ void LmdbStore::reset() {
   check(mdb_txn_commit(txn), "txn_commit");
   next_event_seq_ = 0;
   next_clock_seq_ = 0;
+  chain_tip_seq_.clear();
 }
 
 void LmdbStore::grow_map() {

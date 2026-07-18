@@ -36,11 +36,12 @@ TEST_CASE("event hash matches golden (one reference)") {
 
 TEST_CASE("clock event hash matches golden (one reference)") {
   domain::ClockEvent c;
+  c.chain = 0;  // the fastest chain; chain is now part of the hashed content
   c.timestamp = 1000000000;
   c.salt = 0xDEADBEEFCAFEBABEull;
   c.referenced_events.push_back({/*creator=*/42, domain::EventHash(32, 0xCD)});
   CHECK(hex(hash::calculate_clock_event_hash(c)) ==
-        "2fd27fd51070491ae5c9d028e06208207190283cb97dd4c05de0aecb3d66804b");
+        "1668765f3097a7e83514c47fda0e07b59921626c8ed1374f899f94171ad5604c");
 }
 
 TEST_CASE("the event's own creator/hash and signature are excluded from the hash") {
@@ -65,5 +66,5 @@ TEST_CASE("accounted sizes match Data.cc (content excluded)") {
 
   domain::ClockEvent c;
   c.referenced_events.push_back({1, domain::EventHash(32, 0)});
-  CHECK(hash::clock_event_size_bytes(c) == 96u);  // 8 + 32 + 8 ts + 8 salt + (8 + 32)
+  CHECK(hash::clock_event_size_bytes(c) == 104u);  // 8 + 32 + 8 chain + 8 ts + 8 salt + (8 + 32)
 }

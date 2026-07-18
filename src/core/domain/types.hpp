@@ -50,9 +50,16 @@ struct Event {
 
 // A timestamped event. `referenced_events` embeds the previous local clock event,
 // the latest known neighbor clock events, and recently created local events.
+//
+// A node runs several independent clock chains at geometrically spaced intervals
+// (multi-resolution retention). `chain` is the resolution level this clock event
+// belongs to — 0 is the fastest chain; each chain is an ordinary hash chain whose
+// events only reference their own predecessor. It is part of the hashed content, so
+// a clock event cannot lie about which chain it is on.
 struct ClockEvent {
   NodeId creator = 0;
   EventHash hash;
+  std::uint32_t chain = 0;
   Timestamp timestamp = 0;
   Salt salt = 0;
   std::vector<EventReference> referenced_events;
@@ -76,10 +83,13 @@ struct EventChain {
   bool operator==(const EventChain&) const = default;
 };
 
-// An overlay neighbor and the newest clock event of theirs we currently know.
+// An overlay neighbor and the newest clock event of theirs we currently know, per
+// chain: `last_clock_event_hashes[chain]` is that neighbor's latest chain-`chain` tip
+// we hold (empty = not yet learned). A local clock event on chain ℓ cross-links to the
+// neighbor's chain-ℓ tip (the matched-resolution neighbor policy).
 struct Neighbor {
   NodeId node_id = 0;
-  EventHash last_clock_event_hash;
+  std::vector<EventHash> last_clock_event_hashes;
 };
 
 enum class DiscoveryState { in_progress, completed, aborted };

@@ -11,6 +11,7 @@ constexpr std::size_t kHashBytes = 32;    // SHA-256 digest
 constexpr std::size_t kNodeIdBytes = 8;   // u64
 constexpr std::size_t kSaltBytes = 8;     // u64
 constexpr std::size_t kTimestampBytes = 8;  // u64
+constexpr std::size_t kChainBytes = 8;      // u32 chain/level, hashed as u64
 constexpr std::size_t kRefBytes = kNodeIdBytes + kHashBytes;
 
 void write_refs(ByteWriter& w, const std::vector<domain::EventReference>& refs) {
@@ -38,6 +39,7 @@ domain::EventHash calculate_event_hash(const domain::Event& event) {
 
 domain::EventHash calculate_clock_event_hash(const domain::ClockEvent& clock_event) {
   ByteWriter w;
+  w.write_u64_be(clock_event.chain);
   w.write_u64_be(static_cast<std::uint64_t>(clock_event.timestamp));
   w.write_u64_be(clock_event.salt);
   write_refs(w, clock_event.referenced_events);
@@ -50,7 +52,7 @@ std::size_t event_size_bytes(const domain::Event& event) {
 }
 
 std::size_t clock_event_size_bytes(const domain::ClockEvent& clock_event) {
-  return kNodeIdBytes + kHashBytes + kTimestampBytes + kSaltBytes +
+  return kNodeIdBytes + kHashBytes + kChainBytes + kTimestampBytes + kSaltBytes +
          kRefBytes * clock_event.referenced_events.size();
 }
 

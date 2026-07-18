@@ -243,9 +243,11 @@ class Lotid final : public ChainCallback, public BoundsCallback, public OrderCal
       lmdb_ = lmdb.get();
       store_ = std::move(lmdb);
     }
+    // Single-chain schedule for now (behavior unchanged); the multi-resolution default
+    // schedule is adopted once ring pruning lands (see plan multi-resolution-clock-chains).
     node_ = std::make_unique<Node>(
         node_id_, NodePorts{clock_, scheduler_, transport_, rng_, *signer_, telemetry_, *store_},
-        NodeConfig{clock_ns, expiry_ns});
+        NodeConfig{{ChainConfig{clock_ns, 0}}, expiry_ns});
   }
 
   domain::NodeId node_id() const { return node_id_; }

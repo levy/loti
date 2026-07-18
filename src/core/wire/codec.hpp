@@ -35,7 +35,8 @@ class Writer {
   }
 
   void clock_event(const domain::ClockEvent& c) {
-    u64(c.creator); blob(c.hash); u64(static_cast<std::uint64_t>(c.timestamp)); u64(c.salt);
+    u64(c.creator); blob(c.hash); u64(c.chain);
+    u64(static_cast<std::uint64_t>(c.timestamp)); u64(c.salt);
     refs(c.referenced_events); blob(c.signature);
   }
 
@@ -99,7 +100,7 @@ class Reader {
 
   domain::ClockEvent clock_event() {
     domain::ClockEvent c;
-    c.creator = u64(); c.hash = blob();
+    c.creator = u64(); c.hash = blob(); c.chain = static_cast<std::uint32_t>(u64());
     c.timestamp = static_cast<domain::Timestamp>(u64()); c.salt = u64();
     c.referenced_events = refs(); c.signature = blob();
     return c;

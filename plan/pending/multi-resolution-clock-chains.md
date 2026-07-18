@@ -219,34 +219,34 @@ Ordered, each step a commit. File paths are post-reorg (`src/…`).
 > store format and the wire packets may change freely; a format mismatch just re-creates the
 > store (no migration code, no dual-format readers, no packet versioning).
 
-### Part 1 — Domain model: chains & level tags
+### Part 1 — Domain model: chains & level tags ✅
 
-- [ ] **1a.** `ClockEvent` gains a **chain/level id** ([src/core/domain/types.hpp:53](../../src/core/domain/types.hpp)).
-  It is part of the hashed content (self-describing) so a receiver can bucket a tip by chain.
-- [ ] **1b.** `Neighbor` holds **per-chain last tips** — `last_clock_event_hash` becomes a
-  map/array keyed by level ([src/core/domain/types.hpp:80](../../src/core/domain/types.hpp)).
-- [ ] **1c.** `NodeConfig` replaces the single `clock_event_interval`
-  ([src/core/node.hpp:49](../../src/core/node.hpp)) with a **chain schedule**:
-  `[(interval, keep_count)]` per chain (default = the table above).
-- [ ] **1d.** Bump the store `meta` format-version constant to the new schema (no migration — an
-  old store is simply re-created).
+- [x] **1a.** `ClockEvent` gains a `std::uint32_t chain` field, part of the hashed content
+  (`calculate_clock_event_hash` prepends it) and the wire codec.
+- [x] **1b.** `Neighbor::last_clock_event_hashes` is now a `std::vector<EventHash>` indexed by
+  chain (empty entry = not yet learned).
+- [x] **1c.** `NodeConfig` carries `std::vector<ChainConfig> chains` (`{interval, keep}` per
+  level); empty = one implicit chain 0, no timer. `num_chains_ = max(1, chains.size())`.
+- [x] **1d.** LMDB `kFormatVersion` bumped 2→3; snapshot version 1→2. No migration.
 
-**Risk:** low–medium (touches the core domain type). Forward-only by design.
+**Decision:** the global dense creation-`seq` is *kept* as the storage key / referencing-index
+ordering; chains are distinguished by the `chain` field, and `latest_clock_event(chain)` is
+backed by an in-RAM `chain -> newest seq` map (seeded at open, advanced on commit). Per-chain
+seq / gap-tolerant storage is deferred to Part 3 (pruning), which is the first thing that deletes.
 
-### Part 2 — Multi-chain clock-event creation
+### Part 2 — Multi-chain clock-event creation ✅
 
-- [ ] **2a.** `Node` runs `L` clock timers (one per chain) instead of one; `create_clock_event`
-  ([src/core/node.hpp:92](../../src/core/node.hpp)) takes a chain/level.
-- [ ] **2b.** `insert_clock_event` ([src/core/node.hpp:174](../../src/core/node.hpp)) builds a
-  chain-ℓ clock event: prev chain-ℓ tip + **all local events since this chain's last tick**
-  (upper pins) + neighbor tips per the neighbor policy (matched by default, `m ≥ ℓ` optional).
-- [ ] **2c.** Event creation embeds a **lower anchor into each chain's current tip** (one
-  ref per chain on the event).
-- [ ] **2d.** In-RAM/working state holds `L` chain tails; the historical DAG is read through the
-  `Store` port (Part D of the constrained plan) rather than a single `all_clock_events_`.
+- [x] **2a.** `Node` runs one clock timer per chain (`clock_timers_`, `schedule_clock_timer(chain)`);
+  `create_clock_event(std::uint32_t chain = 0)`.
+- [x] **2b.** `insert_clock_event(chain)` builds a chain-ℓ event: prev chain-ℓ tip + each
+  neighbor's matched (chain-ℓ) tip + the events in `unreferenced_per_chain_[ℓ]` (upper pins).
+- [x] **2c.** `insert_event` anchors into every chain that has a tip (one ref per chain);
+  `publish_event` adds the event to every chain's tail.
+- [x] **2d.** Working state is `unreferenced_per_chain_` (rederived per chain in
+  `hydrate_working_state`); the DAG is already store-backed (Part D landed).
 
-**Risk:** medium. This is the core protocol change; keep it behind the existing chain
-primitives so the sim and tests exercise it.
+**Risk:** medium — realized. Single-chain (`num_chains == 1`) is byte-for-byte the old behavior
+(all existing tests pass unchanged); `test_chains.cpp` drives 2 chains.
 
 ### Part 3 — Conservative-pruning ring (the store)
 
@@ -265,30 +265,35 @@ primitives so the sim and tests exercise it.
 
 **Risk:** medium. Prune is a bounded range-delete; the invariant check is the safety net.
 
-### Part 4 — Discovery over multiple chains
+### Part 4 — Discovery over multiple chains ✅ (4a/4b) · 4c deferred
 
-- [ ] **4a.** Bounds walk (`add_local_lower_bound` / `add_local_upper_bound`,
-  [src/core/node.hpp:174-177](../../src/core/node.hpp)) selects the **finest chain still
-  covering the target's age** and walks it — `O(log)` instead of `O(age)`.
-- [ ] **4b.** `extend_*_for_neighbor` walks the matching (or, under `m ≥ ℓ`, next-coarser)
-  neighbor chain via the stored cross-links.
-- [ ] **4c.** `discover_event_order` compares intervals at the **finest resolution both events
-  are still covered by** (well-defined when the two events differ in age).
+- [x] **4a.** `add_local_lower_bound` / `add_local_upper_bound` need **no change**: because
+  chains are independent (a chain-ℓ event's only same-node clock ref is its chain-ℓ predecessor,
+  and only its chain-ℓ successor references it), the local walks naturally follow one chain. `E`
+  lists chain tips finest-first, so they pick the finest available chain; a pruned ref is skipped
+  for free (`clock_event_by_hash` → nullopt), so "select finest surviving chain" falls out once
+  Part 3 cleans the indices on prune.
+- [x] **4b.** `extend_lower/upper_bound_for_neighbor` rewritten to step by **same-chain hash-ref**
+  (predecessor / `clock_events_referencing` filtered to `creator == id_ && chain == current.chain`)
+  instead of global `seq ± 1` — keeping the spliced sub-chain hash-linked across chains.
+- [ ] **4c.** `discover_event_order` at the finest resolution both events are still covered by —
+  **deferred to Part 3**: only meaningful once pruning makes different-age events resolve to
+  different chains. Without pruning both use chain 0, so the current `compare_event_chains` is
+  already correct.
 
-**Risk:** medium. Mostly reuses existing walk primitives, per chain.
+**Risk:** medium — realized. Cross-node chain/bounds discovery over 2 chains completes and passes
+`validate_chain_discovery_result` (`test_chains.cpp`).
 
-### Part 5 — Advertisement
+### Part 5 — Advertisement ✅ (doc update pending in Part 8)
 
-- [ ] **5a.** Clock-event notification packet carries the **chain/level id**
-  ([src/core/wire/packets.hpp](../../src/core/wire/packets.hpp),
-  [src/core/wire/codec.hpp](../../src/core/wire/codec.hpp)); update
-  [doc/packet-format.md](../../doc/packet-format.md).
-- [ ] **5b.** Advertise a chain's tip **only when it changes** (per-chain last-advertised
-  tracking).
-- [ ] **5c.** Receiver buckets incoming tips into `Neighbor`'s per-chain slots (Part 1b).
+- [x] **5a.** `wire::ClockNotification` carries `chain`; encoded/decoded in `packets.cpp`.
+- [x] **5b.** Change-only falls out for free: `create_clock_event(chain)` notifies only that
+  chain's tip, and a chain's tip only changes when it ticks — no extra last-advertised tracking.
+- [x] **5c.** `process_clock_event_notification` buckets the tip into
+  `neighbor.last_clock_event_hashes[chain]` (resizing as needed).
 
-**Risk:** medium — a genuine on-the-wire format touch (the one place the "no format break"
-story does not hold). No versioning needed (back-compat out of scope).
+**Risk:** medium — realized (on-the-wire format touch; `test_wire.cpp` round-trips it). The
+`doc/packet-format.md` write-up is Part 8.
 
 ### Part 6 — Simulation & statistics
 
@@ -365,5 +370,12 @@ accuracy) is acceptable.
 
 ## Status
 
-Pending design plan. Do the work in a worktree, commit per step, mark parts done here as they
-land, and move to `plan/done/` once fully implemented.
+In progress on branch `multi-resolution-clock-chains` (worktree). **Multi-chain core landed**
+(Parts 1, 2, 4a/4b, 5) — the core builds and all `loti_core` tests pass (44 cases, incl. the new
+`test_chains.cpp` driving 2 chains). Single-chain behavior is unchanged, so `lotid` still runs one
+chain until pruning lands.
+
+Remaining: **Part 3** (per-chain ring prune → gap-tolerant seq, `db gc`, `db stat`; this also
+unlocks 4c and switching `lotid` to the default multi-resolution schedule); **Part 6** (sim +
+stats — editable but not buildable here, separate OMNeT++ toolchain); **Part 7** (optional
+sibling-hop); **Part 8** (docs). Move to `plan/done/` once complete.

@@ -45,9 +45,18 @@ class OrderCallback {
   virtual void on_order_aborted(const domain::Event&, const domain::Event&) = 0;
 };
 
+// One resolution level of the multi-resolution clock schedule: how often this chain ticks
+// and how many of its clock events to retain (the ring capacity; 0 = unbounded / no prune).
+struct ChainConfig {
+  domain::Duration interval = 0;  // > 0 → auto-create this chain's clock events on a timer
+  std::size_t keep = 0;           // retained clock events for this chain (0 = unbounded)
+};
+
 struct NodeConfig {
-  domain::Duration clock_event_interval = 0;  // > 0 → auto-create clock events on a timer
-  domain::Duration discovery_expiry = 0;      // > 0 → auto-purge stale discoveries
+  // The chain schedule, index = chain/level (0 = fastest). Empty → a single implicit chain
+  // (chain 0) with no timer — the caller drives create_clock_event() by hand (sim / tests).
+  std::vector<ChainConfig> chains;
+  domain::Duration discovery_expiry = 0;  // > 0 → auto-purge stale discoveries
 };
 
 // Non-owning references to the ports a Node runs on. The Store holds the whole DAG — the
@@ -88,8 +97,13 @@ class Node final : private ChainCallback {
   // Inbound datagram from the transport adapter.
   void on_packet_received(const domain::Bytes& datagram);
 
-  // Create a clock event now (also the body of the periodic timer).
-  void create_clock_event();
+  // Create a clock event now on the given chain/level (also the body of that chain's
+  // periodic timer). Defaults to the fastest chain (0), which is what single-chain callers
+  // and the test harness use.
+  void create_clock_event(std::uint32_t chain = 0);
+
+  // Number of clock chains this node runs (at least 1).
+  [[nodiscard]] std::size_t chain_count() const noexcept { return num_chains_; }
 
   // Read access — the DAG lives in the store; these are thin reads through it.
   [[nodiscard]] domain::NodeId id() const noexcept { return id_; }
@@ -129,14 +143,15 @@ class Node final : private ChainCallback {
   void on_chain_aborted(const domain::Event&) override;
 
   // timers
-  void schedule_clock_timer();
+  void schedule_clock_timer(std::uint32_t chain);
   void schedule_purge_timer();
   void purge_discoveries();
 
   // networking
   void send_clock_event_notification(const domain::Neighbor& neighbor,
                                      const domain::ClockEvent& clock_event);
-  void process_clock_event_notification(domain::Neighbor& neighbor, const Hash& last_clock_event_hash,
+  void process_clock_event_notification(domain::Neighbor& neighbor, std::uint32_t chain,
+                                        const Hash& last_clock_event_hash,
                                         const Hash& neighbor_last_clock_event_hash);
   void send_chain_request(domain::NodeId originator, const domain::Neighbor& neighbor,
                           const domain::EventReference& event);
@@ -171,7 +186,7 @@ class Node final : private ChainCallback {
 
   // DAG mutation / lookup — writes go to the store; the small overlay is read from RAM.
   domain::Event insert_event(domain::Bytes data);
-  domain::LocalClockEvent insert_clock_event();
+  domain::LocalClockEvent insert_clock_event(std::uint32_t chain);
   [[nodiscard]] const domain::Neighbor* find_next_hop_neighbor(domain::NodeId) const;
 
   // ports & config
@@ -185,12 +200,15 @@ class Node final : private ChainCallback {
   ports::Store& store_;  // the whole DAG lives here — the Node keeps no log copy in RAM
   NodeConfig config_;
 
+  // Number of clock chains (levels) this node runs; at least 1 (max(1, config.chains.size())).
+  std::size_t num_chains_ = 1;
+
   // Small in-RAM working set (the log itself is in the store). Neighbors and routes are
-  // the overlay; unreferenced_events_ is the tail of published events not yet referenced
-  // by a local clock event (each clock event references and clears it). All are also
-  // persisted through the store and rehydrated from it at startup.
+  // the overlay; unreferenced_per_chain_[ℓ] is the tail of published events not yet
+  // referenced by a chain-ℓ clock event (each chain's tick references and clears its own
+  // tail, so an event is pinned by every chain). All are rehydrated from the store at startup.
   std::map<domain::NodeId, domain::Neighbor> neighbors_;
-  std::vector<domain::Event> unreferenced_events_;
+  std::vector<std::vector<domain::Event>> unreferenced_per_chain_;
   std::map<domain::NodeId, domain::NodeId> destination_to_next_hop_;
 
   // in-flight discoveries (transient; not persisted)
@@ -203,7 +221,7 @@ class Node final : private ChainCallback {
   std::map<Hash, Entry<domain::EventBoundsDiscovery, BoundsCallback>> bounds_discoveries_;
   std::map<std::pair<Hash, Hash>, Entry<domain::EventOrderDiscovery, OrderCallback>> order_discoveries_;
 
-  ports::TimerId clock_timer_ = 0;
+  std::vector<ports::TimerId> clock_timers_;  // one per chain (those with interval > 0)
   ports::TimerId purge_timer_ = 0;
 };
 

@@ -51,8 +51,13 @@ class Store {
   // Ascending seqs of the local clock events that reference `hash` in referenced_events.
   [[nodiscard]] virtual std::vector<std::uint64_t> clock_events_referencing(
       const domain::EventHash&) const = 0;
-  // The newest local clock event (nullopt if none) — the local clock chain's tip.
+  // The newest local clock event overall (nullopt if none).
   [[nodiscard]] virtual std::optional<domain::LocalClockEvent> latest_clock_event() const = 0;
+  // The newest local clock event on a given chain/level (nullopt if that chain has none) —
+  // that chain's tip. A node runs several independent chains; this is how creation finds the
+  // previous same-chain event and how an event pins itself into every chain.
+  [[nodiscard]] virtual std::optional<domain::LocalClockEvent> latest_clock_event(
+      std::uint32_t chain) const = 0;
 
   [[nodiscard]] virtual std::size_t event_count() const = 0;
   [[nodiscard]] virtual std::size_t clock_event_count() const = 0;

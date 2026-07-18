@@ -1,5 +1,6 @@
 #include "node.hpp"
 
+#include <algorithm>
 #include <cassert>
 #include <stdexcept>
 
@@ -20,17 +21,20 @@ Node::Node(NodeId id, NodePorts ports, NodeConfig config)
       signer_(ports.signer),
       telemetry_(ports.telemetry),
       store_(ports.store),
-      config_(config) {
-  hydrate_working_state();  // recover overlay + unreferenced tail from the store (empty if fresh)
+      config_(config),
+      num_chains_(std::max<std::size_t>(1, config.chains.size())) {
+  clock_timers_.assign(num_chains_, 0);
+  hydrate_working_state();  // recover overlay + unreferenced tails from the store (empty if fresh)
 }
 
 Node::~Node() {
-  scheduler_.cancel(clock_timer_);
+  for (auto id : clock_timers_) scheduler_.cancel(id);
   scheduler_.cancel(purge_timer_);
 }
 
 void Node::start() {
-  if (config_.clock_event_interval > 0) schedule_clock_timer();
+  for (std::uint32_t chain = 0; chain < config_.chains.size(); ++chain)
+    if (config_.chains[chain].interval > 0) schedule_clock_timer(chain);
   if (config_.discovery_expiry > 0) schedule_purge_timer();
 }
 
@@ -47,10 +51,10 @@ void Node::learn_route(NodeId destination, NodeId next_hop) {
 // ---------------------------------------------------------------------------
 // timers
 // ---------------------------------------------------------------------------
-void Node::schedule_clock_timer() {
-  clock_timer_ = scheduler_.after(config_.clock_event_interval, [this] {
-    create_clock_event();
-    schedule_clock_timer();
+void Node::schedule_clock_timer(std::uint32_t chain) {
+  clock_timers_[chain] = scheduler_.after(config_.chains[chain].interval, [this, chain] {
+    create_clock_event(chain);
+    schedule_clock_timer(chain);
   });
 }
 
@@ -61,12 +65,14 @@ void Node::schedule_purge_timer() {
   });
 }
 
-void Node::create_clock_event() {
+void Node::create_clock_event(std::uint32_t chain) {
   // insert_clock_event() appends to the store, which also records the reverse index
   // (each referenced hash → this clock event's seq) that used to be an in-RAM multimap.
-  const LocalClockEvent clock_event = insert_clock_event();
-  unreferenced_events_.clear();  // this clock event referenced them all
+  const LocalClockEvent clock_event = insert_clock_event(chain);
+  unreferenced_per_chain_[chain].clear();  // this chain's tick referenced them all
   telemetry_.on_clock_event_created(clock_event);
+  // Advertise this chain's new tip to neighbors. A chain only ticks when its tip changes,
+  // so this is inherently change-only per chain.
   for (const auto& [nid, neighbor] : neighbors_) send_clock_event_notification(neighbor, clock_event);
 }
 
@@ -107,7 +113,11 @@ void Node::purge_discoveries() {
 // networking
 // ---------------------------------------------------------------------------
 void Node::send_clock_event_notification(const Neighbor& neighbor, const ClockEvent& clock_event) {
-  wire::ClockNotification m{clock_event.hash, neighbor.last_clock_event_hash};
+  const std::uint32_t chain = clock_event.chain;
+  const Hash their = chain < neighbor.last_clock_event_hashes.size()
+                         ? neighbor.last_clock_event_hashes[chain]
+                         : Hash{};
+  wire::ClockNotification m{chain, clock_event.hash, their};
   transport_.send(neighbor.node_id, wire::encode(id_, m));
 }
 
@@ -117,7 +127,7 @@ void Node::on_packet_received(const Bytes& datagram) {
   if (it == neighbors_.end()) return;  // packet from unknown neighbor — ignore
   Neighbor& neighbor = it->second;
   if (const auto* m = std::get_if<wire::ClockNotification>(&dg.payload)) {
-    process_clock_event_notification(neighbor, m->last_clock_event_hash,
+    process_clock_event_notification(neighbor, m->chain, m->last_clock_event_hash,
                                      m->neighbor_last_clock_event_hash);
   } else if (const auto* m = std::get_if<wire::ChainRequest>(&dg.payload)) {
     process_chain_request(m->originator, neighbor, m->event);
@@ -126,10 +136,14 @@ void Node::on_packet_received(const Bytes& datagram) {
   }
 }
 
-void Node::process_clock_event_notification(Neighbor& neighbor, const Hash& last_clock_event_hash,
+void Node::process_clock_event_notification(Neighbor& neighbor, std::uint32_t chain,
+                                            const Hash& last_clock_event_hash,
                                             const Hash& neighbor_last_clock_event_hash) {
-  const bool neighbor_changed = neighbor.last_clock_event_hash != last_clock_event_hash;
-  neighbor.last_clock_event_hash = last_clock_event_hash;
+  // Bucket the advertised tip into this neighbor's chain-`chain` slot.
+  if (neighbor.last_clock_event_hashes.size() <= chain)
+    neighbor.last_clock_event_hashes.resize(chain + 1);
+  const bool neighbor_changed = neighbor.last_clock_event_hashes[chain] != last_clock_event_hash;
+  neighbor.last_clock_event_hashes[chain] = last_clock_event_hash;
   if (neighbor_changed) store_.put_neighbor(neighbor);
   // Record the learned reverse cross-link on our clock event the neighbor referenced.
   if (auto local = store_.clock_event_by_hash(neighbor_last_clock_event_hash)) {
@@ -201,7 +215,7 @@ void Node::process_chain_response(NodeId originator, const Neighbor& neighbor,
 // ---------------------------------------------------------------------------
 Event Node::publish_event(Bytes data) {
   const Event event = insert_event(std::move(data));  // appended to the store (indexed by hash)
-  unreferenced_events_.push_back(event);              // tail until the next clock event
+  for (auto& tail : unreferenced_per_chain_) tail.push_back(event);  // pinned by every chain's next tick
   telemetry_.on_event_created(event);
   return event;
 }
@@ -440,35 +454,41 @@ bool Node::add_local_upper_bound(EventChain& chain) const {
   return true;
 }
 
+// Walk this node's OWN chain backward — following the same-chain predecessor, not the
+// global sequence — until a clock event references the neighbor (the cross-link into the
+// neighbor's chain). Staying on one chain keeps the spliced sub-chain hash-linked: a
+// chain-ℓ clock event's only same-node clock-event reference is its chain-ℓ predecessor.
 bool Node::extend_lower_bound_for_neighbor(const Neighbor& neighbor, EventChain& chain) const {
   assert(chain.lower_bound.front().creator == id_);
-  auto seq = store_.clock_event_seq(chain.lower_bound.front().hash);
-  assert(seq.has_value());
-  std::uint64_t index = *seq;
-  LocalClockEvent current = store_.clock_event_by_seq(index);
+  LocalClockEvent current = *store_.clock_event_by_hash(chain.lower_bound.front().hash);
   while (true) {
     for (const auto& ref : current.referenced_events)
       if (ref.creator == neighbor.node_id) return true;
-    if (index == 0) return false;
-    --index;
-    current = store_.clock_event_by_seq(index);
+    // Step to the same-chain predecessor (the one same-node ref that is a clock event).
+    std::optional<LocalClockEvent> prev;
+    for (const auto& ref : current.referenced_events)
+      if (ref.creator == id_)
+        if (auto ce = store_.clock_event_by_hash(ref.hash)) { prev = std::move(ce); break; }
+    if (!prev) return false;
+    current = *prev;
     chain.lower_bound.push_front(current);
   }
 }
 
 bool Node::extend_upper_bound_for_neighbor(const Neighbor& neighbor, EventChain& chain) const {
   assert(chain.upper_bound.back().creator == id_);
-  auto seq = store_.clock_event_seq(chain.upper_bound.back().hash);
-  assert(seq.has_value());
-  std::uint64_t index = *seq;
-  const std::uint64_t last = store_.clock_event_count() - 1;
-  LocalClockEvent current = store_.clock_event_by_seq(index);
+  LocalClockEvent current = *store_.clock_event_by_hash(chain.upper_bound.back().hash);
   while (true) {
     for (const auto& ref : current.referencing_events)
       if (ref.creator == neighbor.node_id) return true;
-    if (index == last) return false;
-    ++index;
-    current = store_.clock_event_by_seq(index);
+    // Step to the same-chain successor: our own clock event that references `current`.
+    std::optional<LocalClockEvent> next;
+    for (std::uint64_t seq : store_.clock_events_referencing(current.hash)) {
+      LocalClockEvent ce = store_.clock_event_by_seq(seq);
+      if (ce.creator == id_ && ce.chain == current.chain) { next = std::move(ce); break; }
+    }
+    if (!next) return false;
+    current = *next;
     chain.upper_bound.push_back(current);
   }
 }
@@ -537,27 +557,35 @@ Event Node::insert_event(Bytes data) {
   event.data = std::move(data);
   event.creator = id_;
   event.salt = rng_.next_salt();
-  if (auto last = store_.latest_clock_event())
-    event.referenced_events.push_back(EventReference{last->creator, last->hash});
+  // Lower anchor: pin into every chain by referencing each chain's current tip. A coarse
+  // anchor survives after the finer chains are pruned, so the event stays lower-boundable.
+  for (std::uint32_t chain = 0; chain < num_chains_; ++chain)
+    if (auto tip = store_.latest_clock_event(chain))
+      event.referenced_events.push_back(EventReference{tip->creator, tip->hash});
   event.hash = hash::calculate_event_hash(event);
   event.signature = signer_.sign(event.hash);
   store_.append_event(event);
   return event;
 }
 
-LocalClockEvent Node::insert_clock_event() {
+LocalClockEvent Node::insert_clock_event(std::uint32_t chain) {
   LocalClockEvent clock_event;
+  clock_event.chain = chain;
   clock_event.timestamp = clock_.now();
   clock_event.creator = id_;
   clock_event.salt = rng_.next_salt();
-  if (auto last = store_.latest_clock_event())
+  // (a) the previous same-chain clock event — this chain's hash-linked predecessor.
+  if (auto last = store_.latest_clock_event(chain))
     clock_event.referenced_events.push_back(EventReference{last->creator, last->hash});
+  // (b) each neighbor's matched-resolution tip (their chain-`chain` clock event).
   for (const auto& [nid, neighbor] : neighbors_) {
-    if (!neighbor.last_clock_event_hash.empty())
+    if (chain < neighbor.last_clock_event_hashes.size() &&
+        !neighbor.last_clock_event_hashes[chain].empty())
       clock_event.referenced_events.push_back(
-          EventReference{neighbor.node_id, neighbor.last_clock_event_hash});
+          EventReference{neighbor.node_id, neighbor.last_clock_event_hashes[chain]});
   }
-  for (const auto& event : unreferenced_events_)
+  // (c) the local events published since this chain's last tick (their upper pin).
+  for (const auto& event : unreferenced_per_chain_[chain])
     clock_event.referenced_events.push_back(EventReference{event.creator, event.hash});
   clock_event.hash = hash::calculate_clock_event_hash(clock_event);
   clock_event.signature = signer_.sign(clock_event.hash);
@@ -576,7 +604,7 @@ const Neighbor* Node::find_next_hop_neighbor(NodeId node) const {
 // persistence (snapshot / restore) — see node.hpp
 // ---------------------------------------------------------------------------
 namespace {
-constexpr std::uint64_t kSnapshotVersion = 1;
+constexpr std::uint64_t kSnapshotVersion = 2;  // v2: clock-event chain field + per-chain neighbor tips
 }  // namespace
 
 Bytes Node::snapshot() const {
@@ -592,12 +620,17 @@ Bytes Node::snapshot() const {
     w.clock_event(c);              // the ClockEvent part
     w.refs(c.referencing_events);  // the learned back-references (LocalClockEvent extra)
   }
-  w.u64(unreferenced_events_.size());
-  for (const auto& e : unreferenced_events_) w.event(e);
+  // The unreferenced tail is kept only for on-disk format shape — load() rederives every
+  // chain's tail from the clock events. Write the fastest chain's tail (chain 0), which for a
+  // single-chain node is the whole unreferenced set. (num_chains_ ≥ 1, so index 0 exists.)
+  const auto& tail0 = unreferenced_per_chain_[0];
+  w.u64(tail0.size());
+  for (const auto& e : tail0) w.event(e);
   w.u64(neighbors_.size());
   for (const auto& [id, n] : neighbors_) {
     w.u64(n.node_id);
-    w.blob(n.last_clock_event_hash);
+    w.u64(n.last_clock_event_hashes.size());
+    for (const auto& h : n.last_clock_event_hashes) w.blob(h);
   }
   w.u64(destination_to_next_hop_.size());
   for (const auto& [dst, next_hop] : destination_to_next_hop_) {
@@ -630,7 +663,7 @@ void Node::restore(const Bytes& blob) {
   for (auto n = r.u64(); n > 0; --n) {
     Neighbor neighbor;
     neighbor.node_id = r.u64();
-    neighbor.last_clock_event_hash = r.blob();
+    for (auto m = r.u64(); m > 0; --m) neighbor.last_clock_event_hashes.push_back(r.blob());
     neighbors[neighbor.node_id] = std::move(neighbor);
   }
 
@@ -660,19 +693,24 @@ void Node::hydrate_working_state() {
   neighbors_ = store_.load_neighbors();
   destination_to_next_hop_ = store_.load_routes();
 
-  // Rederive the unreferenced-event tail: an event is unreferenced iff no clock event
-  // references it, and (by construction — each clock event references and clears the whole
-  // then-current set) the unreferenced events are exactly the suffix published after the
-  // last clock event. Walk events newest-first until one is referenced; a bounded scan.
-  unreferenced_events_.clear();
-  std::vector<Event> tail;
-  for (std::size_t k = store_.event_count(); k-- > 0;) {
-    Event e = store_.event_by_seq(k);
-    if (!store_.clock_events_referencing(e.hash).empty()) break;  // reached the referenced prefix
-    tail.push_back(std::move(e));
+  // Rederive each chain's unreferenced-event tail: for chain ℓ, the events published since
+  // its last tick — i.e. the suffix of events not yet referenced by any chain-ℓ clock event.
+  // Walk events newest-first per chain until one is already referenced by that chain; a
+  // bounded scan (each chain references and clears its whole then-current tail on every tick).
+  unreferenced_per_chain_.assign(num_chains_, {});
+  for (std::uint32_t chain = 0; chain < num_chains_; ++chain) {
+    std::vector<Event> tail;
+    for (std::size_t k = store_.event_count(); k-- > 0;) {
+      Event e = store_.event_by_seq(k);
+      bool referenced_by_chain = false;
+      for (std::uint64_t seq : store_.clock_events_referencing(e.hash))
+        if (store_.clock_event_by_seq(seq).chain == chain) { referenced_by_chain = true; break; }
+      if (referenced_by_chain) break;  // reached this chain's referenced prefix
+      tail.push_back(std::move(e));
+    }
+    for (auto it = tail.rbegin(); it != tail.rend(); ++it)  // restore publish order
+      unreferenced_per_chain_[chain].push_back(std::move(*it));
   }
-  for (auto it = tail.rbegin(); it != tail.rend(); ++it)  // restore publish order
-    unreferenced_events_.push_back(std::move(*it));
 }
 
 }  // namespace loti

@@ -16,6 +16,7 @@ enum class Type : std::uint8_t {
 };
 
 struct ClockNotification {
+  std::uint32_t chain = 0;  // which of the sender's chains this tip belongs to
   domain::EventHash last_clock_event_hash;
   domain::EventHash neighbor_last_clock_event_hash;
 };

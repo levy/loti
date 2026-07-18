@@ -118,7 +118,7 @@ TEST_CASE("LmdbStore round-trips a committed batch") {
     CHECK(b.append_event(e1) == 1);
     CHECK(b.append_clock_event(c0) == 0);
     CHECK(b.append_clock_event(c1) == 1);
-    b.put_neighbor(domain::Neighbor{7, hash_of(70)});
+    b.put_neighbor(domain::Neighbor{7, {hash_of(70)}});
     b.put_route(9, 7);
     b.commit();
   }
@@ -133,7 +133,8 @@ TEST_CASE("LmdbStore round-trips a committed batch") {
 
   const auto neighbors = store.load_neighbors();
   REQUIRE(neighbors.count(7) == 1);
-  CHECK(neighbors.at(7).last_clock_event_hash == hash_of(70));
+  CHECK(neighbors.at(7).last_clock_event_hashes ==
+        std::vector<domain::EventHash>{hash_of(70)});
 
   CHECK(store.load_routes() == std::map<domain::NodeId, domain::NodeId>{{9, 7}});
 
@@ -190,7 +191,7 @@ TEST_CASE("LmdbStore persists a Node's DAG and Node::load restores it byte-for-b
     LmdbStore store(env.str());
     auto b = store.begin();
     wire::Reader r(snap1);
-    REQUIRE(r.u64() == 1);  // format version
+    REQUIRE(r.u64() == 2);  // snapshot format version
     for (auto n = r.u64(); n > 0; --n) b.append_event(r.event());
     for (auto n = r.u64(); n > 0; --n) {
       domain::LocalClockEvent c;
@@ -202,7 +203,7 @@ TEST_CASE("LmdbStore persists a Node's DAG and Node::load restores it byte-for-b
     for (auto n = r.u64(); n > 0; --n) {
       domain::Neighbor nb;
       nb.node_id = r.u64();
-      nb.last_clock_event_hash = r.blob();
+      for (auto m = r.u64(); m > 0; --m) nb.last_clock_event_hashes.push_back(r.blob());
       b.put_neighbor(nb);
     }
     for (auto n = r.u64(); n > 0; --n) {

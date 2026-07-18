@@ -27,6 +27,7 @@ class InMemoryStore final : public ports::Store {
     const std::uint64_t seq = clock_events_.size();
     clock_seq_.emplace(c.hash, seq);
     for (const auto& ref : c.referenced_events) referencing_.emplace(ref.hash, seq);
+    chain_tip_seq_[c.chain] = seq;  // this chain's newest (seqs are ascending)
     clock_events_.push_back(c);
     return seq;
   }
@@ -68,6 +69,11 @@ class InMemoryStore final : public ports::Store {
     if (clock_events_.empty()) return std::nullopt;
     return clock_events_.back();
   }
+  std::optional<domain::LocalClockEvent> latest_clock_event(std::uint32_t chain) const override {
+    auto it = chain_tip_seq_.find(chain);
+    if (it == chain_tip_seq_.end()) return std::nullopt;
+    return clock_events_[it->second];
+  }
   std::size_t event_count() const override { return events_.size(); }
   std::size_t clock_event_count() const override { return clock_events_.size(); }
 
@@ -80,6 +86,7 @@ class InMemoryStore final : public ports::Store {
     event_seq_.clear();
     clock_seq_.clear();
     referencing_.clear();
+    chain_tip_seq_.clear();
     neighbors_.clear();
     routes_.clear();
   }
@@ -90,6 +97,7 @@ class InMemoryStore final : public ports::Store {
   std::map<domain::EventHash, std::uint64_t> event_seq_;
   std::map<domain::EventHash, std::uint64_t> clock_seq_;
   std::multimap<domain::EventHash, std::uint64_t> referencing_;
+  std::map<std::uint32_t, std::uint64_t> chain_tip_seq_;  // chain/level -> newest seq
   std::map<domain::NodeId, domain::Neighbor> neighbors_;
   std::map<domain::NodeId, domain::NodeId> routes_;
 };

@@ -40,9 +40,9 @@ void Daemon::initialize(int stage)
     if (stage == INITSTAGE_LOCAL) {
         nodeId_ = static_cast<domain::NodeId>(getId());
         NodeConfig config;
-        // The clock-event timer stays in this module so it keeps re-sampling the
-        // volatile createClockEventInterval; only the purge timer is core-driven.
-        config.clock_event_interval = 0;
+        // The clock-event timer stays in this module so it keeps re-sampling the volatile
+        // createClockEventInterval; only the purge timer is core-driven. A default (empty)
+        // chain schedule means the core starts no clock timer — this module drives ticks.
         simtime_t expiry(par("discoveryExpiryTime").doubleValue());
         config.discovery_expiry = expiry.raw();
         node_ = std::make_unique<Node>(
