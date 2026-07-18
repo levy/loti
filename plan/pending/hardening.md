@@ -40,27 +40,31 @@ The single most important phase. Today a **one-byte UDP packet from anyone** —
 chain response from a peer, or a mistyped `peer add` — unwinds out of the event loop and exits
 the process ([lotid.cpp:889](../../src/app/lotid/lotid.cpp#L889)).
 
-- [ ] **1.1 — Isolate every reactor callback.** Wrap the timer-callback and fd-readable dispatch
+**Status: DONE** (commits `harden: malformed/dishonest datagrams…` and `harden: decoder length
+caps…`). T1/T2 reproduced both crashes before the fix; `test/acceptance/fuzz_udp.sh` confirms a
+running daemon now survives a 2100-datagram flood + a bad control command.
+
+- [x] **1.1 — Isolate every reactor callback.** Wrap the timer-callback and fd-readable dispatch
   in [reactor.hpp](../../src/adapters/os/reactor.hpp#L87) (`fire_due_timers`, the `run()` dispatch
   loop) in `try { … } catch (const std::exception& e) { log; }` so one throwing callback is
   logged and dropped, never fatal. This is the structural root fix — every finding below that ends
   in "→ crash" is downgraded to "→ one dropped packet/command" once this lands.
-- [ ] **1.2 — Guard the UDP receive path.** In the reader lambda at
+- [x] **1.2 — Guard the UDP receive path.** In the reader lambda at
   [lotid.cpp:305-311](../../src/app/lotid/lotid.cpp#L305), wrap `on_packet_received(datagram)` in a
   per-datagram `try/catch` (drop + optional debug log). Belt-and-suspenders with 1.1; keeps a
   storm of bad packets from spamming the generic reactor logger.
-- [ ] **1.3 — Decode is validation, not a fatal parse.** `wire::decode`
+- [x] **1.3 — Decode is validation, not a fatal parse.** `wire::decode`
   ([packets.cpp:80](../../src/core/wire/packets.cpp#L80)) and the `Reader` `need()` guard
   ([codec.hpp:151](../../src/core/wire/codec.hpp#L151)) throw on any malformed field. Confirm the
   only callers are inside the now-guarded paths (transport receive, `proof::deserialize`). Keep
   `decode` throwing (it is the right signal); the fix is that callers must catch.
-- [ ] **1.4 — Validation on the live path returns, it does not throw.** Change
+- [x] **1.4 — Validation on the live path returns, it does not throw.** Change
   `Node::validate_chain_discovery_result` ([node.cpp:580](../../src/core/node.cpp#L580)) so a
   failed `validate::verify_chain` **aborts the discovery** (like an expiry) instead of
   `throw std::runtime_error` at [node.cpp:585](../../src/core/node.cpp#L585). A dishonest peer is
   the *expected* case in a trustless network; it must not be fatal. (The offline `proof::verify`
   path already returns a result — this makes the two symmetric.)
-- [ ] **1.5 — Guard the control/stdin command path.** Every command in `Lotid::dispatch` is called
+- [x] **1.5 — Guard the control/stdin command path.** Every command in `Lotid::dispatch` is called
   bare except `db-restore`; `peer add <bad-ip>` throws from `UdpTransport::set_peer`
   ([transport.hpp:59](../../src/adapters/os/transport.hpp#L59)) and kills the daemon. Wrap command
   dispatch so a bad command returns an `ERR` reply, never exits. Validate numeric/address args
@@ -68,6 +72,10 @@ the process ([lotid.cpp:889](../../src/app/lotid/lotid.cpp#L889)).
 - [ ] **1.6 — Preserve shutdown cleanup on fatal exit.** If the outer handler at
   [lotid.cpp:889](../../src/app/lotid/lotid.cpp#L889) is ever reached, unlink the control socket and
   `lmdb_->sync()` before returning, so a crash in lazy-sync mode does not skip the final flush.
+  **Deferred (low value):** with 1.1 in place the reactor loop no longer throws, so the outer
+  handler is only reachable from *startup* (before the socket exists / before any data is
+  committed) — run()'s normal-exit cleanup is now reliably reached. Revisit only if a new throwing
+  path into `main` is introduced. See decision log.
 
 **Acceptance:** a new test feeds `on_packet_received` a corpus of truncated/garbage/oversized
 datagrams and a hostile `ChainResponse` (bad hash, bad linkage, wrong endpoint) and asserts the
@@ -280,8 +288,8 @@ doc↔doc conflicts). No code change; do this alongside the phases that settle e
 The current suite never feeds hostile input through `on_packet_received`, never exercises LMDB
 pruning, and uses a lossless transport. Add:
 
-- [ ] **T1 — malformed-packet corpus** through `on_packet_received` → node survives (Phase 1).
-- [ ] **T2 — Byzantine `ChainResponse`** (bad hash/linkage/endpoint) → discovery aborts, node
+- [x] **T1 — malformed-packet corpus** through `on_packet_received` → node survives (Phase 1).
+- [x] **T2 — Byzantine `ChainResponse`** (bad hash/linkage/endpoint) → discovery aborts, node
   survives (Phase 1.4).
 - [ ] **T3 — forged all-unsigned proof** → `verify` rejects (Phase 2.1).
 - [ ] **T4 — key-file mode `0600`** and **backup-write-failure → ERR** (Phase 2.2/2.3).
@@ -307,3 +315,23 @@ robust. This plan is about **hardening what exists**, not extending the feature 
 Record non-obvious decisions here as items land (chosen `NodeId` width; gossip-auth mechanism;
 clock-implausibility policy; fsync threading vs documented-stall; whether `--id`/NullSigner stays
 in the production binary).
+
+**Phase 1 (landed):**
+
+- **1.4 — validation returns a verdict, does not throw.** `validate_chain_discovery_result` now
+  returns `bool`; `complete_chain_discovery` aborts an unsound discovery (fires `on_chain_aborted`
+  + the aborted telemetry hook) instead of throwing. This makes the live discovery path symmetric
+  with the offline `proof::verify` path, which already returned a verdict. No honest discovery
+  changes — a sound chain still completes exactly as before.
+- **1.3 / decoder cap — down payment on 3.1.** Rather than only catching the decode exception, the
+  `Reader` now rejects an implausible element count *before* reserving (`ensure_count`, division to
+  avoid 32-bit overflow). This forecloses the multi-GB `reserve` DoS at the codec layer; the full
+  3.1 (a first-class max-count/max-datagram policy + the T5 assertion that no large allocation is
+  attempted) is still open in Phase 3. T1b covers the codec-level rejection today.
+- **1.6 — deferred, mooted by 1.1.** See the item above. Not implemented because the reactor loop
+  no longer throws; adding a `main`-catch cleanup would be dead code today and risks double
+  unlink/sync against run()'s normal-exit cleanup.
+- **`on_packet_received` is robust by contract.** The core entry point itself now swallows
+  malformed-datagram exceptions (returns/drops), so the protocol engine — not just the daemon
+  shell — upholds "a bad datagram is a dropped packet." The reactor/reader catches are
+  defense-in-depth for unexpected (non-decode) exceptions.
