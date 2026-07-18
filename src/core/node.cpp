@@ -24,6 +24,9 @@ Node::Node(NodeId id, NodePorts ports, NodeConfig config)
       config_(config),
       num_chains_(std::max<std::size_t>(1, config.chains.size())) {
   clock_timers_.assign(num_chains_, 0);
+  // Default forwarding policy: reproduce the historical single-shortest-path behavior.
+  // Holds references to neighbors_ / destination_to_next_hop_, which already exist.
+  router_ = std::make_unique<routing::StaticShortestPathRouter>(neighbors_, destination_to_next_hop_);
   hydrate_working_state();  // recover overlay + unreferenced tails from the store (empty if fresh)
 }
 
@@ -603,11 +606,16 @@ LocalClockEvent Node::insert_clock_event(std::uint32_t chain) {
   return clock_event;
 }
 
+// Ask the forwarding policy for the candidate next hops toward `node` and take the first
+// that is a known neighbor. The default StaticShortestPathRouter returns exactly the one
+// static next hop (already filtered to a known neighbor), so this preserves the historical
+// single-path behavior; later parts return more candidates, which fan-out (Part 5) consumes.
 const Neighbor* Node::find_next_hop_neighbor(NodeId node) const {
-  auto it = destination_to_next_hop_.find(node);
-  if (it == destination_to_next_hop_.end()) return nullptr;
-  auto jt = neighbors_.find(it->second);
-  return jt == neighbors_.end() ? nullptr : &jt->second;
+  for (NodeId hop : router_->next_hops(node, routing::RouteContext{})) {
+    auto jt = neighbors_.find(hop);
+    if (jt != neighbors_.end()) return &jt->second;
+  }
+  return nullptr;
 }
 
 // ---------------------------------------------------------------------------

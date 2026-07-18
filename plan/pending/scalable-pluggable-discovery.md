@@ -233,15 +233,20 @@ time-based one here).
 Ordered; each part a commit. Do the work in a worktree, mark parts done here, move to
 `plan/done/` when complete.
 
-### Part 1 — `DiscoveryRouter` seam (no behavior change)
-- [ ] Introduce the `DiscoveryRouter` interface and `RouteContext`.
-- [ ] Wrap today's static table as `StaticShortestPathRouter`.
-- [ ] Route the three call sites ([node.cpp:160/188/231](../../src/core/node.cpp)) through the
-  router. Sim + core tests stay green — pure refactor + anchor. (The response site
-  [node.cpp:188](../../src/core/node.cpp) is switched to the mandatory breadcrumb retrace in Part 2;
-  here it still routes, to keep this step behavior-preserving.)
+### Part 1 — `DiscoveryRouter` seam (no behavior change) — **DONE**
+- [x] Introduce the `DiscoveryRouter` interface and `RouteContext`
+  ([src/core/routing/discovery_router.hpp](../../src/core/routing/discovery_router.hpp)).
+- [x] Wrap today's static table as `StaticShortestPathRouter` (holds const refs to
+  `neighbors_` / `destination_to_next_hop_`; returns the one static next hop, k=1).
+- [x] Route the three call sites through the router. **Design decision:** rather than editing the
+  three sites, `find_next_hop_neighbor` was reimplemented to delegate to
+  `router_->next_hops(dest, ctx)` and take the first candidate that is a known neighbor — the call
+  sites stay textually intact and the change is provably behavior-preserving. Fan-out (Part 5) will
+  change the request sites to iterate all candidates; the response site switches to breadcrumb
+  retrace in Part 2. Core tests stay green (0 failures).
 
-**Risk:** low (mechanical extraction).
+**Risk:** low (mechanical extraction). **Done** — `RouteContext` is an empty struct that grows in
+later parts.
 
 ### Part 2 — Time-range + reverse-path plumbing
 - [ ] Add `TimeRange` to the discovery API (`discover_event_chain/bounds/order`).

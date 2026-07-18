@@ -9,6 +9,7 @@
 
 #include <cstddef>
 #include <map>
+#include <memory>
 #include <optional>
 #include <utility>
 #include <vector>
@@ -21,6 +22,7 @@
 #include "ports/store.hpp"
 #include "ports/telemetry.hpp"
 #include "ports/transport.hpp"
+#include "routing/discovery_router.hpp"
 
 namespace loti {
 
@@ -214,6 +216,12 @@ class Node final : private ChainCallback {
   std::map<domain::NodeId, domain::Neighbor> neighbors_;
   std::vector<std::vector<domain::Event>> unreferenced_per_chain_;
   std::map<domain::NodeId, domain::NodeId> destination_to_next_hop_;
+
+  // Forwarding policy — the "where do we forward a discovery" seam. Holds const
+  // references to the two overlay tables above, so it is declared after them (and thus
+  // destroyed before them). Default = the width-1 StaticShortestPathRouter; later parts
+  // swap in the time-dependent / probabilistic routers.
+  std::unique_ptr<routing::DiscoveryRouter> router_;
 
   // in-flight discoveries (transient; not persisted)
   template <class Discovery, class Cb>
