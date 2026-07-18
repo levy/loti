@@ -4,7 +4,7 @@ sim/results
 sim/.*
 .settings
 # OMNeT++-built binaries at the project root (anchored so they do NOT swallow
-# the loti-core sources under core/ and app/, e.g. core/loti_core.cpp, app/loti)
+# the loti-core sources under src/, e.g. src/core/loti_core.cpp, src/app/loti)
 /loti
 /loti_dbg
 /loti_release

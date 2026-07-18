@@ -27,13 +27,13 @@ add_compile_options(-Wall -Wextra -Wpedantic)
 # validation land in Stages 1–2; sources are added to this target as they arrive.
 # ----------------------------------------------------------------------------
 add_library(loti_core STATIC
-  core/loti_core.cpp
-  core/hash/hashing.cpp
-  core/wire/packets.cpp
-  core/node.cpp
-  core/proof/proof.cpp
+  src/core/loti_core.cpp
+  src/core/hash/hashing.cpp
+  src/core/wire/packets.cpp
+  src/core/node.cpp
+  src/core/proof/proof.cpp
 )
-target_include_directories(loti_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/core)
+target_include_directories(loti_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src/core)
 
 # ----------------------------------------------------------------------------
 # lotid — the production daemon: one loti::Node on the OS port adapters
@@ -45,20 +45,20 @@ target_include_directories(loti_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/core)
 # production-runtime dependency of the DAEMON only — loti_core stays pure.
 find_package(OpenSSL REQUIRED)
 add_executable(lotid
-  app/lotid/lotid.cpp
-  adapters/os/keystore.cpp
+  src/app/lotid/lotid.cpp
+  src/adapters/os/keystore.cpp
 )
 target_link_libraries(lotid PRIVATE loti_core OpenSSL::Crypto)
-target_include_directories(lotid PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+target_include_directories(lotid PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
 
 # loti — the CLI client. Talks to lotid over the control socket; `loti init` also
 # generates a key (hence loti_core + libcrypto via the keystore adapter).
 add_executable(loti
-  app/loti/loti.cpp
-  adapters/os/keystore.cpp
+  src/app/loti/loti.cpp
+  src/adapters/os/keystore.cpp
 )
 target_link_libraries(loti PRIVATE loti_core OpenSSL::Crypto)
-target_include_directories(loti PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+target_include_directories(loti PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
 
 # ----------------------------------------------------------------------------
 # Tests (doctest, vendored under test/doctest).

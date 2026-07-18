@@ -21,15 +21,15 @@ root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$root"
 mode="${1:-release}"
 
-# The sim is built ONLY from core/ + adapters/sim/ + app/sim/ (+ sim/). Everything
-# else is excluded so --deep doesn't sweep in a .cpp that doesn't belong: the
-# production runtime `adapters/os` (WallClock, reactor, UDP, the Ed25519 keystore on
-# OpenSSL) and the production apps `app/lotid` (has its own main() + links libcrypto)
-# / `app/loti` — any of which would pull an unresolved symbol into libloti.so.
+# The sim is built ONLY from src/core/ + src/adapters/sim/ + src/app/sim/ (+ sim/).
+# Everything else is excluded so --deep doesn't sweep in a .cpp that doesn't belong:
+# the production runtime `src/adapters/os` (WallClock, reactor, UDP, the Ed25519
+# keystore on OpenSSL) and the production apps `src/app/lotid` (has its own main() +
+# links libcrypto) / `src/app/loti` — any would pull an unresolved symbol into libloti.so.
 opp_makemake -f --deep -e cpp --make-so -o loti -O out \
   -X test -X build -X scripts -X plan -X doc -X bin \
-  -X adapters/os -X app/lotid -X app/loti \
+  -X src/adapters/os -X src/app/lotid -X src/app/loti \
   -KINET_PROJ="$INET_ROOT" -DINET_IMPORT \
-  -I. -Icore '-I$(INET_PROJ)/src' '-L$(INET_PROJ)/src' '-lINET$(D)'
+  -Isrc -Isrc/core '-I$(INET_PROJ)/src' '-L$(INET_PROJ)/src' '-lINET$(D)'
 
 make MODE="$mode" -j"$(nproc)"

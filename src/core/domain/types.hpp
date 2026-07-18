@@ -1,14 +1,13 @@
 // loti-core — the domain model.
 //
-// Plain-C++ port of the OMNeT++ message classes in src/Data.msg / src/Type.msg,
-// with no dependency on OMNeT++/INET (`cObject`, `simtime_t`, INET chunks). These
-// structs are what the DAG, the discoveries, and validation operate on, and what
-// the canonical serializer (core/hash) turns into bytes.
+// Plain-C++ structs with no dependency on OMNeT++/INET (`cObject`, `simtime_t`,
+// INET chunks). These are what the DAG, the discoveries, and validation operate on,
+// and what the canonical serializer (src/core/hash) turns into bytes.
 //
 // Signatures: `Event` and `ClockEvent` carry an OPTIONAL `signature` field from
 // the start (empty = unsigned). It is deliberately EXCLUDED from the hash — the
 // signature signs the hash — so wiring real signing in a later stage does not
-// change any hash. See documentation/architecture.md and plan/pending/mvp-dual-target.md.
+// change any hash. See doc/architecture.md and plan/done/mvp-dual-target.md.
 #pragma once
 
 #include <cstdint>

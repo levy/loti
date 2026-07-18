@@ -1,5 +1,5 @@
-// The three LOTI datagram types (a faithful port of src/Packet.msg), each behind
-// a header carrying the message type and the sender's NodeId.
+// The three LOTI datagram types, each behind a header carrying the message type
+// and the sender's NodeId.
 #pragma once
 
 #include <cstdint>

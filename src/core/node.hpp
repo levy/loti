@@ -1,10 +1,10 @@
 // loti-core — the Node: the environment-agnostic protocol engine.
 //
-// A faithful port of src/Daemon.cc's protocol logic, with every effectful call
-// (time, scheduling, networking, randomness, signing, telemetry) routed through a
-// port. One Node instance per participant; no globals, no blocking. The OMNeT++
-// modules and the production daemon are thin adapters that host a Node and wire it
-// to a runtime's ports (documentation/architecture.md).
+// The protocol engine, with every effectful call (time, scheduling, networking,
+// randomness, signing, telemetry) routed through a port. One Node instance per
+// participant; no globals, no blocking. The OMNeT++ modules and the production
+// daemon are thin adapters that host a Node and wire it to a runtime's ports
+// (doc/architecture.md).
 #pragma once
 
 #include <cstddef>
