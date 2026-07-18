@@ -1,5 +1,6 @@
 #include "adapters/os/lmdb_store.hpp"
 
+#include <cstring>
 #include <functional>
 #include <stdexcept>
 #include <string>
@@ -215,6 +216,24 @@ std::uint64_t LmdbStore::Batch::append_clock_event(const domain::LocalClockEvent
   return seq;
 }
 
+void LmdbStore::Batch::update_clock_event(const domain::LocalClockEvent& c) {
+  MDB_val ik{c.hash.size(), const_cast<std::uint8_t*>(c.hash.data())};
+  MDB_val sv{};
+  int rc = mdb_get(txn_, store_.clock_index_, &ik, &sv);
+  if (rc == MDB_NOTFOUND)
+    throw std::runtime_error("lmdb: update_clock_event for an unknown clock event");
+  check(rc, "get clock_index");
+
+  unsigned char kbuf[8];
+  std::memcpy(kbuf, sv.mv_data, sizeof(kbuf));  // copy the seq out before we write
+  wire::Writer w;
+  w.clock_event(c);
+  w.refs(c.referencing_events);
+  MDB_val k{sizeof(kbuf), kbuf};
+  MDB_val v{w.bytes().size(), const_cast<std::uint8_t*>(w.bytes().data())};
+  check(mdb_put(txn_, store_.clock_events_, &k, &v, 0), "update clock_event");
+}
+
 void LmdbStore::Batch::put_neighbor(const domain::Neighbor& n) {
   unsigned char kbuf[8];
   put_u64_be(kbuf, n.node_id);
@@ -292,5 +311,21 @@ std::map<domain::NodeId, domain::NodeId> LmdbStore::load_routes() const {
 
 std::size_t LmdbStore::event_count() const { return entry_count(env_, events_); }
 std::size_t LmdbStore::clock_event_count() const { return entry_count(env_, clock_events_); }
+
+void LmdbStore::sync() { check(mdb_env_sync(env_, 1), "env_sync"); }
+
+void LmdbStore::reset() {
+  MDB_txn* txn = nullptr;
+  check(mdb_txn_begin(env_, nullptr, 0, &txn), "txn_begin");
+  for (MDB_dbi dbi : {events_, event_index_, clock_events_, clock_index_, neighbors_, routes_}) {
+    if (int rc = mdb_drop(txn, dbi, 0); rc != MDB_SUCCESS) {  // del=0: empty but keep the DB
+      mdb_txn_abort(txn);
+      fail_rc("drop", rc);
+    }
+  }
+  check(mdb_txn_commit(txn), "txn_commit");
+  next_event_seq_ = 0;
+  next_clock_seq_ = 0;
+}
 
 }  // namespace loti::os

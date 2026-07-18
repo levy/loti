@@ -44,6 +44,7 @@
 #include <map>
 #include <memory>
 #include <optional>
+#include <stdexcept>
 #include <string>
 #include <tuple>
 #include <vector>
@@ -51,6 +52,7 @@
 #include "adapters/os/clock.hpp"
 #include "adapters/os/control.hpp"
 #include "adapters/os/keystore.hpp"
+#include "adapters/os/lmdb_store.hpp"
 #include "adapters/os/reactor.hpp"
 #include "adapters/os/rng.hpp"
 #include "adapters/os/signer.hpp"
@@ -59,10 +61,67 @@
 #include "adapters/os/transport.hpp"
 #include "node.hpp"
 #include "proof/proof.hpp"
+#include "wire/codec.hpp"
 
 namespace {
 
 using namespace loti;
+
+// Mirrors every Node state change into the LMDB store. Each change is its own small
+// durable transaction (autocommit) — correct and durable before the daemon replies;
+// batching per reactor wakeup is a later optimization.
+class StorePersistence final : public PersistenceListener {
+ public:
+  explicit StorePersistence(os::LmdbStore& store) : store_(store) {}
+  void on_event_appended(const domain::Event& e) override {
+    auto b = store_.begin(); b.append_event(e); b.commit();
+  }
+  void on_clock_event_appended(const domain::LocalClockEvent& c) override {
+    auto b = store_.begin(); b.append_clock_event(c); b.commit();
+  }
+  void on_clock_event_updated(const domain::LocalClockEvent& c) override {
+    auto b = store_.begin(); b.update_clock_event(c); b.commit();
+  }
+  void on_neighbor_changed(const domain::Neighbor& n) override {
+    auto b = store_.begin(); b.put_neighbor(n); b.commit();
+  }
+  void on_route_changed(domain::NodeId dst, domain::NodeId next_hop) override {
+    auto b = store_.begin(); b.put_route(dst, next_hop); b.commit();
+  }
+
+ private:
+  os::LmdbStore& store_;
+};
+
+// Rewrite `store` to mirror a node snapshot blob (used by db-restore). Parses the
+// snapshot's events / clock events / neighbors / routes (the unreferenced section is
+// derived, so it is skipped) into a freshly-reset store.
+void rebuild_store(os::LmdbStore& store, const domain::Bytes& blob) {
+  store.reset();
+  auto b = store.begin();
+  wire::Reader r(blob);
+  if (r.u64() != 1) throw std::runtime_error("db-restore: unsupported snapshot version");
+  for (auto n = r.u64(); n > 0; --n) b.append_event(r.event());
+  for (auto n = r.u64(); n > 0; --n) {
+    domain::LocalClockEvent c;
+    static_cast<domain::ClockEvent&>(c) = r.clock_event();
+    c.referencing_events = r.refs();
+    b.append_clock_event(c);
+  }
+  for (auto n = r.u64(); n > 0; --n) r.event();  // unreferenced — derived on load
+  for (auto n = r.u64(); n > 0; --n) {
+    domain::Neighbor nb;
+    nb.node_id = r.u64();
+    nb.last_clock_event_hash = r.blob();
+    b.put_neighbor(nb);
+  }
+  for (auto n = r.u64(); n > 0; --n) {
+    const auto dst = r.u64();
+    const auto next_hop = r.u64();
+    b.put_route(dst, next_hop);
+  }
+  b.commit();
+}
 
 std::vector<std::string> tokenize(const std::string& s) {
   std::vector<std::string> out;
@@ -242,16 +301,17 @@ class Lotid final : public ChainCallback, public BoundsCallback, public OrderCal
 
   void restore_from_store() {
     if (!store_) return;
-    if (auto blob = store_->load()) {
-      node_->restore(*blob);
-      std::fprintf(stderr, "[lotid] restored %zu events, %zu clock events from %s\n",
-                   node_->event_count(), node_->clock_event_count(), store_->path().c_str());
-    }
+    node_->load(store_->load_events(), store_->load_clock_events(), store_->load_neighbors(),
+                store_->load_routes());
+    std::fprintf(stderr, "[lotid] loaded %zu events, %zu clock events from %s\n",
+                 node_->event_count(), node_->clock_event_count(), store_->path().c_str());
+    // From here on, every state change is mirrored into the store incrementally.
+    persistence_.emplace(*store_);
+    node_->set_persistence_listener(&*persistence_);
   }
 
   void run() {
     node_->start();
-    if (store_) schedule_snapshot();
     reactor_.add_reader(transport_.fd(), [this] {
       for (;;) {
         domain::Bytes datagram = transport_.receive();
@@ -263,7 +323,7 @@ class Lotid final : public ChainCallback, public BoundsCallback, public OrderCal
     setup_control();
     reactor_.run();
     if (!control_path_.empty()) ::unlink(control_path_.c_str());
-    save_snapshot();
+    if (store_) store_->sync();  // flush on a clean shutdown (writes are already durable)
   }
 
   // ---- discovery callbacks: answer any control clients waiting on this event ----
@@ -381,8 +441,8 @@ class Lotid final : public ChainCallback, public BoundsCallback, public OrderCal
       return r;
     }
     if (verb == "save") {
-      save_snapshot();
-      return {kOk, false, "", {{"snapshot", store_ ? store_->path() : "(none)"}}};
+      sync_store();
+      return {kOk, false, "", {{"store", store_ ? store_->path() : "(none)"}}};
     }
     if (verb == "db-stat") return db_stat();
     if (verb == "db-backup") {
@@ -398,10 +458,10 @@ class Lotid final : public ChainCallback, public BoundsCallback, public OrderCal
       if (!blob) return {kNotFound, false, "cannot read snapshot", {}};
       try {
         node_->restore(*blob);
+        if (store_) rebuild_store(*store_, node_->snapshot());
       } catch (const std::exception& e) {
         return {kInvalidResult, false, std::string("invalid snapshot: ") + e.what(), {}};
       }
-      save_snapshot();  // persist the restored state to the primary store
       return {kOk, false, "", {{"restored", args[1]},
                                {"events", std::to_string(node_->event_count())},
                                {"clockEvents", std::to_string(node_->clock_event_count())}}};
@@ -650,11 +710,8 @@ class Lotid final : public ChainCallback, public BoundsCallback, public OrderCal
       if (hex(node_->event_at(i).hash).rfind(prefix, 0) == 0) return &node_->event_at(i);
     return nullptr;
   }
-  void save_snapshot() {
-    if (!store_) return;
-    store_->save(node_->snapshot());
-    std::fprintf(stderr, "[lotid] saved snapshot (%zu events, %zu clock events) to %s\n",
-                 node_->event_count(), node_->clock_event_count(), store_->path().c_str());
+  void sync_store() {
+    if (store_) store_->sync();
   }
 
   // Store status: the retention invariant is that local events and the local clock
@@ -677,15 +734,6 @@ class Lotid final : public ChainCallback, public BoundsCallback, public OrderCal
     }
     return r;
   }
-  void schedule_snapshot() {
-    reactor_.add_timer(clock_.now() + kSnapshotIntervalNs, [this] {
-      save_snapshot();
-      schedule_snapshot();
-    });
-  }
-
-  static constexpr domain::Duration kSnapshotIntervalNs = 5'000'000'000;  // 5 s
-
   os::WallClock clock_;
   os::Reactor reactor_;
   os::UdpTransport transport_;
@@ -699,7 +747,8 @@ class Lotid final : public ChainCallback, public BoundsCallback, public OrderCal
   bool signed_ = false;
   domain::EventHash last_event_;
   std::string stdin_buf_;
-  std::optional<os::FileStore> store_;
+  std::optional<os::LmdbStore> store_;
+  std::optional<StorePersistence> persistence_;  // installed after load; mirrors changes
   std::vector<std::tuple<domain::NodeId, std::string, std::uint16_t>> peers_;
 
   std::string control_path_;

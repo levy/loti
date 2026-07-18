@@ -53,6 +53,10 @@ class LmdbStore {
     std::uint64_t append_event(const domain::Event&);
     std::uint64_t append_clock_event(const domain::LocalClockEvent&);
 
+    // Re-persist an already-appended clock event whose referencing_events changed
+    // (located by its hash via the clock index). Throws if it was never appended.
+    void update_clock_event(const domain::LocalClockEvent&);
+
     // Upsert overlay state.
     void put_neighbor(const domain::Neighbor&);
     void put_route(domain::NodeId destination, domain::NodeId next_hop);
@@ -83,6 +87,13 @@ class LmdbStore {
 
   [[nodiscard]] std::size_t event_count() const;
   [[nodiscard]] std::size_t clock_event_count() const;
+
+  // Force all committed data to stable storage (backs the `save` control command).
+  void sync();
+
+  // Empty every data sub-DB (keeps `meta`) and reset the sequence counters. Used by
+  // db-restore before rewriting the store from a snapshot.
+  void reset();
 
   [[nodiscard]] const std::string& path() const noexcept { return path_; }
   [[nodiscard]] std::uint64_t format_version() const noexcept { return format_version_; }

@@ -62,6 +62,7 @@ find_package(OpenSSL REQUIRED)
 add_executable(lotid
   src/app/lotid/lotid.cpp
   src/adapters/os/keystore.cpp
+  src/adapters/os/lmdb_store.cpp
 )
 target_link_libraries(lotid PRIVATE loti_core OpenSSL::Crypto loti_lmdb)
 target_include_directories(lotid PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)

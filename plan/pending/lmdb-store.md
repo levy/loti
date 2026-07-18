@@ -88,10 +88,11 @@ derived state (an event is unreferenced iff no clock event references it) and is
 Each logical append is **one durable write txn** that atomically writes the record + its hash-index
 entry. LMDB gives cross-sub-DB atomicity for free. Neighbor/route changes are small upserts.
 
-**Durability policy (recommended):** batch all appends produced within one reactor wakeup into a
-single txn (amortizes the fsync), committed durably (default LMDB sync). This is stronger *and*
-cheaper than the current 5-s full rewrite. Offer `MDB_NOSYNC` + a periodic `mdb_env_sync` timer as
-an opt-in throughput knob; default stays fully durable because the user prioritized reliability.
+**Durability policy (as built):** the daemon commits each change as its own small durable txn
+(per-call autocommit) — correct and durable before the daemon replies, and far cheaper than the old
+5-s full rewrite. Batching all appends of one reactor wakeup into a single txn (to amortize the
+fsync) is a possible later optimization; it needs a reactor idle hook that does not exist yet.
+`MDB_NOSYNC` + a periodic `mdb_env_sync` remains an opt-in throughput knob.
 
 ### Read/startup path
 
@@ -138,12 +139,17 @@ Work in the dedicated `lmdb-store` worktree at `../loti-lmdb-store`, not the mai
   already-appended clock event's `referencing_events`, hence `on_clock_event_updated`. Not fired during
   `load()`/`restore()`. doctest: a recording listener sees exactly the expected records; an 8-round
   gossip drives the neighbor + clock-event-update hooks. All 33 core cases green (118 assertions).
-- [ ] **Step 5 — Swap the daemon onto LmdbStore.** Replace `FileStore store_` with `LmdbStore`. The
-  daemon implements `PersistenceListener`, accumulating changes into one `LmdbStore::Batch` per reactor
-  wakeup and committing durably; add `LmdbStore::Batch::update_clock_event` (upsert by hash, reusing the
-  existing `clock_index`) for the `on_clock_event_updated` hook. Startup: `node_->load(store_->load_*())`
-  instead of restore-from-blob, then install the listener **after** load. **Retire the 5-s full-snapshot
-  timer.** Rework `db_stat()` (report env size via `mdb_env_stat`/`mdb_stat` instead of `snapshot().size()`).
+- [x] **Step 5 — Swap the daemon onto LmdbStore.** `lotid` now holds `std::optional<os::LmdbStore>` and a
+  `StorePersistence` `PersistenceListener` that mirrors each change into the store. **Decided on per-call
+  autocommit** (each hook = one small durable txn) rather than per-wakeup batching: correct, durable before
+  the daemon replies, and needs no reactor change (the reactor has no idle hook, and mutations arrive from
+  timers/socket/stdin/control). Added `LmdbStore::Batch::update_clock_event` (upsert by hash via
+  `clock_index`), `sync()`, and `reset()`. Startup: `restore_from_store()` → `node_->load(store_->load_*())`
+  then installs the listener. Retired the 5-s full-snapshot timer + `save_snapshot`; `save` → `sync()`,
+  clean shutdown → `sync()`. `db-backup` still exports a portable blob (FileStore); `db-restore` loads a
+  blob and `rebuild_store()`s the live store; `db_stat` reports store path + counts + disk bytes.
+  **Verified end-to-end**: publish 3 events + let the clock chain tick → `kill -9` → restart on the same
+  store → events and clock chain survive with identical hashes. Unit suite green (118 assertions).
 - [ ] **Step 6 — Backup/restore + migration.** `db-backup` → `mdb_env_copy2(..., MDB_CP_COMPACT)`
   (consistent hot copy). `db-restore` → replace the env dir (or import). Keep `snapshot()`/`restore()`
   as a **portable blob export/import** format (this also gives a one-time importer for an existing
@@ -180,8 +186,9 @@ Work in the dedicated `lmdb-store` worktree at `../loti-lmdb-store`, not the mai
   listener (lowest risk, sim untouched — no general Node observer exists to reuse). Promoting `Store`
   to a real 7th entry in `NodePorts` (as `doc/architecture.md:140` sketches) is deferred to Stage 2 —
   only needed if the sim ever wants persistence.
-- **Durability window.** Default to per-batch durable commit; `MDB_NOSYNC` + periodic sync is opt-in.
-  Decide the batch boundary (per reactor wakeup vs. a short flush timer).
+- **Durability window.** Resolved: per-call autocommit (durable before the daemon replies). Per-wakeup
+  batching is a future optimization needing a reactor idle hook. `MDB_NOSYNC` + periodic sync stays an
+  opt-in knob.
 - **mapsize** must be set up front; pick a generous default and implement `MDB_MAP_FULL` growth.
 - **`EventHash` is variable-length** (`vector`, 32 by convention) — index keys use the raw bytes;
   keep the daemon's existing `size() != 32` guards in mind.
@@ -227,3 +234,8 @@ Work in the dedicated `lmdb-store` worktree at `../loti-lmdb-store`, not the mai
   the listener needs `on_clock_event_updated` (the daemon will re-persist that clock event via a new
   `LmdbStore::Batch::update_clock_event` in Step 5). Recording-listener + gossip tests pass; the sim is
   unaffected (listener null). Full suite 118 assertions green.
+- **Step 5 done** — daemon runs on `LmdbStore` with a per-call-autocommit `PersistenceListener` (durable
+  before reply; per-wakeup batching deferred). New store methods `update_clock_event`/`sync`/`reset`;
+  `lmdb_store.cpp` added to the `lotid` CMake target. Startup loads via `node_->load`; the 5-s full rewrite
+  is gone. End-to-end `kill -9` + restart proves events and the local clock chain survive. `db-backup`
+  keeps exporting a portable blob; `db-restore` rebuilds the live store from a blob. Unit suite still green.
