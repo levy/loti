@@ -230,6 +230,36 @@
   .lede .drop { color: var(--ink); font-family: var(--f-display); font-size: clamp(1.35rem, 2.3vw, 1.7rem); line-height: 1.5; }
   .lede .drop b { color: var(--accent); font-weight: 500; font-style: italic; }
 
+  /* ---------- chain figure ---------- */
+  .chain-fig { margin-top: 2.6rem; }
+  .chain-fig .frame {
+    background: var(--surface); border: 1px solid var(--line);
+    border-radius: 10px; padding: 1.4rem 1.5rem 1rem; box-shadow: var(--shadow);
+    overflow-x: auto; max-width: 780px; margin-inline: auto;
+  }
+  .chain-svg { display: block; width: 100%; min-width: 560px; height: auto; }
+  .chain-fig figcaption {
+    margin-top: 1rem; color: var(--ink-soft); font-size: 0.95rem;
+    max-width: 62ch; margin-inline: auto; text-align: center;
+  }
+  .chain-fig figcaption b { color: var(--accent); font-weight: 500; }
+  /* svg element classes */
+  .cf-axis { stroke: var(--line-2); stroke-width: 1; fill: none; }
+  .cf-arrowhead { fill: var(--ink-faint); }
+  .cf-mesh { stroke: var(--line-2); stroke-width: 1; opacity: 0.55; }
+  .cf-chain { fill: none; stroke: var(--accent); stroke-width: 2.4; stroke-linejoin: round; stroke-linecap: round; }
+  .cf-box { fill: var(--surface-2); stroke: var(--line-2); stroke-width: 1; }
+  .cf-box-chain { fill: color-mix(in srgb, var(--accent) 16%, var(--surface)); stroke: var(--accent); stroke-width: 1.4; }
+  .cf-box-lbl { fill: var(--ink-soft); font-family: var(--f-mono); font-size: 12px; }
+  .cf-box-lbl-chain { fill: var(--ink); }
+  .cf-event { fill: var(--accent); stroke: var(--accent); }
+  .cf-event-lbl { fill: var(--accent-ink); font-family: var(--f-mono); font-size: 12px; font-weight: 500; }
+  .cf-nodelbl { fill: var(--ink-soft); font-family: var(--f-mono); font-size: 13px; }
+  .cf-annot { fill: var(--ink-faint); font-family: var(--f-mono); font-size: 11px; }
+  .cf-annot-event { fill: var(--accent); }
+  .cf-bound-drop { stroke: var(--accent); stroke-width: 1; stroke-dasharray: 3 3; opacity: 0.7; }
+  .cf-bound-lbl { fill: var(--accent); font-family: var(--f-mono); font-size: 10.5px; letter-spacing: 0.04em; }
+
   /* grids */
   .grid { display: grid; gap: 1.15rem; }
   .g-3 { grid-template-columns: repeat(3, 1fr); }
@@ -473,6 +503,88 @@
         <p class="drop">A proof is a <b>chain</b>. It sets out from the clock you trust, threads through the steady heartbeats of nodes across the network, reaches the event in question, and comes all the way back — pinning it between one tick that came provably <b>before</b> and one that came provably <b>after</b>.</p>
         <p>Each heartbeat carries a signed nod to the neighbors it just heard from. Follow those nods outward from your event and, hop after hop, they lead back to a clock you chose to measure against — your own, a lab's, a notary's. The two bracketing ticks are your time bounds; the reference clock at each end is what turns them into a date you can read. Nothing in the chain is asserted after the fact — it's the record of nods that actually happened, in the order they happened, which is exactly why it can't be re-told two ways.</p>
       </div>
+      <figure class="chain-fig reveal">
+        <div class="frame">
+          <svg class="chain-svg" viewBox="0 0 760 340" role="img" aria-label="A proof chain: the event E1 of node N1 is bracketed between clock events C1 and C6 of node N3, threading through the network from N3 up to the event and back down to N3.">
+          <defs><marker id="cf-arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" class="cf-arrowhead"/></marker></defs>
+          <line class="cf-axis" x1="58" y1="95" x2="702" y2="95" marker-end="url(#cf-arrow)"/>
+          <text class="cf-nodelbl" x="40" y="99" text-anchor="middle">N<tspan dy="3" font-size="0.7em">1</tspan></text>
+          <line class="cf-axis" x1="58" y1="180" x2="702" y2="180" marker-end="url(#cf-arrow)"/>
+          <text class="cf-nodelbl" x="40" y="184" text-anchor="middle">N<tspan dy="3" font-size="0.7em">2</tspan></text>
+          <line class="cf-axis" x1="58" y1="265" x2="702" y2="265" marker-end="url(#cf-arrow)"/>
+          <text class="cf-nodelbl" x="40" y="269" text-anchor="middle">N<tspan dy="3" font-size="0.7em">3</tspan></text>
+          <line class="cf-axis" x1="58" y1="300" x2="702" y2="300" marker-end="url(#cf-arrow)"/>
+          <text class="cf-annot" x="710" y="304" text-anchor="start">t</text>
+          <line class="cf-mesh" x1="108" y1="180" x2="150" y2="95"/>
+          <line class="cf-mesh" x1="225" y1="180" x2="150" y2="95"/>
+          <line class="cf-mesh" x1="315" y1="180" x2="300" y2="95"/>
+          <line class="cf-mesh" x1="315" y1="180" x2="380" y2="95"/>
+          <line class="cf-mesh" x1="405" y1="180" x2="380" y2="95"/>
+          <line class="cf-mesh" x1="405" y1="180" x2="470" y2="95"/>
+          <line class="cf-mesh" x1="495" y1="180" x2="470" y2="95"/>
+          <line class="cf-mesh" x1="560" y1="180" x2="470" y2="95"/>
+          <line class="cf-mesh" x1="560" y1="180" x2="650" y2="95"/>
+          <line class="cf-mesh" x1="665" y1="180" x2="650" y2="95"/>
+          <line class="cf-mesh" x1="92" y1="265" x2="108" y2="180"/>
+          <line class="cf-mesh" x1="92" y1="265" x2="225" y2="180"/>
+          <line class="cf-mesh" x1="205" y1="265" x2="225" y2="180"/>
+          <line class="cf-mesh" x1="205" y1="265" x2="315" y2="180"/>
+          <line class="cf-mesh" x1="320" y1="265" x2="315" y2="180"/>
+          <line class="cf-mesh" x1="320" y1="265" x2="405" y2="180"/>
+          <line class="cf-mesh" x1="430" y1="265" x2="405" y2="180"/>
+          <line class="cf-mesh" x1="430" y1="265" x2="495" y2="180"/>
+          <line class="cf-mesh" x1="520" y1="265" x2="495" y2="180"/>
+          <line class="cf-mesh" x1="520" y1="265" x2="560" y2="180"/>
+          <line class="cf-mesh" x1="632" y1="265" x2="560" y2="180"/>
+          <line class="cf-mesh" x1="632" y1="265" x2="665" y2="180"/>
+          <polyline class="cf-chain" points="92,265 225,180 315,180 380,95 425,35 470,95 560,180 632,265"/>
+          <line class="cf-bound-drop" x1="92" y1="276.0" x2="92" y2="300"/>
+          <text class="cf-bound-lbl" x="92" y="318" text-anchor="middle">lower bound</text>
+          <line class="cf-bound-drop" x1="632" y1="276.0" x2="632" y2="300"/>
+          <text class="cf-bound-lbl" x="632" y="318" text-anchor="middle">upper bound</text>
+          <rect class="cf-box" x="134.0" y="84.0" width="32" height="22" rx="4"/>
+          <text class="cf-box-lbl" x="150" y="99" text-anchor="middle">C<tspan dy="3" font-size="0.7em">1</tspan></text>
+          <rect class="cf-box" x="284.0" y="84.0" width="32" height="22" rx="4"/>
+          <text class="cf-box-lbl" x="300" y="99" text-anchor="middle">C<tspan dy="3" font-size="0.7em">2</tspan></text>
+          <rect class="cf-box cf-box-chain" x="364.0" y="84.0" width="32" height="22" rx="4"/>
+          <text class="cf-box-lbl cf-box-lbl-chain" x="380" y="99" text-anchor="middle">C<tspan dy="3" font-size="0.7em">3</tspan></text>
+          <rect class="cf-box cf-box-chain" x="454.0" y="84.0" width="32" height="22" rx="4"/>
+          <text class="cf-box-lbl cf-box-lbl-chain" x="470" y="99" text-anchor="middle">C<tspan dy="3" font-size="0.7em">4</tspan></text>
+          <rect class="cf-box" x="634.0" y="84.0" width="32" height="22" rx="4"/>
+          <text class="cf-box-lbl" x="650" y="99" text-anchor="middle">C<tspan dy="3" font-size="0.7em">5</tspan></text>
+          <rect class="cf-box" x="92.0" y="169.0" width="32" height="22" rx="4"/>
+          <text class="cf-box-lbl" x="108" y="184" text-anchor="middle">C<tspan dy="3" font-size="0.7em">1</tspan></text>
+          <rect class="cf-box cf-box-chain" x="209.0" y="169.0" width="32" height="22" rx="4"/>
+          <text class="cf-box-lbl cf-box-lbl-chain" x="225" y="184" text-anchor="middle">C<tspan dy="3" font-size="0.7em">2</tspan></text>
+          <rect class="cf-box cf-box-chain" x="299.0" y="169.0" width="32" height="22" rx="4"/>
+          <text class="cf-box-lbl cf-box-lbl-chain" x="315" y="184" text-anchor="middle">C<tspan dy="3" font-size="0.7em">3</tspan></text>
+          <rect class="cf-box" x="389.0" y="169.0" width="32" height="22" rx="4"/>
+          <text class="cf-box-lbl" x="405" y="184" text-anchor="middle">C<tspan dy="3" font-size="0.7em">4</tspan></text>
+          <rect class="cf-box" x="479.0" y="169.0" width="32" height="22" rx="4"/>
+          <text class="cf-box-lbl" x="495" y="184" text-anchor="middle">C<tspan dy="3" font-size="0.7em">5</tspan></text>
+          <rect class="cf-box cf-box-chain" x="544.0" y="169.0" width="32" height="22" rx="4"/>
+          <text class="cf-box-lbl cf-box-lbl-chain" x="560" y="184" text-anchor="middle">C<tspan dy="3" font-size="0.7em">6</tspan></text>
+          <rect class="cf-box" x="649.0" y="169.0" width="32" height="22" rx="4"/>
+          <text class="cf-box-lbl" x="665" y="184" text-anchor="middle">C<tspan dy="3" font-size="0.7em">7</tspan></text>
+          <rect class="cf-box cf-box-chain" x="76.0" y="254.0" width="32" height="22" rx="4"/>
+          <text class="cf-box-lbl cf-box-lbl-chain" x="92" y="269" text-anchor="middle">C<tspan dy="3" font-size="0.7em">1</tspan></text>
+          <rect class="cf-box" x="189.0" y="254.0" width="32" height="22" rx="4"/>
+          <text class="cf-box-lbl" x="205" y="269" text-anchor="middle">C<tspan dy="3" font-size="0.7em">2</tspan></text>
+          <rect class="cf-box" x="304.0" y="254.0" width="32" height="22" rx="4"/>
+          <text class="cf-box-lbl" x="320" y="269" text-anchor="middle">C<tspan dy="3" font-size="0.7em">3</tspan></text>
+          <rect class="cf-box" x="414.0" y="254.0" width="32" height="22" rx="4"/>
+          <text class="cf-box-lbl" x="430" y="269" text-anchor="middle">C<tspan dy="3" font-size="0.7em">4</tspan></text>
+          <rect class="cf-box" x="504.0" y="254.0" width="32" height="22" rx="4"/>
+          <text class="cf-box-lbl" x="520" y="269" text-anchor="middle">C<tspan dy="3" font-size="0.7em">5</tspan></text>
+          <rect class="cf-box cf-box-chain" x="616.0" y="254.0" width="32" height="22" rx="4"/>
+          <text class="cf-box-lbl cf-box-lbl-chain" x="632" y="269" text-anchor="middle">C<tspan dy="3" font-size="0.7em">6</tspan></text>
+          <rect class="cf-event" x="407.0" y="23.0" width="36" height="24" rx="4"/>
+          <text class="cf-event-lbl" x="425" y="39" text-anchor="middle">E<tspan dy="3" font-size="0.7em">1</tspan></text>
+          <text class="cf-annot cf-annot-event" x="425" y="17.0" text-anchor="middle">your event</text>
+          </svg>
+        </div>
+        <figcaption>The event <b>E₁</b> made by node N₁ is pinned between two ticks of <b>your clock</b> (N₃) — <b>C₁</b> just before it, <b>C₆</b> just after. The bold chain threads up through the network to the event and back down; every link is a signed nod that actually happened, which is what makes the bracket impossible to fake.</figcaption>
+      </figure>
       <div class="grid g-2 reveal" style="margin-top: 2.6rem;">
         <div class="card">
           <div class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3.5 12a8.5 8.5 0 1 0 2.7-6.2"/><path d="M3 4.5V9h4.5"/><path d="M12 8v4.3l3 1.8"/></svg></div>
