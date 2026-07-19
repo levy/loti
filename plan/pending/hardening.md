@@ -224,11 +224,12 @@ stored timestamps are non-decreasing and no inverted interval validates.
 
 ## Phase 5 — Durability & operational correctness 🟠
 
-- [ ] **5.1 — `prune_chain` must not desync RAM from disk.** It `pop_front()`s the in-RAM retention
-  deque *before* the LMDB delete (`lmdb_store.cpp`, the `prune_chain` loop); if a delete throws
-  mid-loop the txn aborts (disk reverts) but the popped seqs are lost, leaking records forever and
-  silently degrading the bounded-storage invariant. Restore the deque on abort, or delete first and
-  mutate RAM only after a successful commit.
+- [x] **5.1 — `prune_chain` must not desync RAM from disk.** DONE: the loop is now read-only and the
+  in-RAM `chain_seqs_` tracker is trimmed only AFTER the delete transaction commits (was popped
+  before the delete, so an I/O error mid-loop left RAM ahead of the aborted disk state, leaking
+  records and degrading the bounded-storage invariant). The I/O-fault path can't be cleanly injected
+  against real LMDB, so it is verified by construction + the happy path; added the first real-storage
+  prune test (T9) which the earlier sim-store-only ring-prune tests lacked.
 - [x] **5.2 — Robust map growth.** DONE: `durable()` now loops grow/retry until the record fits (or
   `grow_map()` throws `LmdbStoreFull` at the 32-bit ceiling). Was a single retry — a record larger
   than one doubling threw uncaught → crash. Test: a 5 MiB single-record write into a 1 MiB map now
@@ -337,7 +338,7 @@ pruning, and uses a lossless transport. Add:
 - [ ] **T7 — backward clock step** → non-decreasing timestamps, no inverted interval (Phase 4).
 - [ ] **T8 — lossy-transport discovery** in the harness (add a loss/reorder model to the harness
   `FakeTransport`, which is lossless today) → measure and assert self-healing after 6.1.
-- [ ] **T9 — LMDB prune/retention** at the real-storage layer (pruning correctness is only tested
+- [x] **T9 — LMDB prune/retention** at the real-storage layer (pruning correctness is only tested
   against the in-memory sim store today).
 
 ---
