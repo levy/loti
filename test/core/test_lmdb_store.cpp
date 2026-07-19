@@ -487,3 +487,22 @@ TEST_CASE("LmdbStore migrates a v1 store by rebuilding the referencing index") {
   CHECK(store.clock_events_referencing(hash_of(61)) == std::vector<std::uint64_t>{0});
   CHECK(store.clock_events_referencing(hash_of(62)) == std::vector<std::uint64_t>{0});
 }
+
+// 5.2 — a single-record write (the ports::Store path, via durable()) must grow the map as
+// many times as the record needs, not give up after ONE doubling. Before the fix, durable()
+// caught MDB_MAP_FULL once, grew once, and retried once; a record larger than a single
+// doubling threw uncaught on the second attempt and crashed the daemon.
+TEST_CASE("LmdbStore single-record write grows the map as many times as needed") {
+  TempEnv env("bigrec");
+  constexpr std::size_t kStart = std::size_t{1} << 20;  // 1 MiB start
+  LmdbStore store(env.str(), kStart);
+
+  domain::Event e;
+  e.creator = 1;
+  e.hash = domain::EventHash(32, 0xAB);
+  e.data = domain::Bytes(std::size_t{5} << 20, 'x');  // ~5 MiB, far past a single 1→2 MiB doubling
+
+  CHECK_NOTHROW(store.append_event(e));               // must grow 1→2→4→8 MiB, not throw after one
+  CHECK(store.event_count() == 1);
+  CHECK(store.map_size() >= (std::size_t{5} << 20));
+}

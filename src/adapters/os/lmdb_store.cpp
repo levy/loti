@@ -94,21 +94,25 @@ domain::Bytes to_bytes(const MDB_val& v) {
 }  // namespace
 
 // A single-record write as its own durable transaction: begin, apply, commit; on
-// MDB_MAP_FULL grow the map once and retry (the aborted txn consumed no state or seqs).
-// This is what makes LmdbStore satisfy the ports::Store write contract directly, so the
-// Node no longer needs the PersistenceListener seam.
+// MDB_MAP_FULL grow the map and retry, repeating until the record fits (the aborted txn
+// consumed no state or seqs, and its Batch is destroyed — aborting the txn — before
+// grow_map runs). Looping (not a single retry) is required: a record larger than one
+// doubling would otherwise throw uncaught on the second attempt and crash the daemon.
+// grow_map() throws LmdbStoreFull at the 32-bit address-space ceiling; that is terminal
+// and propagates. This is what makes LmdbStore satisfy the ports::Store write contract
+// directly, so the Node no longer needs the PersistenceListener seam.
 namespace {
 template <class Op>
 void durable(LmdbStore& store, Op&& op) {
-  try {
-    auto b = store.begin();
-    op(b);
-    b.commit();
-  } catch (const LmdbMapFull&) {
-    store.grow_map();
-    auto b = store.begin();
-    op(b);
-    b.commit();
+  for (;;) {
+    try {
+      auto b = store.begin();
+      op(b);
+      b.commit();
+      return;
+    } catch (const LmdbMapFull&) {
+      store.grow_map();  // grow and retry until the record fits (or hit the 32-bit ceiling)
+    }
   }
 }
 }  // namespace
