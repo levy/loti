@@ -902,6 +902,11 @@ int main(int argc, char** argv) {
     }
     std::fprintf(stderr, "[lotid] node %s listening on udp/%u (%s)\n", hex_id(daemon.node_id()).c_str(),
                  port, key_path.empty() ? "unsigned" : "signed");
+    if (key_path.empty())
+      std::fprintf(stderr,
+                   "[lotid] WARNING: running UNSIGNED (--id) — this node has no cryptographic "
+                   "identity; its events cannot be verified by any signed peer. Use --key for a "
+                   "real identity.\n");
     daemon.run();
   } catch (const std::exception& e) {
     std::fprintf(stderr, "[lotid] fatal: %s\n", e.what());

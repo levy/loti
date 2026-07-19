@@ -30,6 +30,7 @@
 
 #include <cstdio>
 #include <cstdlib>
+#include <cerrno>
 #include <cstring>
 #include <ctime>
 #include <map>
@@ -371,7 +372,14 @@ std::string to_request(const std::vector<std::string>& a, const std::string& ran
 }
 
 int do_init(const std::string& home) {
-  ::mkdir(home.c_str(), 0700);
+  if (::mkdir(home.c_str(), 0700) != 0) {
+    if (errno == EEXIST)
+      ::chmod(home.c_str(), 0700);  // tighten an existing (possibly world-readable) home to private
+    else {
+      std::fprintf(stderr, "loti init: cannot create %s: %s\n", home.c_str(), std::strerror(errno));
+      return 1;
+    }
+  }
   const std::string keypath = home + "/key";
   os::Ed25519KeyStore ks;
   ks.load_or_generate(keypath);
