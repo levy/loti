@@ -15,6 +15,7 @@
 #include <deque>
 #include <limits>
 #include <map>
+#include <ostream>
 #include <vector>
 
 namespace loti::domain {
@@ -36,6 +37,17 @@ struct NodeId {
   auto operator<=>(const NodeId&) const = default;
   bool operator==(const NodeId&) const = default;
 };
+
+// Stream a NodeId as "0x" + 32 lowercase hex chars (restores the streamability the old u64 had,
+// used by the simulation's EV_INFO logging of event.creator). Non-template on purpose: a
+// templated stream inserter would tie with standard char/int streaming (the implicit NodeId(u64)
+// ctor lets an integer convert to NodeId), so an exact std::ostream& parameter is required.
+inline std::ostream& operator<<(std::ostream& os, const NodeId& id) {
+  static const char digits[] = "0123456789abcdef";
+  os << "0x";
+  for (auto b : id.bytes) { os << digits[b >> 4] << digits[b & 0x0F]; }
+  return os;
+}
 
 using Salt      = std::uint64_t;
 using Bytes     = std::vector<std::uint8_t>;

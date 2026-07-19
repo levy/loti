@@ -1,10 +1,14 @@
 # Widen NodeId to 128 bits (hardening plan, item 2.4)
 
-**Status: DONE** (commit `harden: widen NodeId to 128 bits`). All 8 stages landed; unit suite
-68/278 green and `run.sh`/`fuzz_udp.sh`/`config_posture.sh` acceptance all pass with real 128-bit
-ids over UDP (the notary id is now 32 hex chars). The OMNeT++ sim app is source-compatible and
-needed no edits (NodeId appears only as `= 0`, `static_cast(getId())`, and map keys), but is built
-only under OMNeT++, not in CI here.
+**Status: DONE** (commits `harden: widen NodeId to 128 bits` + `sim: NodeId operator<<`). All 8
+stages landed; unit suite green and `run.sh`/`fuzz_udp.sh`/`config_posture.sh` acceptance all pass
+with real 128-bit ids over UDP (the notary id is now 32 hex chars). **The OMNeT++ sim needed one
+edit**: the sim's `Browser` streams `event.creator` (a `NodeId`) into `EV_INFO`, which compiled
+when `NodeId` was a `u64` but not as a struct — a non-template `operator<<(std::ostream&, const
+NodeId&)` (hex) was added to `domain/types.hpp` to restore it. Verified by building the sim under
+OMNeT++ 6.4 + INET 4.7 and running the 57-node `EventBoundsDiscovery` example (534,610 events,
+reached the time limit and called finish() cleanly). Everything else in the sim (`= 0`,
+`static_cast(getId())`, map keys) is covered by the implicit ctor and struct comparison.
 
 A sub-plan split out of `hardening.md` because it is a wire / on-disk / snapshot **format
 change**, not a localized fix. No backward compatibility is required (the operator confirmed):
