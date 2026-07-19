@@ -17,8 +17,11 @@ class Signer {
   // Sign a message (typically an event/clock-event hash). Empty = unsigned.
   [[nodiscard]] virtual domain::Signature sign(const domain::Bytes& message) = 0;
 
-  // Verify `signature` over `message` as produced by `signer`. An empty signature
-  // is treated as "unsigned" and accepted (the current, pre-Stage-4 behavior).
+  // Verify `signature` over `message` as produced by `signer`. Whether an empty
+  // (unsigned) signature is acceptable is the implementation's policy: the production
+  // Ed25519 keystore REJECTS it (a real signature is required, so a forged all-unsigned
+  // proof cannot verify), while the simulation's NullSigner accepts everything so
+  // large unsigned runs stay fast. The policy is chosen by which adapter is linked.
   [[nodiscard]] virtual bool verify(const domain::Bytes& message,
                                     const domain::Signature& signature,
                                     domain::NodeId signer) const = 0;

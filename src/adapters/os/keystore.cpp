@@ -4,6 +4,10 @@
 
 #include <openssl/evp.h>
 
+#include <fcntl.h>
+#include <sys/stat.h>
+#include <unistd.h>
+
 #include <cstdio>
 #include <fstream>
 #include <iterator>
@@ -50,20 +54,41 @@ void Ed25519KeyStore::load_or_generate(const std::string& path) {
   std::ifstream in(path, std::ios::binary);
   if (in) {
     domain::Bytes raw((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    in.close();
     set_private_key(raw);
+    ::chmod(path.c_str(), 0600);  // best-effort: tighten an existing looser (e.g. 0644) key file
     return;
   }
   // No key on disk: keep the ephemeral key generated in the constructor and persist it.
+  // Write to a 0600 temp file (never a world-readable window), fsync-free, then atomically
+  // rename into place. Every step is checked — a key that failed to persist must not look
+  // like it succeeded, or the node silently regenerates a new identity on the next start.
   domain::Bytes raw(kEd25519Raw, 0);
   std::size_t len = kEd25519Raw;
   if (EVP_PKEY_get_raw_private_key(as_pkey(pkey_), raw.data(), &len) != 1 || len != kEd25519Raw)
     throw std::runtime_error("cannot extract Ed25519 private key");
   const std::string tmp = path + ".tmp";
-  {
-    std::ofstream out(tmp, std::ios::binary | std::ios::trunc);
-    out.write(reinterpret_cast<const char*>(raw.data()), static_cast<std::streamsize>(raw.size()));
+  ::unlink(tmp.c_str());
+  const int fd = ::open(tmp.c_str(), O_WRONLY | O_CREAT | O_EXCL, 0600);
+  if (fd < 0) throw std::runtime_error("cannot create key file " + tmp);
+  std::size_t off = 0;
+  while (off < raw.size()) {
+    const ssize_t n = ::write(fd, raw.data() + off, raw.size() - off);
+    if (n <= 0) {
+      ::close(fd);
+      ::unlink(tmp.c_str());
+      throw std::runtime_error("cannot write key file " + tmp);
+    }
+    off += static_cast<std::size_t>(n);
   }
-  std::rename(tmp.c_str(), path.c_str());
+  if (::close(fd) != 0) {
+    ::unlink(tmp.c_str());
+    throw std::runtime_error("cannot flush key file " + tmp);
+  }
+  if (::rename(tmp.c_str(), path.c_str()) != 0) {
+    ::unlink(tmp.c_str());
+    throw std::runtime_error("cannot install key file " + path);
+  }
 }
 
 domain::Signature Ed25519KeyStore::sign(const domain::Bytes& message) {
@@ -81,7 +106,7 @@ domain::Signature Ed25519KeyStore::sign(const domain::Bytes& message) {
 
 bool Ed25519KeyStore::verify(const domain::Bytes& message, const domain::Signature& signature,
                              domain::NodeId signer) const {
-  if (signature.empty()) return true;  // unsigned — accepted (as NullSigner)
+  if (signature.empty()) return false;  // a real signature is required — unsigned is NOT verified
   if (signature.size() != kEd25519Sig + kEd25519Raw) return false;
   const domain::Bytes pub(signature.begin() + kEd25519Sig, signature.end());
   if (fingerprint(pub) != signer) return false;  // pubkey must match the claimed identity

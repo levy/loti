@@ -65,7 +65,10 @@ ChainResult verify_chain(const domain::EventChain& chain, domain::NodeId referen
   }
   prev = domain::EventReference{chain.event.creator, chain.event.hash};
 
-  bool first = true;
+  // `prev` is the event as the loop starts. Every upper-bound clock event — including the
+  // first — must reference its predecessor: the first references the event itself, anchoring
+  // the upper bound to it. (Skipping this check for the first element let a disconnected
+  // upper bound, one that does not enclose the event at all, validate.)
   for (const auto& ce : chain.upper_bound) {
     if (hash::calculate_clock_event_hash(ce) != ce.hash) {
       res.reason = "upper-bound clock event hash mismatch";
@@ -75,12 +78,11 @@ ChainResult verify_chain(const domain::EventChain& chain, domain::NodeId referen
       res.reason = "upper-bound clock event signature invalid";
       return res;
     }
-    if (!first && !references(ce.referenced_events, prev)) {
+    if (!references(ce.referenced_events, prev)) {
       res.reason = "upper bound is not linked";
       return res;
     }
     prev = domain::EventReference{ce.creator, ce.hash};
-    first = false;
   }
 
   res.lower = chain.lower_bound.front().timestamp;

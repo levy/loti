@@ -11,9 +11,15 @@
 //     must abort the discovery, not crash the node.
 #include "doctest.h"
 
-#include <stdexcept>
+#include <sys/stat.h>
+#include <unistd.h>
 
+#include <stdexcept>
+#include <string>
+
+#include "adapters/os/keystore.hpp"
 #include "harness/world.hpp"
+#include "proof/proof.hpp"
 #include "wire/codec.hpp"
 #include "wire/packets.hpp"
 
@@ -115,4 +121,75 @@ TEST_CASE("T2: an invalid chain response aborts the discovery, it does not crash
   CHECK_NOTHROW(n1.on_packet_received(datagram));  // must not throw
   CHECK(cb.aborted);                               // and the discovery is aborted
   CHECK_FALSE(cb.completed);
+}
+
+// --- Phase 2: proof soundness & identity ----------------------------------
+
+// 2.1 — the flagship offline verifier (Ed25519KeyStore, as used by `loti verify`)
+// currently accepts a chain whose clock events carry NO signature, because
+// Ed25519KeyStore::verify returns true for an empty signature. An attacker can
+// fabricate such an all-unsigned chain (hashes are over public content), attribute
+// it to any reference node, and have `loti verify` call it valid. A real verifier
+// must REQUIRE signatures.
+TEST_CASE("2.1: the offline verifier rejects an unsigned (forged) proof") {
+  harness::World w;                                   // World signs with NullSigner → unsigned
+  auto nodes = harness::build_path(w, 3);
+  harness::gossip(w, nodes, 8);
+  const auto event = nodes[0]->publish_event({0x01});
+  harness::gossip(w, nodes, 8);
+  harness::RecordingChain cb;
+  nodes[2]->discover_event_chain(event, domain::TimeRange::all(), cb);
+  w.pump();
+  REQUIRE(cb.completed);
+
+  proof::Proof p;
+  p.kind = proof::Kind::bounds;
+  p.reference.node = nodes[2]->id();
+  // p.reference.pubkey deliberately empty — as a forger would leave it.
+  p.chain = cb.chain;                                 // every clock event is unsigned
+
+  os::Ed25519KeyStore verifier;                       // the real offline verifier the CLI uses
+  CHECK_FALSE(proof::verify(p, verifier).valid);      // an unsigned chain must NOT verify
+}
+
+// A soundness bug found in verify_chain: the FIRST upper-bound clock event's linkage
+// to the event is skipped, so an upper bound disconnected from the event still
+// validates. Dropping the one upper clock event that references the event leaves a
+// chain whose upper bound no longer encloses it — which must be rejected.
+TEST_CASE("2.x: a chain whose upper bound is not linked to the event is rejected") {
+  harness::World w;
+  auto nodes = harness::build_path(w, 3);
+  harness::gossip(w, nodes, 8);
+  const auto event = nodes[0]->publish_event({0x02});
+  harness::gossip(w, nodes, 8);
+  harness::RecordingChain cb;
+  nodes[2]->discover_event_chain(event, domain::TimeRange::all(), cb);
+  w.pump();
+  REQUIRE(cb.completed);
+  REQUIRE(cb.chain.upper_bound.size() >= 2);          // need a front element to drop
+
+  proof::Proof p;
+  p.kind = proof::Kind::bounds;
+  p.reference.node = nodes[2]->id();
+  p.chain = cb.chain;
+  p.chain.upper_bound.pop_front();                    // drop the event's only upper reference
+
+  harness::NullSigner signer;                         // isolate the linkage check from signatures
+  CHECK_FALSE(proof::verify(p, signer).valid);
+}
+
+// 2.2 — a generated private-key file must not be world/group readable.
+TEST_CASE("2.2: a generated key file is private (0600)") {
+  const std::string path = "loti_test_key_0600.tmp";
+  ::unlink(path.c_str());
+  const mode_t old = ::umask(0022);                   // force a permissive umask for the test
+  {
+    os::Ed25519KeyStore ks;
+    ks.load_or_generate(path);
+  }
+  ::umask(old);
+  struct stat st{};
+  REQUIRE(::stat(path.c_str(), &st) == 0);
+  CHECK((st.st_mode & 0777) == 0600);
+  ::unlink(path.c_str());
 }

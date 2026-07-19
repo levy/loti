@@ -42,9 +42,9 @@ TEST_CASE("a signature claiming the wrong identity fails") {
   CHECK_FALSE(ks.verify(msg, sig, ks.node_id() ^ 0x1ull));
 }
 
-TEST_CASE("empty signature is accepted as unsigned") {
-  os::Ed25519KeyStore ks;
-  CHECK(ks.verify({1, 2, 3}, {}, 12345));
+TEST_CASE("empty signature is rejected (a real signature is required)") {
+  os::Ed25519KeyStore ks;  // the production verifier must not accept an unsigned message —
+  CHECK_FALSE(ks.verify({1, 2, 3}, {}, 12345));  // otherwise a forged all-unsigned proof verifies
 }
 
 TEST_CASE("NodeId is the public-key fingerprint (deterministic)") {
