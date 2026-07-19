@@ -281,17 +281,27 @@ on-disk state stay consistent; a test drives a >2× single-record write and asse
 Bring the docs in line with the code as it actually is (the review found many doc↔code and
 doc↔doc conflicts). No code change; do this alongside the phases that settle each fact.
 
-- [ ] **7.1 — One store story.** [doc/cli.md] and
+**Status: 7.1, 7.3, 7.4 DONE** (commit `docs: reconcile store, retention, and socket-path claims`);
+`--rpc` (part of 7.3) was already removed by a prior `web:`/`docs:` commit. **7.2** (port numbers —
+minor; all ports work, and `loti init` itself prints `--port 7000`, so the 7000 quickstarts match
+the code while cli.md's `4666` is the deferred config-file default) and **7.5 / 7.6** (unimplemented
+-feature demos; remaining absolute-claim qualifiers) are left as low-risk follow-ups. Note the
+retention part of 7.6 (flat-storage vs unpruned events) was folded into the 7.4 rewrite.
+The **`index.html` landing-page** copy carries the same over-claims and was edited to match, but
+that edit is **deferred**: the page is being edited concurrently (a proof-chain figure), so its
+claim reconciliation will be re-applied on top of that work rather than risk clobbering it.
+
+- [x] **7.1 — One store story.** [doc/cli.md] and
   [doc/paper-vs-implementation.md](../../doc/paper-vs-implementation.md#L33) call the MVP store "a
   periodic full snapshot," but `lotid` instantiates the **incremental LMDB store**
   ([lotid.cpp:274](../../src/app/lotid/lotid.cpp#L274)). Update cli.md/paper-vs-impl to LMDB; align
   the `--store` file examples (`state.snap` vs `dag.mdb`).
 - [ ] **7.2 — One port number.** Sim `666`, CLI default `4666`, quickstarts `7000` appear with no
   reconciliation. Pick a default, use it consistently, and explain the sim's fixed `666`.
-- [ ] **7.3 — `--control` vs `--rpc` and the default socket path.** cli.md's canonical flag list
+- [x] **7.3 — `--control` vs `--rpc` and the default socket path.** cli.md's canonical flag list
   names `--rpc` (used nowhere) while every example uses `--control` (listed nowhere); the default
   path disagrees (`$LOTI_HOME/control.sock` vs README's `./loti.sock`). Make one authoritative.
-- [ ] **7.4 — Honest retention story.** The default schedule is 4 chains × ×8 × keep 4096
+- [x] **7.4 — Honest retention story.** The default schedule is 4 chains × ×8 × keep 4096
   ([lotid.cpp:234](../../src/app/lotid/lotid.cpp#L234)) → a **sliding ~24-day** orderability horizon,
   not "a decade-old event to about a minute, horizon of centuries" (README) and not "runs
   indefinitely" with old events still orderable. State the real default horizon, the
