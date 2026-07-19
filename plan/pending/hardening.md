@@ -90,8 +90,8 @@ These undermine the flagship "portable, offline-verifiable proof" and "attributa
 guarantees directly.
 
 **Status: partial.** 2.1 (reject empty signatures) and 2.2 (0600 key file) are DONE, along with
-2.x below (an upper-bound linkage soundness bug found while fixing 2.1); the key-write path of 2.3
-is done. 2.3's backup path, 2.4 (wider NodeId), 2.5, and 2.6 remain. Full suite + acceptance green.
+2.x below (an upper-bound linkage soundness bug found while fixing 2.1); 2.3 (fail-loud key + backup writes)
+is done. 2.4 (wider NodeId), 2.5, and 2.6 remain. Full suite + acceptance green.
 
 - [x] **2.1 — Reject unsigned/empty signatures in validation.** `Ed25519KeyStore::verify` returns
   `true` for an empty signature ([keystore.cpp:84](../../src/adapters/os/keystore.cpp#L84)), and
@@ -117,8 +117,10 @@ is done. 2.3's backup path, 2.4 (wider NodeId), 2.5, and 2.6 remain. Full suite 
   upper bound disconnected from the event still validated — it did not actually enclose the event.
   Every upper element (the first must reference the event) is now checked. Honest chains are
   unaffected (upper-front always references the event by construction); regression test added.
-- [ ] **2.3 — Fail loudly on key/backup write errors.** *Key path DONE with 2.2 (every write/rename
-  checked, throws on failure); the backup path below is still open.* `keystore.cpp`'s key write and
+- [x] **2.3 — Fail loudly on key/backup write errors.** *DONE — key path with 2.2, backup path here:
+  `FileStore::save` now checks open/write/close/rename and throws on failure, composing with the
+  Phase 1.5 `dispatch_guarded` so `db-backup` returns `ERR` (verified end to end) instead of a false
+  success.* `keystore.cpp`'s key write and
   `FileStore::save` ([adapters/os/store.hpp](../../src/adapters/os/store.hpp) `save`) ignore
   `ofstream`/`rename` failures and return `void`; `db-backup` then reports **success
   unconditionally**. Check every write/rename; propagate failure; make `db-backup` reply `ERR`
@@ -316,7 +318,7 @@ pruning, and uses a lossless transport. Add:
 - [x] **T2 — Byzantine `ChainResponse`** (bad hash/linkage/endpoint) → discovery aborts, node
   survives (Phase 1.4).
 - [x] **T3 — forged all-unsigned proof** → `verify` rejects (Phase 2.1).
-- [~] **T4 — key-file mode `0600`** (done) and **backup-write-failure → ERR** (pending) (Phase 2.2/2.3).
+- [x] **T4 — key-file mode `0600`** (done) and **backup-write-failure → ERR** (done) (Phase 2.2/2.3).
 - [ ] **T5 — huge-count decode** rejected without large allocation (Phase 3.1).
 - [x] **T6 — spoofed-source / duplicate notification** dropped (transport source check, 3.2) /
   deduped (3.3).
