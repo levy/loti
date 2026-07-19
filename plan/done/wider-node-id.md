@@ -1,5 +1,11 @@
 # Widen NodeId to 128 bits (hardening plan, item 2.4)
 
+**Status: DONE** (commit `harden: widen NodeId to 128 bits`). All 8 stages landed; unit suite
+68/278 green and `run.sh`/`fuzz_udp.sh`/`config_posture.sh` acceptance all pass with real 128-bit
+ids over UDP (the notary id is now 32 hex chars). The OMNeT++ sim app is source-compatible and
+needed no edits (NodeId appears only as `= 0`, `static_cast(getId())`, and map keys), but is built
+only under OMNeT++, not in CI here.
+
 A sub-plan split out of `hardening.md` because it is a wire / on-disk / snapshot **format
 change**, not a localized fix. No backward compatibility is required (the operator confirmed):
 format versions are bumped freely and old stores/proofs/packets are simply incompatible.

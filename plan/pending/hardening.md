@@ -91,7 +91,8 @@ guarantees directly.
 
 **Status: partial.** 2.1 (reject empty signatures) and 2.2 (0600 key file) are DONE, along with
 2.x below (an upper-bound linkage soundness bug found while fixing 2.1); 2.3 (fail-loud key + backup writes)
-is done, as is 2.5 (warn on unsigned mode). 2.4 (wider NodeId) and 2.6 (key scrub) remain. Full
+is done, as is 2.5 (warn on unsigned mode) and 2.4 (128-bit NodeId — see plan/done/wider-node-id.md).
+Only 2.6 (key scrub) remains. Full
 suite + acceptance green.
 
 - [x] **2.1 — Reject unsigned/empty signatures in validation.** `Ed25519KeyStore::verify` returns
@@ -127,14 +128,11 @@ suite + acceptance green.
   unconditionally**. Check every write/rename; propagate failure; make `db-backup` reply `ERR`
   when the blob was not durably written. A backup that can silently write nothing is worse than
   none.
-- [ ] **2.4 — Widen `NodeId` to ≥128 bits.** The identity is the first **8 bytes** of
-  SHA-256(pubkey) ([keystore.cpp:99](../../src/adapters/os/keystore.cpp#L99),
-  [proof.cpp:15](../../src/core/proof/proof.cpp#L15)). At the paper's "few billion nodes" (~2³²)
-  target, 64 bits gives a ~50% birthday-collision probability among honest nodes, and ~2⁶⁴ targeted
-  impersonation grinding. Move to a wider id (≥16 bytes, or the full 32-byte fingerprint). This is a
-  **wire/format change** (`NodeId` is a `u64` in [domain/types.hpp](../../src/core/domain/types.hpp#L21)
-  and in every packet/snapshot) — bump the snapshot + on-disk + protocol versions together, or
-  scope it as its own sub-plan. Decide and record the chosen width here.
+- [x] **2.4 — Widen `NodeId` to 128 bits.** DONE via the sub-plan
+  [plan/done/wider-node-id.md](../done/wider-node-id.md): `NodeId` is now a 16-byte struct (first 16
+  bytes of SHA-256(pubkey)) — ~2⁶⁴ birthday safety, 2¹²⁸ impersonation resistance. Wire, snapshot
+  (v2→v3), and LMDB (v3→v4) formats bumped; CLI parses/prints 32-hex ids. No backward compat (the
+  operator confirmed). Verified: unit 68/278, acceptance 10/0 with real 128-bit ids over UDP.
 - [x] **2.5 — Gate/annotate unsigned mode.** DONE: `lotid` prints a loud startup WARNING when run
   unsigned (`--id`) — no cryptographic identity, and (since 2.1) its events verify under no signed
   peer; `status` already reports `mode: signed|unsigned`. (Kept `--id` for the simulation/test path
@@ -385,7 +383,8 @@ in the production binary).
 - **upper-bound linkage (2.x) — a real soundness bug, not just hardening.** The first upper-bound
   element's linkage to the event was unchecked; a disconnected upper bound validated. Fixed by
   requiring every upper element to reference its predecessor (the first references the event).
-- **2.4 (wider NodeId) deliberately NOT bundled.** It is a wire/on-disk/snapshot format change
+- **2.4 (wider NodeId) — later done as its own sub-plan** (plan/done/wider-node-id.md), 128-bit.
+  It was deliberately NOT bundled into a security patch at first: it is a wire/on-disk/snapshot format change
   (version bumps across `domain::NodeId`, packets, snapshot) and must be its own sub-plan — mixing a
   format break into a security patch is how you ship a migration bug.
 
