@@ -110,8 +110,9 @@ not implemented.
 
 **Deferred (post-MVP):** `config get/set/list` (+ a config-file loader; `init` writes a flat config
 that the operator pastes into the `lotid` command), `node start` (process spawn/daemonize),
-`publish --file|--sign|--salt|--wait` flags, `log` tailing, multi-reference proofs, and an
-incremental/append or embedded-DB store (the MVP writes a periodic full snapshot).
+`publish --file|--sign|--salt|--wait` flags, `log` tailing, and multi-reference proofs.
+(The live store is already an incremental **LMDB** embedded database — [`lmdb_store.hpp`](../src/adapters/os/lmdb_store.hpp);
+the portable full-snapshot blob remains only the `db backup` / `db restore` format.)
 
 ## Architecture
 
@@ -128,9 +129,10 @@ incremental/append or embedded-DB store (the MVP writes a periodic full snapshot
 - **`lotid`** — the long-running node: maintains the local clock-event DAG, holds the signing
   key, persists state, talks to neighbor daemons over the peer-to-peer transport, and answers
   discoveries. It must run continuously to keep issuing clock events and to serve neighbors.
-- **`loti`** — the CLI client: connects to the local daemon over a control socket (default
-  `$LOTI_HOME/control.sock`) and issues commands. `loti verify` and other pure-crypto
-  operations run **without** a daemon.
+- **`loti`** — the CLI client: connects to the local daemon over a control socket (from
+  `--control`, else `$LOTI_CONTROL`, else `./loti.sock`) and issues commands. `loti init` sets up
+  and suggests `$LOTI_HOME/control.sock`, which the printed `lotid` line and examples then pass
+  explicitly. `loti verify` and other pure-crypto operations run **without** a daemon.
 
 ## Global conventions
 

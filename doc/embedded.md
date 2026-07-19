@@ -175,10 +175,12 @@ it is not wired to a flag today.)
   whatever hot DB pages the cache holds). It will **not** grow without bound over weeks the
   way the earlier in-RAM design did. *Re-measure steady-state RSS on your Pi to confirm for
   your workload.*
-- **32-bit lifetime ceiling.** An LMDB environment can never exceed its mapsize, and a
-  32-bit process can only mmap ~2 GiB. So on a **Pi Zero / Zero W** the *total* stored DAG
-  is capped (~1.5 GiB), which bounds the node's lifetime (~1–2 years at the paper's GB/year
-  rate). The **Zero 2 W (64-bit)** has no such ceiling — it is the real long-life target.
+- **32-bit store ceiling.** An LMDB environment can never exceed its mapsize, and a 32-bit
+  process can only mmap ~2 GiB, so on a **Pi Zero / Zero W** the store is capped (~1.5 GiB). The
+  multi-resolution clock chains keep *clock-event* storage flat, so this ceiling is reached only by
+  accumulated **published-event content**, which is not pruned: a heavy publisher may fill it in a
+  year or two, a light one never. The **Zero 2 W (64-bit)** has no such ceiling — it is the real
+  long-life target.
 - **microSD wear.** Even with the sync knob, flash wears. Use a high-endurance card or a
   USB SSD, and prefer a larger `--store-sync-interval` if your durability window allows.
 - **Cold-read latency.** Discovering an *old* event may page its records back from the SD

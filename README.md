@@ -57,12 +57,17 @@ Two capabilities keep a node viable as a long-lived, always-on service.
 
 - **Bounded storage.** Each node keeps several independent clock chains at geometrically spaced
   resolutions — fine-grained for recent events, progressively coarser for older ones — and
-  ring-prunes each to a fixed capacity, so total on-disk storage stays **flat at a configurable
-  budget** — tens of MB on a Pi, tens of GB on a server. No event is ever dropped: old events stay
-  provably orderable and only lose time-bound *precision*, gracefully, with age — recent events are
-  pinned to the second, a decade-old event to about a minute, with a horizon of centuries. `lotid`
-  runs a sensible default schedule; `loti db gc` re-asserts the prune and `loti db stat` reports the
-  chains and retention. See
+  ring-prunes each to a fixed capacity, so the clock-event store stays **flat at a configurable
+  budget** — tens of MB on a Pi, tens of GB on a server (published-event *content* is separate and
+  is not pruned). No event's record is ever dropped, and any event
+  within a node's **horizon** stays provably orderable — losing only time-bound *precision*,
+  gracefully, with age (recent events pinned to the second, older ones to progressively coarser
+  intervals). The horizon grows exponentially with the number of chains: `lotid`'s default 4-chain
+  schedule reaches back **weeks**, and adding chains extends it to months and years for a little more
+  storage. Beyond the horizon an event ages out of *live* network discovery — but a proof, once
+  generated and saved as a file, is self-contained and valid forever, so the rule is prove-and-save
+  within the horizon. `loti db gc` re-asserts the prune and `loti db stat` reports the chains and
+  retention. See
   [doc/theory.md](doc/theory.md#bounding-storage-multi-resolution-clock-chains) and
   [doc/cli.md](doc/cli.md).
 
@@ -179,7 +184,7 @@ sudo install build/core/lotid build/core/loti /usr/local/bin
 loti init                                    # writes ~/.loti/{key,config}; prints your node id
                                              # and the exact `lotid …` line to start
 lotid --key ~/.loti/key --port 7000 \
-      --store ~/.loti/state.snap --control ~/.loti/control.sock &
+      --store ~/.loti/dag.mdb --control ~/.loti/control.sock &
 loti --control ~/.loti/control.sock publish "hello, world"
 loti --control ~/.loti/control.sock status
 loti --control ~/.loti/control.sock prove bounds last --out proof.loti

@@ -30,7 +30,7 @@ Several ideas from the paper are still deliberately simplified or left out, in b
 | Discoveries expire after a configurable time | `NodeConfig::discovery_expiry`, `Node::purge_discoveries` |
 | Per-node storage and efficiency measured | file-length vectors + discovery statistics ([simulation.md](simulation.md)) |
 | **Public/private keys; signing events and clock events** | `Ed25519KeyStore` ([`adapters/os/keystore.hpp`](../src/adapters/os/keystore.hpp)) signs every published/clock event via the Signer port; `Node::validate_event_chain` verifies each signature; `NodeId` in production is the key's fingerprint |
-| **Persistent local state** | `Node::snapshot()` / `Node::restore()` ([`node.hpp`](../src/core/node.hpp)); `lotid` writes a periodic full snapshot and exposes `db stat` / `db backup` / `db restore` |
+| **Persistent local state** | `lotid` persists **incrementally** to an LMDB embedded store ([`lmdb_store.hpp`](../src/adapters/os/lmdb_store.hpp)) and hydrates its working set from it on restart; `Node::snapshot()` / `Node::restore()` ([`node.hpp`](../src/core/node.hpp)) are the portable blob format behind `db backup` / `db restore` (`db stat` reports the store) |
 | **A node daemon + client, with a control channel** | `lotid` (long-running node) + `loti` (CLI) talking over a control socket ([`src/app/lotid`](../src/app/lotid), [`src/app/loti`](../src/app/loti)) |
 | **Portable, offline-verifiable proofs** | `loti::proof::Proof` / `serialize` / `verify` ([`core/proof`](../src/core/proof)); `loti prove bounds\|order\|chain`, `loti verify`, `loti proof show` |
 
