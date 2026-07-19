@@ -11,8 +11,9 @@ algorithm.
 **Phases 1, 2, 4, 5, 7 are COMPLETE; Phase 3 is done except the v2 per-datagram MAC.** Every 🔴
 item and every cleanly-testable or minor 🟠/🟡/📄 item has landed. What remains is the larger
 reliability work: **3.2-v2** (a per-datagram MAC — the cryptographic upgrade over the v1
-source-address check) and **Phase 6** (6.1 notification anti-entropy, 6.2 chain/datagram size
-bounds, 6.3 peer liveness, 6.4 IPv6, 6.5 log timestamps). 1.6 stays deferred (mooted by 1.1).
+source-address check) and the **feature-scale Phase 6 items** (6.1 notification anti-entropy,
+6.2 chain/datagram size bounds, 6.3 peer liveness) — each deserving its own sub-plan. 6.4 (IPv6)
+and 6.5 (log timestamps) are done. 1.6 stays deferred (mooted by 1.1).
 
 ## Why now — the threat-model shift
 
@@ -272,6 +273,9 @@ on-disk state stay consistent; a test drives a >2× single-record write and asse
 
 ## Phase 6 — Reliability & scale 🟡
 
+**Status: 6.4 + 6.5 DONE.** The remaining items (6.1 anti-entropy, 6.2 chain/datagram size bounds,
+6.3 peer liveness) are feature-scale and each deserves its own sub-plan like 2.4 did.
+
 - [ ] **6.1 — Reliable clock-notification delivery.** Reverse edges (the upper-bound walkability) are
   learned only from single, change-only UDP notifications ([node.cpp:102](../../src/core/node.cpp#L102));
   a lost datagram loses that reverse edge permanently. Add periodic re-advertisement / anti-entropy of
@@ -285,11 +289,14 @@ on-disk state stay consistent; a test drives a >2× single-record write and asse
 - [ ] **6.3 — Peer liveness and removal.** Implement `peer rm` / `peer ping`; expire dead peers so a
   years-long node's overlay does not rot into a graveyard of unreachable addresses it keeps notifying.
   (This is also on the paper-vs-implementation "not implemented" list — coordinate.)
-- [ ] **6.4 — IPv6 transport.** `set_peer` is `inet_pton(AF_INET, …)` only
-  ([transport.hpp:59](../../src/adapters/os/transport.hpp#L59)); add an IPv6/dual-stack path for
-  real internet (IPv6-only ISPs, CGNAT).
-- [ ] **6.5 — Log timestamps + verbosity.** `LogTelemetry` emits no wall-clock time and floods
-  discovery lifecycle lines unconditionally; add timestamps and gate discovery logging on verbosity.
+- [x] **6.4 — IPv6 transport.** DONE: `UdpTransport` opens a dual-stack `AF_INET6` socket
+  (`IPV6_V6ONLY` off), so one socket serves IPv4-only, IPv6-only, and mixed networks. `set_peer`
+  accepts an IPv6 literal or an IPv4 literal (mapped to `::ffff:a.b.c.d`); the source-address check
+  compares the full 16-byte v6 address. Test: an IPv6 `::1` round-trip; IPv4 (127.0.0.1) tests and
+  all acceptance suites still pass via IPv4-mapping.
+- [x] **6.5 — Log timestamps.** DONE: `LogTelemetry` prefixes each line with a wall-clock timestamp
+  (`YYYY-MM-DD HH:MM:SS.mmm`). (Verbosity gating of discovery lifecycle lines left as a minor
+  follow-up — `verbose_` already gates the noisiest per-clock-event line.)
 
 ---
 
