@@ -147,18 +147,22 @@ failure and asserts `db-backup` reports `ERR`.
 
 ## Phase 3 — Transport authentication & anti-DoS 🔴/🟠
 
-- [ ] **3.1 — Cap length prefixes before reserving.** `refs()` and `node_ids()` do `out.reserve(n)`
-  with an attacker-controlled `u32` ([codec.hpp:92](../../src/core/wire/codec.hpp#L92),
-  [:136](../../src/core/wire/codec.hpp#L136)); a ~20-byte packet requesting billions of elements
-  OOM-kills a Pi. Before reserving, reject any `n` whose minimum encoded size exceeds the remaining
-  buffer (`need(n * min_element_bytes)` first, or cap-then-`need` per element without pre-reserving).
-- [ ] **3.2 — Authenticate the gossip layer.** `recvfrom` discards the source address
-  ([transport.hpp:74](../../src/adapters/os/transport.hpp#L74)) and the sender identity is a
-  **self-declared** `NodeId` in the payload ([node.cpp:166](../../src/core/node.cpp#L166)), so
-  anyone can spoof clock notifications from any neighbor. Add per-datagram authentication: at
-  minimum verify the UDP source address matches the registered address for the claimed `NodeId`;
-  better, sign/MAC the datagram (or the notification's `(chain, tip)` tuple) and verify before
-  mutating any state. Decide the mechanism and record it.
+**Status: 3.1, 3.2 (v1), 3.3 DONE.** 3.4 (safe flood defaults) and 3.5 (socket buffers / getrandom
+EINTR) remain.
+
+- [x] **3.1 — Cap length prefixes before reserving.** DONE (landed in Phase 1 as the `ensure_count`
+  guard in [codec.hpp](../../src/core/wire/codec.hpp): `refs`/`node_ids`/`chain` reject a count
+  larger than the remaining buffer could hold before reserving). Test T1b asserts a huge count is
+  rejected without a large allocation.
+- [x] **3.2 — Authenticate the gossip layer — v1 (source address).** `recvfrom` discarded the source
+  ([transport.hpp:74](../../src/adapters/os/transport.hpp#L74)) and the sender is a **self-declared**
+  `NodeId` ([node.cpp:166](../../src/core/node.cpp#L166)), so anyone could spoof notifications from
+  any neighbor. `UdpTransport::receive` now checks the UDP source against the registered address of
+  the claimed sender (via new `wire::sender_of`) and drops a mismatch. **Decision: source-address
+  check is the v1** (raises the bar to spoofing the peer's specific source IP:port; not
+  cryptographic, and assumes no port-rewriting NAT). **Deferred (v2):** a per-datagram MAC/signature
+  — the cryptographically strong version — needs a wire field + the sender's pubkey at the receiver
+  and is a larger change. See decision log.
 - [x] **3.3 — Dedup and bound `referencing_events`.** `process_clock_event_notification`
   `push_back`s a reverse edge with **no dedup** ([node.cpp:189](../../src/core/node.cpp#L189)) and
   persists it, so a chatty/spoofing neighbor grows a clock event's reverse-edge list without bound
@@ -314,7 +318,8 @@ pruning, and uses a lossless transport. Add:
 - [x] **T3 — forged all-unsigned proof** → `verify` rejects (Phase 2.1).
 - [~] **T4 — key-file mode `0600`** (done) and **backup-write-failure → ERR** (pending) (Phase 2.2/2.3).
 - [ ] **T5 — huge-count decode** rejected without large allocation (Phase 3.1).
-- [ ] **T6 — spoofed-source / duplicate notification** dropped / deduped (Phase 3.2/3.3).
+- [x] **T6 — spoofed-source / duplicate notification** dropped (transport source check, 3.2) /
+  deduped (3.3).
 - [ ] **T7 — backward clock step** → non-decreasing timestamps, no inverted interval (Phase 4).
 - [ ] **T8 — lossy-transport discovery** in the harness (add a loss/reorder model to the harness
   `FakeTransport`, which is lossless today) → measure and assert self-healing after 6.1.
@@ -371,6 +376,15 @@ in the production binary).
 
 **Phase 3/4 (landed):**
 
+- **3.2 — source-address check is the v1, not a MAC.** Chosen because it is localized to the
+  production transport (core unchanged, sim unaffected — the in-process transport delivers by
+  NodeId and can't be spoofed) and cleanly testable with a real localhost-UDP test. It raises the
+  bar from "anyone who knows a public NodeId" to "an attacker who can spoof that peer's specific
+  source IP:port," which BCP38 egress filtering makes hard across the internet. Two honest caveats:
+  it is **not cryptographic** (a same-subnet or on-path attacker can still spoof the source), and it
+  **assumes the peer sends from its registered listening port** — a port-rewriting NAT would cause
+  false drops (the operator would register the NAT'd address). The strong v2 is a per-datagram
+  MAC/signature, deferred because it needs a new wire field + the sender's pubkey at the receiver.
 - **3.3 — dedup, not cap.** Exact-duplicate reverse edges are skipped; a cap on distinct spoofed
   edges is left to 3.2 (transport auth), since only authentication stops an unauthenticated forger
   from minting distinct fake edges. Deduping is unconditionally correct (a duplicate carries no
