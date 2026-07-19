@@ -39,7 +39,7 @@
     --accent-ink:#0b1322;
     --verified:  #52c79c;
     --shadow:    0 24px 60px -28px rgba(0,0,0,0.65);
-    --maxw: 1140px;
+    --maxw: 1280px;
 
     --f-display: "Newsreader", Georgia, "Times New Roman", serif;
     --f-body: "IBM Plex Sans", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
@@ -224,6 +224,9 @@
   .section-head { max-width: 62ch; margin-bottom: 3rem; }
   .section-head h2 { font-size: clamp(1.95rem, 3.6vw, 2.9rem); }
   .section-head p { color: var(--ink-soft); font-size: 1.12rem; margin-top: 1.1rem; }
+  .subhead { font-family: var(--f-display); font-weight: 500; letter-spacing: -0.012em; font-size: clamp(1.4rem, 2.4vw, 1.9rem); margin: 3.6rem 0 1.7rem; }
+  .fine { color: var(--ink-faint); font-size: 0.92rem; margin-top: 1.15rem; max-width: 78ch; }
+  .fine b { color: var(--accent); font-weight: 500; }
 
   .lede { max-width: 60ch; }
   .lede p + p { margin-top: 1.2rem; }
@@ -750,6 +753,56 @@
             <li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 12.5l5 5L20 6.5"/></svg><span>Privacy — publish as much as you like; only fingerprints ever leave your machine.</span></li>
             <li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 12.5l5 5L20 6.5"/></svg><span>Proofs that last — on a fixed storage budget a node's reach stretches back years, and further as you add chains; recent events stay pinned to the second, older ones fade in precision, and any proof it makes is valid forever.</span></li>
           </ul>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- BACK OF THE ENVELOPE -->
+  <section id="numbers">
+    <div class="wrap">
+      <div class="section-head reveal">
+        <p class="eyebrow">Back of the envelope</p>
+        <h2>Pick a storage budget. Everything else follows.</h2>
+        <p>A node runs several clock chains at once — one fast, each of the rest a step slower — keeps a fixed number of ticks on every chain, and prunes the rest. Storage then stays flat forever: recent moments are pinned to the second, and older ones widen gently with age. Here is what a given budget buys, at a steady one tick per second.</p>
+      </div>
+
+      <div class="table-scroll reveal">
+        <table>
+          <thead>
+            <tr>
+              <th scope="col">Device</th>
+              <th scope="col">Storage budget</th>
+              <th scope="col">Pinned to the second</th>
+              <th scope="col">A 10-year-old event</th>
+              <th scope="col">Reach</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr><th scope="row">Raspberry Pi Zero</th><td>64 MB</td><td>events up to ~2 hours old</td><td>bracketed to ~33 hours</td><td>~210 years</td></tr>
+            <tr><th scope="row">Phone or laptop</th><td>1 GB</td><td>events up to ~1.5 days old</td><td>bracketed to ~52 minutes</td><td>~310 years</td></tr>
+            <tr><th scope="row">Small server</th><td>32 GB</td><td>events up to ~46 days old</td><td>bracketed to ~81 seconds</td><td>~280 years</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p class="fine reveal">Reach is nearly free — it costs chains, not storage — so almost the whole budget goes to precision. Worst case, an aged event is bracketed to a fraction of its age: <b>~0.09%</b> on a Pi, <b>~0.004%</b> on a phone, <b>~0.00008%</b> on a server. Push the tick faster than one per second and even recent bounds drop below a second.</p>
+
+      <h3 class="subhead reveal">What it takes to build the graph</h3>
+      <div class="grid g-3 reveal">
+        <div class="card">
+          <div class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><ellipse cx="12" cy="6" rx="7" ry="2.8"/><path d="M5 6v12c0 1.6 3.1 2.8 7 2.8s7-1.2 7-2.8V6"/><path d="M5 12c0 1.6 3.1 2.8 7 2.8s7-1.2 7-2.8"/></svg></div>
+          <h3>Storage</h3>
+          <p>Your chosen budget, flat forever. The graph is a fixed pile of clock ticks — about a million on a phone, roughly 1 KB each — and pruning holds it there however long the node runs.</p>
+        </div>
+        <div class="card">
+          <div class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="6" cy="6" r="2.4"/><circle cx="18" cy="6" r="2.4"/><circle cx="12" cy="18" r="2.4"/><path d="M7.7 7.7L11 15M16.3 7.7L13 15M8 6h8"/></svg></div>
+          <h3>Network</h3>
+          <p>One small heartbeat a second, shared as a hash with your ~10 neighbors. A complete proof is roughly 40 hops — about 40 KB, a single UDP packet. Everything else on the wire is just chain tips, about 1.25× a single chain.</p>
+        </div>
+        <div class="card">
+          <div class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="7" y="7" width="10" height="10" rx="1.6"/><path d="M10 4v3M14 4v3M10 17v3M14 17v3M4 10h3M4 14h3M17 10h3M17 14h3"/></svg></div>
+          <h3>CPU</h3>
+          <p>A hash and a signature about once a second. Running eight clock chains at once adds only ~25% over running one. Light enough to stay always-on on a $15 Raspberry Pi Zero.</p>
         </div>
       </div>
     </div>
