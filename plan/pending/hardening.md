@@ -89,7 +89,11 @@ node **survives and drops** each one; the acceptance script gains a "fuzz the po
 These undermine the flagship "portable, offline-verifiable proof" and "attributable identity"
 guarantees directly.
 
-- [ ] **2.1 — Reject unsigned/empty signatures in validation.** `Ed25519KeyStore::verify` returns
+**Status: partial.** 2.1 (reject empty signatures) and 2.2 (0600 key file) are DONE, along with
+2.x below (an upper-bound linkage soundness bug found while fixing 2.1); the key-write path of 2.3
+is done. 2.3's backup path, 2.4 (wider NodeId), 2.5, and 2.6 remain. Full suite + acceptance green.
+
+- [x] **2.1 — Reject unsigned/empty signatures in validation.** `Ed25519KeyStore::verify` returns
   `true` for an empty signature ([keystore.cpp:84](../../src/adapters/os/keystore.cpp#L84)), and
   `validate::verify_chain` trusts it ([chain.cpp:42](../../src/core/validate/chain.cpp#L42), `:62`,
   `:74`). Combined with `creator` being **excluded from the hash** and `proof::verify` **skipping
@@ -103,13 +107,18 @@ guarantees directly.
   - Design note: the enclosure math is already sound for *real* events (hash-linkage pins the chain
     to real edges), so this does not change any honest proof; it closes the **fabricated-event /
     fabricated-reference** hole specifically.
-- [ ] **2.2 — Private key file must be `0600`.** `load_or_generate` writes the raw Ed25519 private
-  key with a plain `std::ofstream` ([keystore.cpp:61](../../src/adapters/os/keystore.cpp#L61)), so
-  under the default umask it lands world-readable (`0644`). Any local user steals the identity.
-  Create the temp file with mode `0600` (open with `O_CREAT|O_EXCL`, `0600`, or `chmod` before the
-  `rename`), and `chmod 0600` on load if looser. `loti init`'s `~/.loti` dir should be `0700`
-  (and its `mkdir` return checked — [loti.cpp](../../src/app/loti/loti.cpp) `do_init`).
-- [ ] **2.3 — Fail loudly on key/backup write errors.** `keystore.cpp`'s key write and
+- [x] **2.2 — Private key file must be `0600`.** DONE: `load_or_generate` now creates the temp key
+  file via `open(O_WRONLY|O_CREAT|O_EXCL, 0600)` (no world-readable window), tightens an existing
+  looser key with `chmod 0600` on load, and checks every write/rename. Still TODO: `loti init`'s
+  `~/.loti` dir `0700` + checked `mkdir` in [loti.cpp](../../src/app/loti/loti.cpp) `do_init`.
+
+- [x] **2.x — Upper-bound linkage (soundness bug found while fixing 2.1).** `validate::verify_chain`
+  skipped the linkage check on the **first** upper-bound clock event (`if (!first && …)`), so an
+  upper bound disconnected from the event still validated — it did not actually enclose the event.
+  Every upper element (the first must reference the event) is now checked. Honest chains are
+  unaffected (upper-front always references the event by construction); regression test added.
+- [ ] **2.3 — Fail loudly on key/backup write errors.** *Key path DONE with 2.2 (every write/rename
+  checked, throws on failure); the backup path below is still open.* `keystore.cpp`'s key write and
   `FileStore::save` ([adapters/os/store.hpp](../../src/adapters/os/store.hpp) `save`) ignore
   `ofstream`/`rename` failures and return `void`; `db-backup` then reports **success
   unconditionally**. Check every write/rename; propagate failure; make `db-backup` reply `ERR`
@@ -291,8 +300,8 @@ pruning, and uses a lossless transport. Add:
 - [x] **T1 — malformed-packet corpus** through `on_packet_received` → node survives (Phase 1).
 - [x] **T2 — Byzantine `ChainResponse`** (bad hash/linkage/endpoint) → discovery aborts, node
   survives (Phase 1.4).
-- [ ] **T3 — forged all-unsigned proof** → `verify` rejects (Phase 2.1).
-- [ ] **T4 — key-file mode `0600`** and **backup-write-failure → ERR** (Phase 2.2/2.3).
+- [x] **T3 — forged all-unsigned proof** → `verify` rejects (Phase 2.1).
+- [~] **T4 — key-file mode `0600`** (done) and **backup-write-failure → ERR** (pending) (Phase 2.2/2.3).
 - [ ] **T5 — huge-count decode** rejected without large allocation (Phase 3.1).
 - [ ] **T6 — spoofed-source / duplicate notification** dropped / deduped (Phase 3.2/3.3).
 - [ ] **T7 — backward clock step** → non-decreasing timestamps, no inverted interval (Phase 4).
