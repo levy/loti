@@ -123,8 +123,8 @@ bool Ed25519KeyStore::verify(const domain::Bytes& message, const domain::Signatu
 
 domain::NodeId Ed25519KeyStore::fingerprint(const domain::Bytes& public_key) {
   const domain::EventHash digest = hash::sha256(public_key);
-  domain::NodeId id = 0;
-  for (std::size_t i = 0; i < 8 && i < digest.size(); ++i) id = (id << 8) | digest[i];
+  domain::NodeId id;  // 128-bit: the first 16 bytes of SHA-256(pubkey)
+  for (std::size_t i = 0; i < 16 && i < digest.size(); ++i) id.bytes[i] = digest[i];
   return id;
 }
 

@@ -666,7 +666,7 @@ const Neighbor* Node::neighbor_by_id(NodeId id) const {
 // persistence (snapshot / restore) — see node.hpp
 // ---------------------------------------------------------------------------
 namespace {
-constexpr std::uint64_t kSnapshotVersion = 2;  // v2: clock-event chain field + per-chain neighbor tips
+constexpr std::uint64_t kSnapshotVersion = 3;  // v3: 128-bit NodeId (was v2)
 }  // namespace
 
 Bytes Node::snapshot() const {
@@ -689,14 +689,14 @@ Bytes Node::snapshot() const {
   for (const auto& e : tail0) w.event(e);
   w.u64(neighbors_.size());
   for (const auto& [id, n] : neighbors_) {
-    w.u64(n.node_id);
+    w.node_id(n.node_id);
     w.u64(n.last_clock_event_hashes.size());
     for (const auto& h : n.last_clock_event_hashes) w.blob(h);
   }
   w.u64(destination_to_next_hop_.size());
   for (const auto& [dst, next_hop] : destination_to_next_hop_) {
-    w.u64(dst);
-    w.u64(next_hop);
+    w.node_id(dst);
+    w.node_id(next_hop);
   }
   return w.bytes();
 }
@@ -723,15 +723,15 @@ void Node::restore(const Bytes& blob) {
   std::map<NodeId, Neighbor> neighbors;
   for (auto n = r.u64(); n > 0; --n) {
     Neighbor neighbor;
-    neighbor.node_id = r.u64();
+    neighbor.node_id = r.node_id();
     for (auto m = r.u64(); m > 0; --m) neighbor.last_clock_event_hashes.push_back(r.blob());
     neighbors[neighbor.node_id] = std::move(neighbor);
   }
 
   std::map<NodeId, NodeId> routes;
   for (auto n = r.u64(); n > 0; --n) {
-    const auto dst = r.u64();
-    const auto next_hop = r.u64();
+    const auto dst = r.node_id();
+    const auto next_hop = r.node_id();
     routes[dst] = next_hop;
   }
 

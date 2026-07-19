@@ -67,10 +67,24 @@ std::string hex(const domain::EventHash& h) {
   }
   return s;
 }
-std::string hex_id(domain::NodeId id) {
-  char buf[19];
-  std::snprintf(buf, sizeof(buf), "0x%016llx", static_cast<unsigned long long>(id));
-  return buf;
+std::string hex_id(const domain::NodeId& id) {  // 128-bit id → "0x" + 32 lowercase hex chars
+  static const char* d = "0123456789abcdef";
+  std::string s = "0x";
+  for (auto b : id.bytes) { s.push_back(d[b >> 4]); s.push_back(d[b & 0xF]); }
+  return s;
+}
+
+// A 32-hex-char id (optionally "0x"-prefixed) is a real 128-bit id; anything else is a decimal
+// (small / simulation) id placed in the low 8 bytes. Mirror of lotid's parser.
+domain::NodeId parse_node_id(const std::string& s) {
+  std::string h = (s.size() > 2 && s[0] == '0' && (s[1] == 'x' || s[1] == 'X')) ? s.substr(2) : s;
+  if (h.size() == 32 && h.find_first_not_of("0123456789abcdefABCDEF") == std::string::npos) {
+    domain::NodeId id;
+    for (std::size_t i = 0; i < 16; ++i)
+      id.bytes[i] = static_cast<std::uint8_t>(std::stoul(h.substr(2 * i, 2), nullptr, 16));
+    return id;
+  }
+  return domain::NodeId(std::strtoull(s.c_str(), nullptr, 0));
 }
 
 const char* kind_name(proof::Kind k) {
@@ -566,7 +580,7 @@ int do_verify(const std::vector<std::string>& args, const std::vector<std::strin
 
   bool trusted = trust.empty();  // no --trust given → don't gate, just report validity
   for (const auto& t : trust)
-    if (std::strtoull(t.c_str(), nullptr, 0) == p.reference.node) trusted = true;
+    if (parse_node_id(t) == p.reference.node) trusted = true;
 
   if (json) {
     Json o = Json::object();

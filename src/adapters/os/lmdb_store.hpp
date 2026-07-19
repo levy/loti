@@ -53,9 +53,10 @@ class LmdbStore final : public ports::Store {
 
   // On-disk layout version, stamped in the `meta` sub-DB; bump only on a format change.
   // v2 added the `referencing` reverse-index sub-DB (a v1 store is migrated on first open).
-  // v3 added the per-clock-event `chain`/level field (multi-resolution chains); back-compat
-  // with pre-v3 stores is out of scope — a mismatched store is rejected, not migrated.
-  static constexpr std::uint64_t kFormatVersion = 3;
+  // v3 added the per-clock-event `chain`/level field (multi-resolution chains). v4 widened
+  // NodeId to 128 bits (16-byte keys/records). Back-compat with older stores is out of scope —
+  // a mismatched store is rejected, not migrated.
+  static constexpr std::uint64_t kFormatVersion = 4;
 
   // Hard ceiling on the env's mapsize. The map is virtual address space, so on 64-bit
   // this is effectively unbounded and left at 0 = "no cap". On 32-bit the mmap must fit

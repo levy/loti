@@ -10,6 +10,7 @@
 // change any hash. See doc/architecture.md and plan/done/mvp-dual-target.md.
 #pragma once
 
+#include <array>
 #include <cstdint>
 #include <deque>
 #include <limits>
@@ -18,7 +19,24 @@
 
 namespace loti::domain {
 
-using NodeId    = std::uint64_t;
+// A node's identity: a 128-bit fingerprint (the first 16 bytes of SHA-256(pubkey)). It is an
+// OPAQUE 16-byte identity, not an integer — but it keeps an implicit constructor from uint64_t
+// (big-endian in the low 8 bytes, high 8 zero) purely as a convenience for small simulation /
+// test ids and for the `= 0` "none" sentinel. Real ids are the full 16 bytes and are never a
+// zero-extended integer. 128 bits gives ~2^64 birthday safety (negligible collision probability
+// even at billions of nodes) and 2^128 impersonation resistance — see plan/pending/wider-node-id.md.
+struct NodeId {
+  std::array<std::uint8_t, 16> bytes{};
+  constexpr NodeId() = default;
+  constexpr NodeId(std::uint64_t v) noexcept {  // implicit: small/sim ids and the `= 0` sentinel
+    for (int i = 0; i < 8; ++i) bytes[15 - static_cast<std::size_t>(i)] =
+        static_cast<std::uint8_t>(v >> (8 * i));
+  }
+  [[nodiscard]] bool is_zero() const noexcept { return bytes == std::array<std::uint8_t, 16>{}; }
+  auto operator<=>(const NodeId&) const = default;
+  bool operator==(const NodeId&) const = default;
+};
+
 using Salt      = std::uint64_t;
 using Bytes     = std::vector<std::uint8_t>;
 using EventHash = std::vector<std::uint8_t>;  // 32-byte SHA-256 digest

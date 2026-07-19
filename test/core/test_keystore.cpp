@@ -39,7 +39,9 @@ TEST_CASE("a signature claiming the wrong identity fails") {
   os::Ed25519KeyStore ks;
   const domain::Bytes msg = {7, 7, 7};
   const auto sig = ks.sign(msg);
-  CHECK_FALSE(ks.verify(msg, sig, ks.node_id() ^ 0x1ull));
+  domain::NodeId wrong = ks.node_id();
+  wrong.bytes[0] ^= 0x01;  // a different 128-bit id
+  CHECK_FALSE(ks.verify(msg, sig, wrong));
 }
 
 TEST_CASE("empty signature is rejected (a real signature is required)") {
@@ -50,6 +52,19 @@ TEST_CASE("empty signature is rejected (a real signature is required)") {
 TEST_CASE("NodeId is the public-key fingerprint (deterministic)") {
   os::Ed25519KeyStore ks;
   CHECK(ks.node_id() == os::Ed25519KeyStore::fingerprint(ks.public_key()));
+}
+
+TEST_CASE("NodeId is a full 128-bit fingerprint, not a truncated 64-bit value") {
+  os::Ed25519KeyStore a;
+  os::Ed25519KeyStore b;                  // a different key
+  CHECK(a.node_id() != b.node_id());      // distinct keys → distinct ids
+  CHECK(a.node_id().bytes.size() == 16);  // 128 bits, not 64
+  // The high 8 bytes are (almost surely) not all zero — the id is a real 16-byte fingerprint,
+  // not merely a zero-extended u64 (which is what the old truncated design produced).
+  bool high_nonzero = false;
+  for (std::size_t i = 0; i < 8; ++i)
+    if (a.node_id().bytes[i] != 0) high_nonzero = true;
+  CHECK(high_nonzero);
 }
 
 TEST_CASE("one node verifies another's signature from the embedded pubkey alone") {

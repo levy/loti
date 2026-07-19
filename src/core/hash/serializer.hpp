@@ -21,6 +21,8 @@ class ByteWriter {
     }
   }
 
+  void write_node_id(const domain::NodeId& id) { buf_.insert(buf_.end(), id.bytes.begin(), id.bytes.end()); }
+
   [[nodiscard]] const domain::Bytes& data() const noexcept { return buf_; }
 
  private:

@@ -37,6 +37,16 @@ std::uint64_t get_u64_be(const unsigned char* p) {
   return v;
 }
 
+// A 128-bit NodeId as a fixed 16-byte key/value (neighbor/route keys, next-hop values).
+void put_node_id(unsigned char* out, const domain::NodeId& id) {
+  for (std::size_t i = 0; i < 16; ++i) out[i] = id.bytes[i];
+}
+domain::NodeId get_node_id(const unsigned char* p) {
+  domain::NodeId id;
+  for (std::size_t i = 0; i < 16; ++i) id.bytes[i] = p[i];
+  return id;
+}
+
 // One past the highest sequence key currently in `dbi` (0 if empty). Keys are 8-byte
 // big-endian, so MDB_LAST returns the numerically greatest.
 std::uint64_t next_seq(MDB_txn* txn, MDB_dbi dbi) {
@@ -302,8 +312,8 @@ void LmdbStore::Batch::update_clock_event(const domain::LocalClockEvent& c) {
 }
 
 void LmdbStore::Batch::put_neighbor(const domain::Neighbor& n) {
-  unsigned char kbuf[8];
-  put_u64_be(kbuf, n.node_id);
+  unsigned char kbuf[16];
+  put_node_id(kbuf, n.node_id);
   MDB_val k{sizeof(kbuf), kbuf};
   // Value: the per-chain tip hashes as a length-prefixed list (index = chain/level).
   wire::Writer w;
@@ -314,10 +324,10 @@ void LmdbStore::Batch::put_neighbor(const domain::Neighbor& n) {
 }
 
 void LmdbStore::Batch::put_route(domain::NodeId destination, domain::NodeId next_hop) {
-  unsigned char kbuf[8];
-  put_u64_be(kbuf, destination);
-  unsigned char vbuf[8];
-  put_u64_be(vbuf, next_hop);
+  unsigned char kbuf[16];
+  put_node_id(kbuf, destination);
+  unsigned char vbuf[16];
+  put_node_id(vbuf, next_hop);
   MDB_val k{sizeof(kbuf), kbuf};
   MDB_val v{sizeof(vbuf), vbuf};
   check_write(mdb_put(txn_, store_.routes_, &k, &v, 0), "put_route");
@@ -367,7 +377,7 @@ std::map<domain::NodeId, domain::Neighbor> LmdbStore::load_neighbors() const {
   std::map<domain::NodeId, domain::Neighbor> out;
   for_each(env_, neighbors_, [&](const MDB_val& k, const MDB_val& v) {
     domain::Neighbor n;
-    n.node_id = get_u64_be(static_cast<const unsigned char*>(k.mv_data));
+    n.node_id = get_node_id(static_cast<const unsigned char*>(k.mv_data));
     domain::Bytes bytes = to_bytes(v);
     wire::Reader r(bytes);
     for (auto m = r.u64(); m > 0; --m) n.last_clock_event_hashes.push_back(r.blob());
@@ -379,8 +389,8 @@ std::map<domain::NodeId, domain::Neighbor> LmdbStore::load_neighbors() const {
 std::map<domain::NodeId, domain::NodeId> LmdbStore::load_routes() const {
   std::map<domain::NodeId, domain::NodeId> out;
   for_each(env_, routes_, [&](const MDB_val& k, const MDB_val& v) {
-    out[get_u64_be(static_cast<const unsigned char*>(k.mv_data))] =
-        get_u64_be(static_cast<const unsigned char*>(v.mv_data));
+    out[get_node_id(static_cast<const unsigned char*>(k.mv_data))] =
+        get_node_id(static_cast<const unsigned char*>(v.mv_data));
   });
   return out;
 }
@@ -390,8 +400,8 @@ void LmdbStore::put_timed_routes(const domain::TimedRouteTable& table) {
   check(mdb_txn_begin(env_, nullptr, 0, &txn), "txn_begin timed_routes");
   mdb_drop(txn, timed_routes_, 0);  // replace semantics: empty, then rewrite (keep the DB)
   for (const auto& [dest, routes] : table) {
-    unsigned char kbuf[8];
-    put_u64_be(kbuf, dest);
+    unsigned char kbuf[16];
+    put_node_id(kbuf, dest);
     wire::Writer w;  // value: a count then each route's validity window + next-hop list
     w.u64(routes.size());
     for (const auto& rt : routes) {
@@ -408,7 +418,7 @@ void LmdbStore::put_timed_routes(const domain::TimedRouteTable& table) {
 domain::TimedRouteTable LmdbStore::load_timed_routes() const {
   domain::TimedRouteTable out;
   for_each(env_, timed_routes_, [&](const MDB_val& k, const MDB_val& v) {
-    const domain::NodeId dest = get_u64_be(static_cast<const unsigned char*>(k.mv_data));
+    const domain::NodeId dest = get_node_id(static_cast<const unsigned char*>(k.mv_data));
     domain::Bytes bytes = to_bytes(v);
     wire::Reader r(bytes);
     std::vector<domain::TimedRoute> routes;

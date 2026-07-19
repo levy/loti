@@ -14,8 +14,8 @@ namespace {
 // the embedded public key without linking the crypto adapter into the core.
 domain::NodeId fingerprint(const domain::Bytes& public_key) {
   const domain::EventHash digest = hash::sha256(public_key);
-  domain::NodeId id = 0;
-  for (std::size_t i = 0; i < 8 && i < digest.size(); ++i) id = (id << 8) | digest[i];
+  domain::NodeId id;  // 128-bit: the first 16 bytes of SHA-256(pubkey) — matches Ed25519KeyStore
+  for (std::size_t i = 0; i < 16 && i < digest.size(); ++i) id.bytes[i] = digest[i];
   return id;
 }
 
@@ -33,7 +33,7 @@ domain::Bytes serialize(const Proof& p) {
   w.u64(kMagic);
   w.u64(kVersion);
   w.u8(static_cast<std::uint8_t>(p.kind));
-  w.u64(p.reference.node);
+  w.node_id(p.reference.node);
   w.blob(p.reference.pubkey);
   w.chain(p.chain);
   if (p.kind == Kind::order) {
@@ -49,7 +49,7 @@ Proof deserialize(const domain::Bytes& bytes) {
   if (r.u64() != kVersion) throw std::runtime_error("proof: unsupported version");
   Proof p;
   p.kind = static_cast<Kind>(r.u8());
-  p.reference.node = r.u64();
+  p.reference.node = r.node_id();
   p.reference.pubkey = r.blob();
   p.chain = r.chain();
   if (p.kind == Kind::order) {

@@ -20,6 +20,8 @@ class Writer {
     for (int shift = 56; shift >= 0; shift -= 8) buf_.push_back(std::uint8_t((v >> shift) & 0xFF));
   }
 
+  void node_id(const domain::NodeId& id) { buf_.insert(buf_.end(), id.bytes.begin(), id.bytes.end()); }
+
   void blob(const domain::Bytes& b) {
     u32(static_cast<std::uint32_t>(b.size()));
     buf_.insert(buf_.end(), b.begin(), b.end());
@@ -27,15 +29,15 @@ class Writer {
 
   void refs(const std::vector<domain::EventReference>& rs) {
     u32(static_cast<std::uint32_t>(rs.size()));
-    for (const auto& r : rs) { u64(r.creator); blob(r.hash); }
+    for (const auto& r : rs) { node_id(r.creator); blob(r.hash); }
   }
 
   void event(const domain::Event& e) {
-    u64(e.creator); blob(e.hash); blob(e.data); u64(e.salt); refs(e.referenced_events); blob(e.signature);
+    node_id(e.creator); blob(e.hash); blob(e.data); u64(e.salt); refs(e.referenced_events); blob(e.signature);
   }
 
   void clock_event(const domain::ClockEvent& c) {
-    u64(c.creator); blob(c.hash); u64(c.chain);
+    node_id(c.creator); blob(c.hash); u64(c.chain);
     u64(static_cast<std::uint64_t>(c.timestamp)); u64(c.salt);
     refs(c.referenced_events); blob(c.signature);
   }
@@ -55,7 +57,7 @@ class Writer {
 
   void node_ids(const std::vector<domain::NodeId>& ids) {
     u32(static_cast<std::uint32_t>(ids.size()));
-    for (auto id : ids) u64(id);
+    for (const auto& id : ids) node_id(id);
   }
 
   [[nodiscard]] const domain::Bytes& bytes() const noexcept { return buf_; }
@@ -80,6 +82,13 @@ class Reader {
     return v;
   }
 
+  domain::NodeId node_id() {
+    need(16);
+    domain::NodeId id;
+    for (std::size_t i = 0; i < 16; ++i) id.bytes[i] = buf_[pos_++];
+    return id;
+  }
+
   domain::Bytes blob() {
     std::uint32_t n = u32();
     need(n);
@@ -90,12 +99,12 @@ class Reader {
 
   std::vector<domain::EventReference> refs() {
     std::uint32_t n = u32();
-    ensure_count(n, 12);  // each ref is ≥12 wire bytes (u64 creator + u32 blob length)
+    ensure_count(n, 20);  // each ref is ≥20 wire bytes (16-byte creator + u32 blob length)
     std::vector<domain::EventReference> out;
     out.reserve(n);
     for (std::uint32_t i = 0; i < n; ++i) {
       domain::EventReference r;
-      r.creator = u64();
+      r.creator = node_id();
       r.hash = blob();
       out.push_back(std::move(r));
     }
@@ -104,14 +113,14 @@ class Reader {
 
   domain::Event event() {
     domain::Event e;
-    e.creator = u64(); e.hash = blob(); e.data = blob(); e.salt = u64();
+    e.creator = node_id(); e.hash = blob(); e.data = blob(); e.salt = u64();
     e.referenced_events = refs(); e.signature = blob();
     return e;
   }
 
   domain::ClockEvent clock_event() {
     domain::ClockEvent c;
-    c.creator = u64(); c.hash = blob(); c.chain = static_cast<std::uint32_t>(u64());
+    c.creator = node_id(); c.hash = blob(); c.chain = static_cast<std::uint32_t>(u64());
     c.timestamp = static_cast<domain::Timestamp>(u64()); c.salt = u64();
     c.referenced_events = refs(); c.signature = blob();
     return c;
@@ -138,10 +147,10 @@ class Reader {
 
   std::vector<domain::NodeId> node_ids() {
     std::uint32_t n = u32();
-    ensure_count(n, 8);  // each id is 8 wire bytes
+    ensure_count(n, 16);  // each id is 16 wire bytes
     std::vector<domain::NodeId> out;
     out.reserve(n);
-    for (std::uint32_t i = 0; i < n; ++i) out.push_back(u64());
+    for (std::uint32_t i = 0; i < n; ++i) out.push_back(node_id());
     return out;
   }
 

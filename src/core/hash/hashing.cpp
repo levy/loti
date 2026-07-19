@@ -8,7 +8,7 @@ namespace loti::hash {
 namespace {
 
 constexpr std::size_t kHashBytes = 32;    // SHA-256 digest
-constexpr std::size_t kNodeIdBytes = 8;   // u64
+constexpr std::size_t kNodeIdBytes = 16;  // 128-bit NodeId
 constexpr std::size_t kSaltBytes = 8;     // u64
 constexpr std::size_t kTimestampBytes = 8;  // u64
 constexpr std::size_t kChainBytes = 8;      // u32 chain/level, hashed as u64
@@ -16,7 +16,7 @@ constexpr std::size_t kRefBytes = kNodeIdBytes + kHashBytes;
 
 void write_refs(ByteWriter& w, const std::vector<domain::EventReference>& refs) {
   for (const auto& ref : refs) {
-    w.write_u64_be(ref.creator);
+    w.write_node_id(ref.creator);
     w.write_bytes(ref.hash);
   }
 }

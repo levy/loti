@@ -120,7 +120,7 @@ TEST_CASE("tampering a bounds proof makes verification fail") {
   }
   SUBCASE("endpoint not the reference node's") {
     auto p = base;
-    p.reference.node ^= 0x1;  // now the endpoints' creator != reference.node
+    p.reference.node.bytes[0] ^= 0x01;  // now the endpoints' creator != reference.node
     CHECK_FALSE(proof::verify(p, signer).valid);
   }
   SUBCASE("mutated event content (breaks the event hash)") {
@@ -202,7 +202,7 @@ TEST_CASE("a real Ed25519-signed proof verifies, and a signature tamper is caugh
   }
   SUBCASE("reference id not matching the embedded pubkey") {
     auto bad = p;
-    bad.reference.node ^= 0x1;
+    bad.reference.node.bytes[0] ^= 0x01;
     CHECK_FALSE(proof::verify(bad, verifier).valid);
   }
 }

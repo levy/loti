@@ -125,10 +125,24 @@ std::string hex(const domain::EventHash& h) {
   return s;
 }
 
-std::string hex_id(domain::NodeId id) {
-  char buf[19];
-  std::snprintf(buf, sizeof(buf), "0x%016llx", static_cast<unsigned long long>(id));
-  return buf;
+std::string hex_id(const domain::NodeId& id) {  // 128-bit id → "0x" + 32 lowercase hex chars
+  static const char* d = "0123456789abcdef";
+  std::string s = "0x";
+  for (auto b : id.bytes) { s.push_back(d[b >> 4]); s.push_back(d[b & 0xF]); }
+  return s;
+}
+
+// A 32-hex-char id (optionally "0x"-prefixed) is a real 128-bit id; anything else is treated as
+// a decimal (small / simulation) id placed in the low 8 bytes.
+domain::NodeId parse_node_id(const std::string& s) {
+  std::string h = (s.size() > 2 && s[0] == '0' && (s[1] == 'x' || s[1] == 'X')) ? s.substr(2) : s;
+  if (h.size() == 32 && h.find_first_not_of("0123456789abcdefABCDEF") == std::string::npos) {
+    domain::NodeId id;
+    for (std::size_t i = 0; i < 16; ++i)
+      id.bytes[i] = static_cast<std::uint8_t>(std::stoul(h.substr(2 * i, 2), nullptr, 16));
+    return id;
+  }
+  return domain::NodeId(std::strtoull(s.c_str(), nullptr, 0));
 }
 
 std::optional<domain::EventHash> unhex(const std::string& s) {
@@ -422,7 +436,7 @@ class Lotid final : public ChainCallback, public BoundsCallback, public OrderCal
       if (args.size() < 2) return {kUsage, false, "usage: peer-add <id:ip:port>", {}};
       auto f = split(args[1], ':');
       if (f.size() != 3) return {kUsage, false, "want id:ip:port", {}};
-      add_peer(std::strtoull(f[0].c_str(), nullptr, 0), f[1],
+      add_peer(parse_node_id(f[0]), f[1],
                static_cast<std::uint16_t>(std::atoi(f[2].c_str())));
       return {kOk, false, "", {{"peer", args[1]}}};
     }
@@ -720,7 +734,7 @@ class Lotid final : public ChainCallback, public BoundsCallback, public OrderCal
       const auto hash = unhex(ref.substr(colon + 1));
       if (!hash || hash->size() != 32) return std::nullopt;
       domain::Event e;
-      e.creator = std::strtoull(ref.substr(0, colon).c_str(), nullptr, 0);
+      e.creator = parse_node_id(ref.substr(0, colon));
       e.hash = *hash;
       return e;
     }
@@ -888,7 +902,7 @@ int main(int argc, char** argv) {
         std::fprintf(stderr, "bad --peer (want id:ip:port): %s\n", p.c_str());
         return 2;
       }
-      daemon.add_peer(std::strtoull(f[0].c_str(), nullptr, 0), f[1],
+      daemon.add_peer(parse_node_id(f[0]), f[1],
                       static_cast<std::uint16_t>(std::atoi(f[2].c_str())));
     }
     for (const auto& r : routes) {
@@ -897,8 +911,7 @@ int main(int argc, char** argv) {
         std::fprintf(stderr, "bad --route (want dst:nexthop): %s\n", r.c_str());
         return 2;
       }
-      daemon.learn_route(std::strtoull(f[0].c_str(), nullptr, 0),
-                         std::strtoull(f[1].c_str(), nullptr, 0));
+      daemon.learn_route(parse_node_id(f[0]), parse_node_id(f[1]));
     }
     std::fprintf(stderr, "[lotid] node %s listening on udp/%u (%s)\n", hex_id(daemon.node_id()).c_str(),
                  port, key_path.empty() ? "unsigned" : "signed");

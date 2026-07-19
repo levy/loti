@@ -212,7 +212,7 @@ TEST_CASE("LmdbStore persists a Node's DAG and Node::load restores it byte-for-b
     LmdbStore store(env.str());
     auto b = store.begin();
     wire::Reader r(snap1);
-    REQUIRE(r.u64() == 2);  // snapshot format version
+    REQUIRE(r.u64() == 3);  // snapshot format version (v3: 128-bit NodeId)
     for (auto n = r.u64(); n > 0; --n) b.append_event(r.event());
     for (auto n = r.u64(); n > 0; --n) {
       domain::LocalClockEvent c;
@@ -223,13 +223,13 @@ TEST_CASE("LmdbStore persists a Node's DAG and Node::load restores it byte-for-b
     for (auto n = r.u64(); n > 0; --n) r.event();  // unreferenced section — derived on load
     for (auto n = r.u64(); n > 0; --n) {
       domain::Neighbor nb;
-      nb.node_id = r.u64();
+      nb.node_id = r.node_id();
       for (auto m = r.u64(); m > 0; --m) nb.last_clock_event_hashes.push_back(r.blob());
       b.put_neighbor(nb);
     }
     for (auto n = r.u64(); n > 0; --n) {
-      const auto dst = r.u64();
-      const auto next_hop = r.u64();
+      const auto dst = r.node_id();
+      const auto next_hop = r.node_id();
       b.put_route(dst, next_hop);
     }
     CHECK(r.at_end());
