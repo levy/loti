@@ -755,6 +755,14 @@ class Lotid final : public ChainCallback, public BoundsCallback, public OrderCal
   }
   // The DAG lives in the store now, so events come back by value (a hash-prefix scan).
   std::optional<domain::Event> find_by_hash_prefix(const std::string& prefix) {
+    // A full 64-hex-char hash resolves through the store's hash index in O(log n) — this is the
+    // programmatic hot path (`last`, `prove <hash>`, `event <hash>`). Only a shorter, human-typed
+    // prefix falls back to the linear scan (interactive, rare); a full range-scan over the index
+    // for short prefixes is a further optimization left for later.
+    if (prefix.size() == 64) {
+      if (auto bytes = unhex(prefix)) return store_->event_by_hash(*bytes);
+      return std::nullopt;
+    }
     for (std::size_t i = 0; i < node_->event_count(); ++i) {
       domain::Event e = node_->event_at(i);
       if (hex(e.hash).rfind(prefix, 0) == 0) return e;
