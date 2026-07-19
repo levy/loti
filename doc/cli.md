@@ -99,11 +99,13 @@ verify offline** — plus persistence. All of the daemon promotions above are im
 **Retention.** `lotid` runs a fixed default schedule of several independent clock chains at
 geometrically spaced intervals (fastest first) instead of one; every published event pins into
 every chain at creation, and each chain is ring-pruned to a fixed capacity after each tick, so
-clock-event storage is **bounded** rather than growing with wall-clock time. This retires the
+**clock-event** storage is **bounded** rather than growing with wall-clock time. (Published-event
+*content* is a separate store and is **not** ring-pruned — a heavy publisher's disk still grows
+with what it publishes; `db stat` reports the event count.) This retires the
 earlier rule *local events and the local clock chain are never dropped*: the invariant now is
 that the local clock chain is never dropped **below the coarsest retained resolution** — every
-event stays boundable, at a precision that degrades to roughly `a/C` of its age (`C` = clock
-events kept per chain) rather than being lost. `db gc` from [Storage &
+event within the horizon stays boundable, at a precision that degrades to roughly `1/C` of its
+age (`C` = clock events kept per chain) rather than being lost. `db gc` from [Storage &
 maintenance](#storage--maintenance) is implemented — it re-asserts every chain's ring cap
 (normally a no-op, since the same pruning already runs after every clock tick); `db verify` is
 not implemented.
@@ -192,11 +194,17 @@ Human-readable tables by default; `--json` emits stable machine JSON. Standard e
 | `loti version` | Client + daemon version, protocol version, build info. |
 | `loti config get <key>` / `set <key> <value>` / `list` | Read/update configuration; `set` may require `loti node restart` for some keys (flagged in output). |
 
+The command tables above document the full **intended** surface; several rows — `node
+start`/`restart`, `config get/set/list`, and the `--reference <node>` flag — are **planned, not
+yet built** (see [Implementation status](#implementation-status-mvp)). Today you start the node by
+running `lotid` directly (see the Quickstart), and a proof is always anchored in the local node.
+The console transcripts below illustrate the intended experience, including planned commands.
+
 ```console
 $ loti init
 identity  node:9f3a…c1   (ed25519)
 home      ~/.loti
-$ loti node start
+$ loti node start   # planned; today run `lotid …` directly
 lotid started (pid 4821), listening udp/:4666, control ~/.loti/control.sock
 $ loti status
 node        node:9f3a…c1
@@ -433,7 +441,7 @@ loti verify order.loti
 | `home` | `~/.loti` | State directory. |
 | `identity.key` | `key.pem` | Signing key path. |
 | `identity.sign_events` | `true` | Sign published events. |
-| `network.listen` | `udp://:4666` | P2P transport bind address. |
+| `network.listen` | `udp://:4666` | P2P transport bind address. The port is operator-chosen (there is no protocol-mandated port); `loti init` suggests `7000` and the real-node quickstarts use it, while the OMNeT++ simulation uses a fixed `666`. |
 | `network.control` | `control.sock` | Local RPC socket for `loti`. |
 | `clock.interval` | `1s` | Clock-event creation interval. |
 | `discovery.expiry` | `1s`→`30s` | Discovery timeout before abort (raise for real WANs). |

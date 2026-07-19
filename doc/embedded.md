@@ -160,6 +160,13 @@ The database stays **crash-consistent** either way (LMDB is copy-on-write; witho
 window**: a crash in lazy mode may lose up to the last `<interval>` of commits — never the
 database's integrity. A clean shutdown and the `save` command always force a final flush.
 
+There is a second reason to prefer lazy mode on slow or high-latency storage: the daemon is
+single-threaded, so in the default **safe** mode the per-commit `fsync` runs *on the reactor
+thread* — while it blocks, no packets or control commands are serviced. On a busy SD card or
+network-backed disk that stall is visible. `--store-sync-interval > 0` moves the flush to a
+periodic timer, so a storage-latency spike no longer blocks networking. (Moving `fsync` to a
+background thread is a possible future improvement.)
+
 | `--store-sync-interval` | Behaviour | Crash risk |
 |---|---|---|
 | `0` (default) | fsync every commit | none (fully durable) |

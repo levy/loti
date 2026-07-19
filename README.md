@@ -45,7 +45,11 @@ Start here depending on what you want:
 - **Event chain** — a hash-linked sequence `lowerBound · event · upperBound` that starts and
   ends at the querying node's own clock events and passes through the target event. It is a
   proof of that node's time bounds for the event.
-- **Discoveries** — three queries a node's *daemon* can run:
+- **Discoveries** — three queries a node's *daemon* can run. Each is **best-effort**: it succeeds
+  when a chain can be reconstructed and reverse-links have been learned, and otherwise aborts or
+  expires (an order query can also return `undetermined`). The "prove bounds for any event" goal
+  above is what a *found* chain guarantees; finding one is not guaranteed for every event at every
+  moment.
   - **event chain discovery** — reconstruct the enclosing chain for an event (routed to the
     event's creator and back, accreting each hop's clock events);
   - **event bounds discovery** — the enclosing chain's endpoint timestamps `(lower, upper)`;
