@@ -91,7 +91,8 @@ guarantees directly.
 
 **Status: partial.** 2.1 (reject empty signatures) and 2.2 (0600 key file) are DONE, along with
 2.x below (an upper-bound linkage soundness bug found while fixing 2.1); 2.3 (fail-loud key + backup writes)
-is done. 2.4 (wider NodeId), 2.5, and 2.6 remain. Full suite + acceptance green.
+is done, as is 2.5 (warn on unsigned mode). 2.4 (wider NodeId) and 2.6 (key scrub) remain. Full
+suite + acceptance green.
 
 - [x] **2.1 — Reject unsigned/empty signatures in validation.** `Ed25519KeyStore::verify` returns
   `true` for an empty signature ([keystore.cpp:84](../../src/adapters/os/keystore.cpp#L84)), and
@@ -109,8 +110,8 @@ is done. 2.4 (wider NodeId), 2.5, and 2.6 remain. Full suite + acceptance green.
     fabricated-reference** hole specifically.
 - [x] **2.2 — Private key file must be `0600`.** DONE: `load_or_generate` now creates the temp key
   file via `open(O_WRONLY|O_CREAT|O_EXCL, 0600)` (no world-readable window), tightens an existing
-  looser key with `chmod 0600` on load, and checks every write/rename. Still TODO: `loti init`'s
-  `~/.loti` dir `0700` + checked `mkdir` in [loti.cpp](../../src/app/loti/loti.cpp) `do_init`.
+  looser key with `chmod 0600` on load, and checks every write/rename. `loti init` now also
+  tightens its `~/.loti` home dir to `0700` (even if it already existed looser) and checks `mkdir`.
 
 - [x] **2.x — Upper-bound linkage (soundness bug found while fixing 2.1).** `validate::verify_chain`
   skipped the linkage check on the **first** upper-bound clock event (`if (!first && …)`), so an
@@ -134,9 +135,10 @@ is done. 2.4 (wider NodeId), 2.5, and 2.6 remain. Full suite + acceptance green.
   **wire/format change** (`NodeId` is a `u64` in [domain/types.hpp](../../src/core/domain/types.hpp#L21)
   and in every packet/snapshot) — bump the snapshot + on-disk + protocol versions together, or
   scope it as its own sub-plan. Decide and record the chosen width here.
-- [ ] **2.5 — Gate/annotate unsigned mode.** `lotid` treats `--id <n>` (NullSigner) as a co-equal
-  production option with no warning. Either drop `--id` from the production binary, or print a
-  loud one-time "running UNSIGNED — no cryptographic identity" banner and reflect it in `status`.
+- [x] **2.5 — Gate/annotate unsigned mode.** DONE: `lotid` prints a loud startup WARNING when run
+  unsigned (`--id`) — no cryptographic identity, and (since 2.1) its events verify under no signed
+  peer; `status` already reports `mode: signed|unsigned`. (Kept `--id` for the simulation/test path
+  rather than dropping it.)
 - [ ] **2.6 — Scrub key material.** Raw private-key bytes pass through plain `domain::Bytes` in
   `keystore.cpp` with no cleanse. `OPENSSL_cleanse`/`explicit_bzero` before those buffers go out
   of scope. (Lower urgency than 2.1–2.3; include here for completeness.)
