@@ -48,7 +48,8 @@ All multi-byte integers are **big-endian (network byte order)**.
 | --- | --- | --- |
 | `u8` | 1 byte | Used for the message type tag. |
 | `u32` | 4 bytes, big-endian | Used only as a length / count prefix. |
-| `u64` | 8 bytes, big-endian | All identifiers, salts, timestamps. |
+| `u64` | 8 bytes, big-endian | Salts and timestamps. |
+| `NodeId` | 16 raw bytes (fixed) | A node's 128-bit identity — written as 16 bytes, not an integer. |
 | `blob` | `u32 length` then *length* raw bytes | Any variable-length byte string (hashes, content, signatures). A zero-length blob is 4 bytes (`length = 0`). |
 | `array<T>` | `u32 count` then *count* × `T` | Repeated elements, each encoded in turn. |
 
@@ -62,7 +63,7 @@ How each logical field type maps onto the primitives above:
 
 | Field type | Wire encoding | Typical size | Meaning |
 | --- | --- | --- | --- |
-| `NodeId` | `u64` | 8 B | A node's identity. |
+| `NodeId` | 16 raw bytes | 16 B | A node's **128-bit** identity — the first 16 bytes of `SHA-256(pubkey)`. |
 | `Salt` | `u64` | 8 B | Random salt folded into a hash. |
 | `Timestamp` | `u64` | 8 B | A raw clock tick (nanoseconds in production), signed 64-bit reinterpreted as `u64`. |
 | `TimeRange` | two `u64` (`lo`, `hi`) | 16 B | A closed `[lo, hi]` window of `Timestamp` ticks — a discovery's estimated time window. |
@@ -78,24 +79,24 @@ How each logical field type maps onto the primitives above:
 
 ## Datagram header
 
-**Every** datagram begins with the same 9-byte header (`write_header` in
+**Every** datagram begins with the same 17-byte header (`write_header` in
 [`packets.cpp`](../src/core/wire/packets.cpp)):
 
 | Offset | Size | Field | Encoding | Meaning |
 | --- | --- | --- | --- | --- |
 | 0 | 1 B | `type` | `u8` | Message type: `0` = clock notification, `1` = chain request, `2` = chain response. Selects how the rest of the datagram is parsed. |
-| 1 | 8 B | `sender` | `u64` | The **sender's** own `NodeId`. Lets the receiver identify the neighbor; the payload that follows never repeats it. |
+| 1 | 16 B | `sender` | `NodeId` | The **sender's** own `NodeId`. Lets the receiver identify the neighbor; the payload that follows never repeats it. |
 
 ```
- 0        1                                   9
- +--------+-----------------------------------+
- |  type  |              sender               |
- |  u8    |               u64                 |
- +--------+-----------------------------------+
-    1 B                  8 B
+ 0        1                                          17
+ +--------+------------------------------------------+
+ |  type  |                 sender                   |
+ |  u8    |               NodeId (16 B)              |
+ +--------+------------------------------------------+
+    1 B                     16 B
 ```
 
-**Header size: 9 bytes** (fixed, on every datagram).
+**Header size: 17 bytes** (fixed, on every datagram).
 
 The three `type` values and their payloads:
 
@@ -115,7 +116,7 @@ node's clock DAG. A node runs several independent, geometrically-spaced clock ch
 [implementation.md](implementation.md#multi-resolution-clock-chains)), so the notification
 carries a `chain` id alongside the two hashes — never the clock event's contents.
 
-Payload after the 9-byte header:
+Payload after the 17-byte header:
 
 | Field | Encoding | Meaning |
 | --- | --- | --- |
@@ -124,13 +125,13 @@ Payload after the 9-byte header:
 | `neighbor_last_clock_event_hash` | `blob` (EventHash) | Hash of the newest clock event the sender has heard **from this neighbor on that chain** — the back-reference that stitches the two DAGs together. |
 
 ```
- +----------- header 9 B -----------+---- u64 ----+------ blob ------+------ blob ------+
- | type=0 |        sender u64        |    chain    | last_clock_hash  | neighbor_last…   |
- +--------+-------------------------+-------------+------------------+------------------+
-                                        8 B         \--- 4 + 32 B ---/ \--- 4 + 32 B ---/
+ +---------- header 17 B ----------+---- u64 ----+------ blob ------+------ blob ------+
+ | type=0 |     sender NodeId      |    chain    | last_clock_hash  | neighbor_last…   |
+ +--------+------------------------+-------------+------------------+------------------+
+                    16 B               8 B         \--- 4 + 32 B ---/ \--- 4 + 32 B ---/
 ```
 
-**Size (SHA-256 hashes): 9 + 8 + 36 + 36 = 89 bytes** (fixed).
+**Size (SHA-256 hashes): 17 + 8 + 36 + 36 = 97 bytes** (fixed).
 
 On receipt, the node records the neighbor's newest hash for that chain, and, if it recognizes
 `neighbor_last_clock_event_hash` as one of its own clock events, records the reverse cross-link.
@@ -143,12 +144,12 @@ On receipt, the node records the neighbor's newest hash for that chain, and, if 
 create, or an intermediate node forwards such a request one hop closer to the event's creator.
 Routed toward the creator via each node's next-hop table.
 
-Payload after the 9-byte header:
+Payload after the 17-byte header:
 
 | Field | Encoding | Meaning |
 | --- | --- | --- |
-| `originator` | `u64` (NodeId) | The node that started the discovery; the response is routed back to it. Unchanged across every hop. |
-| `event.creator` | `u64` (NodeId) | Creator of the target event — the routing destination. |
+| `originator` | `NodeId` (16 B) | The node that started the discovery; the response is routed back to it. Unchanged across every hop. |
+| `event.creator` | `NodeId` (16 B) | Creator of the target event — the routing destination. |
 | `event.hash` | `blob` (EventHash) | Hash of the target event. |
 | `range` | `TimeRange` (16 B) | The querying party's estimated time window for the event; forwarding routes over the overlay as it was within it. |
 | `hop_limit` | `u64` | Maximum forward hops (`0` = unlimited) — bounds a flood's depth. |
@@ -157,15 +158,15 @@ Payload after the 9-byte header:
 (`event.creator` + `event.hash` together are an `EventReference`, inlined directly into the datagram.)
 
 ```
- +--- header 9 B ---+-- u64 --+-- u64 --+- blob -+- TimeRange -+-- u64 --+- array<NodeId> -+
- | type=1 | sender  | orig.   | creator | e.hash | lo | hi     | hop_lim | u32 n · n·u64   |
- +--------+---------+---------+---------+--------+-------------+---------+-----------------+
-                       8 B       8 B     4 + 32 B    16 B         8 B     4 + 8·n (breadcrumb)
+ +-- header 17 B --+-- NodeId --+-- NodeId --+- blob -+- TimeRange -+-- u64 --+- array<NodeId> --+
+ | type=1 | sender | orig. 16 B | creat. 16 B| e.hash | lo | hi     | hop_lim | u32 n · n·16 B   |
+ +--------+--------+------------+------------+--------+-------------+---------+------------------+
+                        16 B         16 B     4 + 32 B    16 B         8 B     4 + 16·n (breadcrumb)
 ```
 
-**Size (SHA-256 hash): 9 + 8 + 8 + 36 + 16 + 8 + (4 + 8·*h*) = 89 + 8·*h* bytes**, where *h* is the
-breadcrumb length (one entry per hop travelled so far). *Now variable* — it was 61 B fixed before
-the time-dependent routing / breadcrumb fields were added.
+**Size (SHA-256 hash): 17 + 16 + 16 + 36 + 16 + 8 + (4 + 16·*h*) = 113 + 16·*h* bytes**, where *h*
+is the breadcrumb length (one entry per hop travelled so far). Variable — one 16-byte `NodeId` is
+appended to the breadcrumb at each hop.
 
 Routing: if `event.creator` is this node, it builds the enclosing chain locally and replies with a
 chain response. Otherwise it appends itself to `path` and forwards a copy to **each** next hop its
@@ -182,22 +183,22 @@ way back, **extends** the chain with its own clock-event bounds before forwardin
 to the originator — **along the reverse-path breadcrumb the request recorded**, not via a routing
 table (the response never re-routes).
 
-Payload after the 9-byte header:
+Payload after the 17-byte header:
 
 | Field | Encoding | Meaning |
 | --- | --- | --- |
-| `originator` | `u64` (NodeId) | Copied from the request; identifies the discovery. The response is *home* when it reaches this node. |
+| `originator` | `NodeId` (16 B) | Copied from the request; identifies the discovery. The response is *home* when it reaches this node. |
 | `chain` | `EventChain` (see below) | The accreting proof: the target event plus a lower- and upper-bound run of clock events. Grows at each hop. |
 | `path` | `array<NodeId>` | The **remaining** reverse-path breadcrumb toward the originator: the next hop is `path.back()`, popped at each hop; empty once the response reaches the originator. |
 
 ```
- +----------- header 9 B -----------+-- u64 --+-- EventChain (var) --+- array<NodeId> -+
- | type=2 |        sender u64        | orig.   | event·lower[]·upper[]| u32 n · n·u64   |
- +--------+-------------------------+---------+----------------------+-----------------+
-                                       8 B          (variable)         4 + 8·n (remaining)
+ +---------- header 17 B ----------+-- NodeId --+-- EventChain (var) --+- array<NodeId> --+
+ | type=2 |     sender NodeId      | orig. 16 B | event·lower[]·upper[]| u32 n · n·16 B   |
+ +--------+------------------------+------------+----------------------+------------------+
+                    16 B                16 B          (variable)         4 + 16·n (remaining)
 ```
 
-**Size: 9 + 8 + `sizeof(EventChain)` + (4 + 8·*h*) bytes** (variable — the largest datagram),
+**Size: 17 + 16 + `sizeof(EventChain)` + (4 + 16·*h*) bytes** (variable — the largest datagram),
 where *h* is the remaining breadcrumb length. The size is dominated by the number of clock events
 accreted into the chain: one per hop on each side, each further inflated by its referenced-event
 list and (if present) its signature.
@@ -209,27 +210,27 @@ list and (if present) its signature.
 These structures appear only within `EventChain`. Field order below is the exact byte order the
 codec writes ([`codec.hpp`](../src/core/wire/codec.hpp)).
 
-### `EventReference` — 44 B (SHA-256, fixed)
+### `EventReference` — 52 B (SHA-256, fixed)
 
 A typed pointer to an event or clock event.
 
 | Field | Encoding | Size |
 | --- | --- | --- |
-| `creator` | `u64` | 8 B |
+| `creator` | `NodeId` | 16 B |
 | `hash` | `blob` (EventHash) | 4 + 32 B |
 
-### `Event` — 64 + *d* + 44·*r* B (unsigned, SHA-256)
+### `Event` — 72 + *d* + 52·*r* B (unsigned, SHA-256)
 
 The target content event at the center of a chain. *d* = content length, *r* = referenced-event
 count.
 
 | Field | Encoding | Size |
 | --- | --- | --- |
-| `creator` | `u64` | 8 B |
+| `creator` | `NodeId` | 16 B |
 | `hash` | `blob` (EventHash) | 4 + 32 B |
 | `data` | `blob` | 4 + *d* B |
 | `salt` | `u64` | 8 B |
-| `referenced_events` | `array<EventReference>` | 4 + 44·*r* B |
+| `referenced_events` | `array<EventReference>` | 4 + 52·*r* B |
 | `signature` | `blob` (Signature) | 4 B unsigned · 68 B signed |
 
 > **The event content `data` is on the wire.** A chain response transmits the target event's
@@ -238,7 +239,7 @@ count.
 > deliberately **excludes** `data` — that is a modeling choice for size statistics, not a claim
 > about the encoded bytes. The actual datagram includes it.)
 
-### `ClockEvent` — 76 + 44·*r* B (unsigned, SHA-256)
+### `ClockEvent` — 84 + 52·*r* B (unsigned, SHA-256)
 
 A timestamped node of the clock DAG; a chain carries many of them. *r* = referenced-event count.
 `chain` — which of the node's multi-resolution clock chains this event belongs to (0 = fastest)
@@ -246,12 +247,12 @@ A timestamped node of the clock DAG; a chain carries many of them. *r* = referen
 
 | Field | Encoding | Size |
 | --- | --- | --- |
-| `creator` | `u64` | 8 B |
+| `creator` | `NodeId` | 16 B |
 | `hash` | `blob` (EventHash) | 4 + 32 B |
 | `chain` | `u64` | 8 B |
 | `timestamp` | `u64` | 8 B |
 | `salt` | `u64` | 8 B |
-| `referenced_events` | `array<EventReference>` | 4 + 44·*r* B |
+| `referenced_events` | `array<EventReference>` | 4 + 52·*r* B |
 | `signature` | `blob` (Signature) | 4 B unsigned · 68 B signed |
 
 ### `EventChain` — variable
@@ -281,9 +282,9 @@ adds 64 bytes per signed `Event`/`ClockEvent`.
 
 | Datagram | `type` | Size | Fixed? |
 | --- | --- | --- | --- |
-| Clock notification | 0 | 89 B | ✔ fixed |
-| Chain request | 1 | 89 + 8·*h* B (*h* = breadcrumb hops) | ✘ variable |
-| Chain response | 2 | 21 + 8·*h* B + `EventChain` | ✘ variable |
+| Clock notification | 0 | 97 B | ✔ fixed |
+| Chain request | 1 | 113 + 16·*h* B (*h* = breadcrumb hops) | ✘ variable |
+| Chain response | 2 | 37 + 16·*h* B + `EventChain` | ✘ variable |
 
 (UDP + IPv4 headers are added by the OS network stack and are not part of these figures.)
 
@@ -296,8 +297,8 @@ hangs on. Importantly, the hash is computed over a **fixed canonical layout that
 the transport encoding above** (defined in [`src/core/hash/hashing.hpp`](../src/core/hash/hashing.hpp)) —
 so a node can recompute and verify any hash it receives:
 
-- **Event hash** = `SHA-256( data ‖ salt(u64 BE) ‖ for each referenced event: creator(u64 BE) ‖ hash bytes )`.
-- **Clock-event hash** = `SHA-256( chain(u64 BE) ‖ timestamp(u64 BE) ‖ salt(u64 BE) ‖ for each referenced event: creator(u64 BE) ‖ hash bytes )`.
+- **Event hash** = `SHA-256( data ‖ salt(u64 BE) ‖ for each referenced event: creator(16 B) ‖ hash bytes )`.
+- **Clock-event hash** = `SHA-256( chain(u64 BE) ‖ timestamp(u64 BE) ‖ salt(u64 BE) ‖ for each referenced event: creator(16 B) ‖ hash bytes )`.
 
 A node's own `creator`/`hash` fields and its `signature` are **not** part of the preimage — the
 signature signs the hash, so signing never changes a hash. This is why the `data` bytes must
@@ -349,8 +350,8 @@ Originator O          Intermediate I           Creator C
 ```
 
 Notes:
-- The request carries only an event reference (fixed 61 B); the response carries the full,
-  growing chain (variable).
+- The request carries only an event reference plus the breadcrumb (`113 + 16·h` B); the response
+  carries the full, growing chain (variable, the largest datagram).
 - If the originator itself created the event, the chain is built entirely locally with **no
   datagrams** at all.
 - *Event bounds* and *event order* discoveries send **no new datagram types** — they are built on
