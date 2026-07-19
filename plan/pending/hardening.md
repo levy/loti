@@ -227,9 +227,10 @@ stored timestamps are non-decreasing and no inverted interval validates.
   mid-loop the txn aborts (disk reverts) but the popped seqs are lost, leaking records forever and
   silently degrading the bounded-storage invariant. Restore the deque on abort, or delete first and
   mutate RAM only after a successful commit.
-- [ ] **5.2 — Robust map growth.** `durable()` catches `MDB_MAP_FULL` once, doubles once, retries
-  once (`lmdb_store.cpp`); a record larger than one doubling → uncaught → crash. Loop the grow/retry
-  until the record fits or the (32-bit) ceiling is truly hit.
+- [x] **5.2 — Robust map growth.** DONE: `durable()` now loops grow/retry until the record fits (or
+  `grow_map()` throws `LmdbStoreFull` at the 32-bit ceiling). Was a single retry — a record larger
+  than one doubling threw uncaught → crash. Test: a 5 MiB single-record write into a 1 MiB map now
+  succeeds (grows 1→2→4→8 MiB).
 - [ ] **5.3 — Bound or prune published-event storage.** Only the clock chains are ring-pruned; the
   `events`/`event_index` sub-DBs holding user content have **no cap** — a publisher node grows disk
   without bound. Either document this as operator-driven (and surface it in `db stat`) or add an
@@ -287,9 +288,8 @@ minor; all ports work, and `loti init` itself prints `--port 7000`, so the 7000 
 the code while cli.md's `4666` is the deferred config-file default) and **7.5 / 7.6** (unimplemented
 -feature demos; remaining absolute-claim qualifiers) are left as low-risk follow-ups. Note the
 retention part of 7.6 (flat-storage vs unpruned events) was folded into the 7.4 rewrite.
-The **`index.html` landing-page** copy carries the same over-claims and was edited to match, but
-that edit is **deferred**: the page is being edited concurrently (a proof-chain figure), so its
-claim reconciliation will be re-applied on top of that work rather than risk clobbering it.
+The **`index.html` landing-page** claim reconciliation is now DONE too — re-applied on top of the
+concurrently-added proof-chain figure once that had landed on master.
 
 - [x] **7.1 — One store story.** [doc/cli.md] and
   [doc/paper-vs-implementation.md](../../doc/paper-vs-implementation.md#L33) call the MVP store "a
