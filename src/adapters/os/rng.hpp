@@ -8,6 +8,7 @@
 
 #include <sys/random.h>
 
+#include <cerrno>
 #include <cstddef>
 #include <stdexcept>
 
@@ -23,7 +24,10 @@ class SecureRng final : public ports::Rng {
     auto* p = reinterpret_cast<unsigned char*>(&salt);
     while (got < sizeof(salt)) {
       const ssize_t n = ::getrandom(p + got, sizeof(salt) - got, 0);
-      if (n < 0) throw std::runtime_error("getrandom failed");
+      if (n < 0) {
+        if (errno == EINTR) continue;  // interrupted (e.g. early boot, before entropy) — retry
+        throw std::runtime_error("getrandom failed");
+      }
       got += static_cast<std::size_t>(n);
     }
     return salt;

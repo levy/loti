@@ -4,8 +4,9 @@
 // is how the core "waits" — never by blocking), then epoll_wait()s until the next
 // timer or a watched fd (the UDP socket, stdin) becomes readable, then dispatches.
 // ReactorScheduler is the core's Scheduler port expressed against it. Timers use
-// CLOCK_REALTIME nanoseconds, the same clock as WallClock, so due times computed by
-// the core (clock.now() + delay) line up with the reactor's comparisons.
+// CLOCK_MONOTONIC nanoseconds — decoupled from the wall clock the Clock port hashes into
+// clock-event timestamps — so an NTP step or manual clock change never stalls pending timers
+// (a backward jump) or fires them all in a burst (a forward jump).
 #pragma once
 
 #include <sys/epoll.h>
@@ -106,9 +107,10 @@ class Reactor {
     }
   }
 
+  // Monotonic scheduling time (see the file header) — never the wall clock.
   static domain::Timestamp now_ns() {
     timespec ts{};
-    clock_gettime(CLOCK_REALTIME, &ts);
+    clock_gettime(CLOCK_MONOTONIC, &ts);
     return static_cast<domain::Timestamp>(ts.tv_sec) * 1'000'000'000 + ts.tv_nsec;
   }
 
@@ -143,16 +145,22 @@ class Reactor {
 // Scheduler port backed by the reactor's timer queue.
 class ReactorScheduler final : public ports::Scheduler {
  public:
-  ReactorScheduler(Reactor& reactor, ports::Clock& clock) : reactor_(reactor), clock_(clock) {}
+  explicit ReactorScheduler(Reactor& reactor) : reactor_(reactor) {}
 
   ports::TimerId after(domain::Duration delay, std::function<void()> callback) override {
-    return reactor_.add_timer(clock_.now() + delay, std::move(callback));
+    // Due time on the MONOTONIC clock the reactor compares against — not the wall clock — so a
+    // realtime jump can't stall or bunch up timers. (Clock-event timestamps still use the Clock
+    // port's wall clock; scheduling and timestamping are deliberately separate.)
+    timespec ts{};
+    ::clock_gettime(CLOCK_MONOTONIC, &ts);
+    const domain::Timestamp now =
+        static_cast<domain::Timestamp>(ts.tv_sec) * 1'000'000'000 + ts.tv_nsec;
+    return reactor_.add_timer(now + delay, std::move(callback));
   }
   void cancel(ports::TimerId id) override { reactor_.cancel_timer(id); }
 
  private:
   Reactor& reactor_;
-  ports::Clock& clock_;
 };
 
 }  // namespace loti::os

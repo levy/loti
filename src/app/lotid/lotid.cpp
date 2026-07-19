@@ -263,7 +263,7 @@ class Lotid final : public ChainCallback, public BoundsCallback, public OrderCal
         domain::Duration expiry_ns, bool verbose, std::string store_path, std::size_t store_map_size,
         domain::Duration store_sync_ns, const std::string& key_path, std::string control_path)
       : transport_(port),
-        scheduler_(reactor_, clock_),
+        scheduler_(reactor_),
         telemetry_(verbose),
         store_sync_interval_ns_(store_sync_ns > 0 ? store_sync_ns : 0),
         control_path_(std::move(control_path)) {

@@ -34,6 +34,12 @@ class UdpTransport final : public ports::Transport {
     if (fd_ < 0) throw std::runtime_error("socket() failed");
     int flags = ::fcntl(fd_, F_GETFL, 0);
     ::fcntl(fd_, F_SETFL, flags | O_NONBLOCK);
+    // Enlarge the kernel socket buffers (best-effort) so a burst of discovery traffic is less
+    // likely to be dropped before the single reactor thread drains it. (Inbound-drop counting
+    // via SO_RXQ_OVFL is a deferred telemetry follow-up — see plan 3.5.)
+    const int bufsize = 1 << 20;  // 1 MiB
+    ::setsockopt(fd_, SOL_SOCKET, SO_RCVBUF, &bufsize, sizeof(bufsize));
+    ::setsockopt(fd_, SOL_SOCKET, SO_SNDBUF, &bufsize, sizeof(bufsize));
     sockaddr_in addr{};
     addr.sin_family = AF_INET;
     addr.sin_addr.s_addr = htonl(INADDR_ANY);

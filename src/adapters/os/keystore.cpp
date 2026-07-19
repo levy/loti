@@ -2,6 +2,7 @@
 
 #include "adapters/os/keystore.hpp"
 
+#include <openssl/crypto.h>
 #include <openssl/evp.h>
 
 #include <fcntl.h>
@@ -56,6 +57,7 @@ void Ed25519KeyStore::load_or_generate(const std::string& path) {
     domain::Bytes raw((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
     in.close();
     set_private_key(raw);
+    OPENSSL_cleanse(raw.data(), raw.size());  // scrub the raw private key from this buffer
     ::chmod(path.c_str(), 0600);  // best-effort: tighten an existing looser (e.g. 0644) key file
     return;
   }
@@ -81,6 +83,7 @@ void Ed25519KeyStore::load_or_generate(const std::string& path) {
     }
     off += static_cast<std::size_t>(n);
   }
+  OPENSSL_cleanse(raw.data(), raw.size());  // scrub the raw private key now it is on disk
   if (::close(fd) != 0) {
     ::unlink(tmp.c_str());
     throw std::runtime_error("cannot flush key file " + tmp);
