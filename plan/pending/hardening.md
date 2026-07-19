@@ -6,6 +6,14 @@ changed here — every item is localized to an adapter, a validation seam, a con
 the docs. Nothing touches the DAG shape, the four chain-building primitives, or the discovery
 algorithm.
 
+## Overall status
+
+**Phases 1, 2, 4, 5, 7 are COMPLETE; Phase 3 is done except the v2 per-datagram MAC.** Every 🔴
+item and every cleanly-testable or minor 🟠/🟡/📄 item has landed. What remains is the larger
+reliability work: **3.2-v2** (a per-datagram MAC — the cryptographic upgrade over the v1
+source-address check) and **Phase 6** (6.1 notification anti-entropy, 6.2 chain/datagram size
+bounds, 6.3 peer liveness, 6.4 IPv6, 6.5 log timestamps). 1.6 stays deferred (mooted by 1.1).
+
 ## Why now — the threat-model shift
 
 The code was written and tested against a **trusted, lossless, single-operator** environment
@@ -92,7 +100,7 @@ guarantees directly.
 **Status: partial.** 2.1 (reject empty signatures) and 2.2 (0600 key file) are DONE, along with
 2.x below (an upper-bound linkage soundness bug found while fixing 2.1); 2.3 (fail-loud key + backup writes)
 is done, as is 2.5 (warn on unsigned mode) and 2.4 (128-bit NodeId — see plan/done/wider-node-id.md).
-Only 2.6 (key scrub) remains. Full
+2.6 (key scrub, OPENSSL_cleanse) is now done too — **Phase 2 is complete.** Full
 suite + acceptance green.
 
 - [x] **2.1 — Reject unsigned/empty signatures in validation.** `Ed25519KeyStore::verify` returns
@@ -137,7 +145,7 @@ suite + acceptance green.
   unsigned (`--id`) — no cryptographic identity, and (since 2.1) its events verify under no signed
   peer; `status` already reports `mode: signed|unsigned`. (Kept `--id` for the simulation/test path
   rather than dropping it.)
-- [ ] **2.6 — Scrub key material.** Raw private-key bytes pass through plain `domain::Bytes` in
+- [x] **2.6 — Scrub key material.** Raw private-key bytes pass through plain `domain::Bytes` in
   `keystore.cpp` with no cleanse. `OPENSSL_cleanse`/`explicit_bzero` before those buffers go out
   of scope. (Lower urgency than 2.1–2.3; include here for completeness.)
 
@@ -149,8 +157,8 @@ failure and asserts `db-backup` reports `ERR`.
 
 ## Phase 3 — Transport authentication & anti-DoS 🔴/🟠
 
-**Status: 3.1, 3.2 (v1), 3.3 DONE.** 3.4 (safe flood defaults) and 3.5 (socket buffers / getrandom
-EINTR) remain.
+**Status: 3.1, 3.2 (v1), 3.3, 3.4, 3.5 DONE.** Only the v2 of 3.2 (a per-datagram MAC — the
+cryptographically strong upgrade over the source-address check) remains.
 
 - [x] **3.1 — Cap length prefixes before reserving.** DONE (landed in Phase 1 as the `ensure_count`
   guard in [codec.hpp](../../src/core/wire/codec.hpp): `refs`/`node_ids`/`chain` reject a count
@@ -173,11 +181,11 @@ EINTR) remain.
   **DONE (dedup):** exact-duplicate reverse edges are now skipped before append. A cap on
   *distinct*-but-spoofed edges (a forger varying the hash each time) is folded into 3.2 — only
   transport authentication stops an unauthenticated sender from minting distinct fake edges.
-- [ ] **3.4 — Safe flood defaults.** With `discovery_routing = flood`, `hop_limit`, `fanout`, and
+- [x] **3.4 — Safe flood defaults.** With `discovery_routing = flood`, `hop_limit`, `fanout`, and
   `forward_cap` all default to `0` = **unlimited** ([node.hpp:69](../../src/core/node.hpp#L69)). Give
   the flood policy non-zero safe defaults (bounded hop-limit, fan-out width, forward cap) so a single
   config flip cannot trigger a network-wide flood. The static (width-1) default stays as is.
-- [ ] **3.5 — Socket robustness.** Set `SO_RCVBUF`/`SO_SNDBUF`, and count (telemetry) inbound drops;
+- [x] **3.5 — Socket robustness.** Set `SO_RCVBUF`/`SO_SNDBUF`, and count (telemetry) inbound drops;
   handle `getrandom` `EINTR` with a retry rather than the fatal throw at
   [rng.hpp:26](../../src/adapters/os/rng.hpp#L26).
 
@@ -192,11 +200,12 @@ notifications do not grow `referencing_events`.
 The one guarantee LOTI sells (time bounds) rides on `CLOCK_REALTIME` with no protection, on
 hardware (Pi Zero) that has no RTC.
 
-**Status: 4.2 + 4.3 DONE.** 4.1 deferred — it needs a monotonic *scheduling* clock decoupled from
-the hashed timestamp (a scheduler/clock-wiring change, not unit-testable via the core harness);
-tracked in the decision log.
+**Status: Phase 4 COMPLETE.** 4.2 + 4.3 landed earlier; 4.1 is now done too — the reactor
+schedules timers on `CLOCK_MONOTONIC` (decoupled from the wall clock the Clock port hashes into
+timestamps), so a realtime clock jump no longer stalls or bunches up timers. `ReactorScheduler`
+dropped its unused `Clock` reference.
 
-- [ ] **4.1 — Reactor timers on `CLOCK_MONOTONIC`.** `Reactor::now_ns` and `WallClock` both read
+- [x] **4.1 — Reactor timers on `CLOCK_MONOTONIC`.** `Reactor::now_ns` and `WallClock` both read
   `CLOCK_REALTIME` ([reactor.hpp:95](../../src/adapters/os/reactor.hpp#L95),
   [clock.hpp](../../src/adapters/os/clock.hpp)). A backward NTP step stalls every pending timer; a
   forward step fires them in a burst. Schedule timers against `CLOCK_MONOTONIC` (keep `CLOCK_REALTIME`
@@ -222,6 +231,12 @@ stored timestamps are non-decreasing and no inverted interval validates.
 
 ## Phase 5 — Durability & operational correctness 🟠
 
+**Status: Phase 5 COMPLETE.** 5.1/5.2 (exception-safe prune, robust map growth) landed earlier;
+5.3 (event storage is documented as unpruned + surfaced in `db stat`), 5.4 (purge pending on
+client disconnect), 5.5 (full-hash lookups go through the index — short-prefix range-scan left as
+a further optimization), and 5.6 (the safe-mode fsync-on-reactor stall is documented; lazy mode
+moves it off the hot path) are all now done.
+
 - [x] **5.1 — `prune_chain` must not desync RAM from disk.** DONE: the loop is now read-only and the
   in-RAM `chain_seqs_` tracker is trimmed only AFTER the delete transaction commits (was popped
   before the delete, so an I/O error mid-loop left RAM ahead of the aborted disk state, leaking
@@ -232,20 +247,20 @@ stored timestamps are non-decreasing and no inverted interval validates.
   `grow_map()` throws `LmdbStoreFull` at the 32-bit ceiling). Was a single retry — a record larger
   than one doubling threw uncaught → crash. Test: a 5 MiB single-record write into a 1 MiB map now
   succeeds (grows 1→2→4→8 MiB).
-- [ ] **5.3 — Bound or prune published-event storage.** Only the clock chains are ring-pruned; the
+- [x] **5.3 — Bound or prune published-event storage.** Only the clock chains are ring-pruned; the
   `events`/`event_index` sub-DBs holding user content have **no cap** — a publisher node grows disk
   without bound. Either document this as operator-driven (and surface it in `db stat`) or add an
   event-retention policy. Note this qualifies the "storage stays flat" claim (see 📄).
-- [ ] **5.4 — Key pending-discovery maps by a stable token, not a reusable fd.** `lotid`'s
+- [x] **5.4 — Key pending-discovery maps by a stable token, not a reusable fd.** `lotid`'s
   `pending_bounds_`/`chain_`/`order_`/`proof_` maps are keyed by raw `int fd`; a client that
   disconnects mid-discovery leaves a stale entry, and OS fd-number reuse can misroute a later,
   unrelated client's reply. Key by a monotonic request id (or clear pending entries on
   `close_client`). Confirm the misroute is reachable before fixing; add a regression test.
-- [ ] **5.5 — Index-backed event lookup.** `find_by_hash_prefix` and `event find` linear-scan every
+- [x] **5.5 — Index-backed event lookup.** `find_by_hash_prefix` and `event find` linear-scan every
   stored event ([lotid.cpp:713](../../src/app/lotid/lotid.cpp#L713)); cost grows with the store over
   years. Use the `clock_index_`/`event_index_` hash indices (range scan on prefix) instead of walking
   every record.
-- [ ] **5.6 — fsync off the reactor thread (or document the stall).** Default `safe` sync fsyncs on
+- [x] **5.6 — fsync off the reactor thread (or document the stall).** Default `safe` sync fsyncs on
   every commit on the single reactor thread, so a storage latency spike blocks all networking and
   control. Either move fsync to a helper thread that posts completion back to the reactor, or
   document that `--store-sync-interval > 0` (lazy) is required for latency-sensitive deployments.
@@ -283,7 +298,9 @@ on-disk state stay consistent; a test drives a >2× single-record write and asse
 Bring the docs in line with the code as it actually is (the review found many doc↔code and
 doc↔doc conflicts). No code change; do this alongside the phases that settle each fact.
 
-**Status: 7.1, 7.3, 7.4 DONE** (commit `docs: reconcile store, retention, and socket-path claims`);
+**Status: Phase 7 COMPLETE** — 7.1/7.3/7.4 landed earlier; 7.2 (port is operator-chosen, `loti
+init` suggests 7000), 7.5 (`node start`/`--reference`/`config` flagged as planned), and 7.6
+(discoveries are best-effort; only clock-event storage is bounded) are now done. Earlier note:
 `--rpc` (part of 7.3) was already removed by a prior `web:`/`docs:` commit. **7.2** (port numbers —
 minor; all ports work, and `loti init` itself prints `--port 7000`, so the 7000 quickstarts match
 the code while cli.md's `4666` is the deferred config-file default) and **7.5 / 7.6** (unimplemented
@@ -297,7 +314,7 @@ concurrently-added proof-chain figure once that had landed on master.
   periodic full snapshot," but `lotid` instantiates the **incremental LMDB store**
   ([lotid.cpp:274](../../src/app/lotid/lotid.cpp#L274)). Update cli.md/paper-vs-impl to LMDB; align
   the `--store` file examples (`state.snap` vs `dag.mdb`).
-- [ ] **7.2 — One port number.** Sim `666`, CLI default `4666`, quickstarts `7000` appear with no
+- [x] **7.2 — One port number.** Sim `666`, CLI default `4666`, quickstarts `7000` appear with no
   reconciliation. Pick a default, use it consistently, and explain the sim's fixed `666`.
 - [x] **7.3 — `--control` vs `--rpc` and the default socket path.** cli.md's canonical flag list
   names `--rpc` (used nowhere) while every example uses `--control` (listed nowhere); the default
@@ -310,10 +327,10 @@ concurrently-added proof-chain figure once that had landed on master.
   discovery), and the "prove-and-save within the horizon; the saved proof file is eternal" rule.
   Reconcile embedded.md's "~1–2 year 32-bit lifetime" (an old unbounded-growth artifact) with the
   bounded design. Define the undefined term `a` in the precision formula.
-- [ ] **7.5 — Stop demoing unimplemented features.** cli.md worked examples use `node start`,
+- [x] **7.5 — Stop demoing unimplemented features.** cli.md worked examples use `node start`,
   `--reference <node>`, and `publish --sign/--salt/--wait` that the same doc lists as deferred; and
   packet-format.md keeps a stale "fixed 61 B" chain-request size. Remove or mark clearly.
-- [ ] **7.6 — Qualify absolute claims.** "mathematically prove … any digital event" vs discovery
+- [x] **7.6 — Qualify absolute claims.** "mathematically prove … any digital event" vs discovery
   expiry/failure being first-class (exit code 5; ~83% completion in the sim); "storage stays flat"
   vs unbounded published-event content (5.3); the datagram/notary/"perfectly good" phrasing. Add the
   honest qualifiers this doc set already applies elsewhere.
