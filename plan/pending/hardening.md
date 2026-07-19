@@ -159,11 +159,14 @@ failure and asserts `db-backup` reports `ERR`.
   minimum verify the UDP source address matches the registered address for the claimed `NodeId`;
   better, sign/MAC the datagram (or the notification's `(chain, tip)` tuple) and verify before
   mutating any state. Decide the mechanism and record it.
-- [ ] **3.3 — Dedup and bound `referencing_events`.** `process_clock_event_notification`
+- [x] **3.3 — Dedup and bound `referencing_events`.** `process_clock_event_notification`
   `push_back`s a reverse edge with **no dedup** ([node.cpp:189](../../src/core/node.cpp#L189)) and
   persists it, so a chatty/spoofing neighbor grows a clock event's reverse-edge list without bound
   (memory + disk amplification, and it poisons upper-bound discovery). Dedup on insert and cap the
   per-clock-event reverse-edge count.
+  **DONE (dedup):** exact-duplicate reverse edges are now skipped before append. A cap on
+  *distinct*-but-spoofed edges (a forger varying the hash each time) is folded into 3.2 — only
+  transport authentication stops an unauthenticated sender from minting distinct fake edges.
 - [ ] **3.4 — Safe flood defaults.** With `discovery_routing = flood`, `hop_limit`, `fanout`, and
   `forward_cap` all default to `0` = **unlimited** ([node.hpp:69](../../src/core/node.hpp#L69)). Give
   the flood policy non-zero safe defaults (bounded hop-limit, fan-out width, forward cap) so a single
@@ -183,17 +186,25 @@ notifications do not grow `referencing_events`.
 The one guarantee LOTI sells (time bounds) rides on `CLOCK_REALTIME` with no protection, on
 hardware (Pi Zero) that has no RTC.
 
+**Status: 4.2 + 4.3 DONE.** 4.1 deferred — it needs a monotonic *scheduling* clock decoupled from
+the hashed timestamp (a scheduler/clock-wiring change, not unit-testable via the core harness);
+tracked in the decision log.
+
 - [ ] **4.1 — Reactor timers on `CLOCK_MONOTONIC`.** `Reactor::now_ns` and `WallClock` both read
   `CLOCK_REALTIME` ([reactor.hpp:95](../../src/adapters/os/reactor.hpp#L95),
   [clock.hpp](../../src/adapters/os/clock.hpp)). A backward NTP step stalls every pending timer; a
   forward step fires them in a burst. Schedule timers against `CLOCK_MONOTONIC` (keep `CLOCK_REALTIME`
   only for the hashed *timestamp*). This decouples "when do I tick" from "what time is it."
-- [ ] **4.2 — Monotonic-floor + plausibility gate on clock-event timestamps.** Nothing enforces that
+- [x] **4.2 — Monotonic-floor + plausibility gate on clock-event timestamps.** Nothing enforces that
   a new clock event's timestamp is ≥ its same-chain predecessor's. Enforce a non-decreasing floor in
   `insert_clock_event` ([node.cpp:607](../../src/core/node.cpp#L607)), and drop/park clock creation
   when `clock.now()` is implausible (e.g. pre-2020 epoch on first boot before NTP sync). Record the
   policy (clamp vs skip) here.
-- [ ] **4.3 — Enforce `lower ≤ upper`.** Neither `validate::verify_chain` nor `compare_event_chains`
+  **DONE — policy is CLAMP:** the timestamp is clamped up to the chain tip (a frozen clock yields
+  equal, still hash-ordered, timestamps). The pre-2020 implausibility gate is deferred — it needs a
+  wall-clock epoch reference the pure core deliberately lacks; the monotonic floor is the
+  load-bearing half.
+- [x] **4.3 — Enforce `lower ≤ upper`.** Neither `validate::verify_chain` nor `compare_event_chains`
   ([node.cpp:574](../../src/core/node.cpp#L574)) checks that the proven interval is non-inverted.
   Add `lower ≤ upper` to `ChainResult` validation so a non-monotonic reference clock cannot yield a
   silently-inverted "valid" bound.
@@ -344,3 +355,30 @@ in the production binary).
   malformed-datagram exceptions (returns/drops), so the protocol engine — not just the daemon
   shell — upholds "a bad datagram is a dropped packet." The reactor/reader catches are
   defense-in-depth for unexpected (non-decode) exceptions.
+
+**Phase 2 (landed):**
+
+- **2.1 — the empty-signature policy lives in the adapter.** The verify path's "require a real
+  signature" is enforced by `Ed25519KeyStore::verify` (production/CLI), while `NullSigner` (sim)
+  still accepts empty — the policy is chosen by which signer is linked, keeping the core
+  signer-agnostic. No honest proof changes; the hole was fabricated/unsigned proofs only.
+- **upper-bound linkage (2.x) — a real soundness bug, not just hardening.** The first upper-bound
+  element's linkage to the event was unchecked; a disconnected upper bound validated. Fixed by
+  requiring every upper element to reference its predecessor (the first references the event).
+- **2.4 (wider NodeId) deliberately NOT bundled.** It is a wire/on-disk/snapshot format change
+  (version bumps across `domain::NodeId`, packets, snapshot) and must be its own sub-plan — mixing a
+  format break into a security patch is how you ship a migration bug.
+
+**Phase 3/4 (landed):**
+
+- **3.3 — dedup, not cap.** Exact-duplicate reverse edges are skipped; a cap on distinct spoofed
+  edges is left to 3.2 (transport auth), since only authentication stops an unauthenticated forger
+  from minting distinct fake edges. Deduping is unconditionally correct (a duplicate carries no
+  information); a blind count cap could drop legitimate edges from many neighbors.
+- **4.2 — clamp policy.** A backward wall clock clamps the timestamp up to the chain tip (frozen,
+  still hash-ordered) rather than skipping the tick. The pre-2020 implausibility gate is deferred —
+  it needs a wall-clock epoch reference the pure core intentionally lacks.
+- **4.1 — deferred.** Moving reactor *timers* to `CLOCK_MONOTONIC` requires a monotonic scheduling
+  clock separate from the `CLOCK_REALTIME` value that gets hashed into timestamps — a
+  scheduler/clock-wiring change, and not observable through the core's fake-port harness. Left for a
+  daemon-level pass with an integration test.
