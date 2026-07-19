@@ -191,9 +191,15 @@ void Node::process_clock_event_notification(Neighbor& neighbor, std::uint32_t ch
   neighbor.last_clock_event_hashes[chain] = last_clock_event_hash;
   if (neighbor_changed) store_.put_neighbor(neighbor);
   // Record the learned reverse cross-link on our clock event the neighbor referenced.
+  // Dedup first: reverse edges come from unauthenticated notifications, so a re-sent or
+  // spoofed duplicate carries no new information and must not grow the list without bound.
   if (auto local = store_.clock_event_by_hash(neighbor_last_clock_event_hash)) {
-    local->referencing_events.push_back(EventReference{neighbor.node_id, last_clock_event_hash});
-    store_.update_clock_event(*local);
+    const EventReference edge{neighbor.node_id, last_clock_event_hash};
+    if (std::find(local->referencing_events.begin(), local->referencing_events.end(), edge) ==
+        local->referencing_events.end()) {
+      local->referencing_events.push_back(edge);
+      store_.update_clock_event(*local);
+    }
   }
 }
 
@@ -619,12 +625,18 @@ Event Node::insert_event(Bytes data) {
 LocalClockEvent Node::insert_clock_event(std::uint32_t chain) {
   LocalClockEvent clock_event;
   clock_event.chain = chain;
-  clock_event.timestamp = clock_.now();
   clock_event.creator = id_;
   clock_event.salt = rng_.next_salt();
-  // (a) the previous same-chain clock event — this chain's hash-linked predecessor.
-  if (auto last = store_.latest_clock_event(chain))
+  Timestamp stamp = clock_.now();
+  // (a) the previous same-chain clock event — this chain's hash-linked predecessor. Its
+  // timestamp is also a monotonic floor: a backward wall clock (an NTP step, or an
+  // RTC-less boot near the epoch) must never stamp a clock event older than this chain's
+  // tip, or a proven interval could invert. Clamp up to the tip's timestamp.
+  if (auto last = store_.latest_clock_event(chain)) {
     clock_event.referenced_events.push_back(EventReference{last->creator, last->hash});
+    if (stamp < last->timestamp) stamp = last->timestamp;
+  }
+  clock_event.timestamp = stamp;
   // (b) each neighbor's matched-resolution tip (their chain-`chain` clock event).
   for (const auto& [nid, neighbor] : neighbors_) {
     if (chain < neighbor.last_clock_event_hashes.size() &&

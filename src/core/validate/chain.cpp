@@ -87,6 +87,13 @@ ChainResult verify_chain(const domain::EventChain& chain, domain::NodeId referen
 
   res.lower = chain.lower_bound.front().timestamp;
   res.upper = chain.upper_bound.back().timestamp;
+  // The interval must not be inverted: the reference node's lower clock event cannot be
+  // later than its upper. A non-monotonic reference clock could otherwise present a
+  // structurally sound but meaningless (negative-width) bound as valid.
+  if (res.upper < res.lower) {
+    res.reason = "inverted interval (upper bound earlier than lower bound)";
+    return res;  // res.ok stays false
+  }
   res.ok = true;
   return res;
 }

@@ -18,6 +18,7 @@
 #include <string>
 
 #include "adapters/os/keystore.hpp"
+#include "hash/hashing.hpp"
 #include "harness/world.hpp"
 #include "proof/proof.hpp"
 #include "wire/codec.hpp"
@@ -192,4 +193,81 @@ TEST_CASE("2.2: a generated key file is private (0600)") {
   REQUIRE(::stat(path.c_str(), &st) == 0);
   CHECK((st.st_mode & 0777) == 0600);
   ::unlink(path.c_str());
+}
+
+// --- Phase 3/4: anti-DoS + clock integrity --------------------------------
+
+// 3.3 — a spoofed or merely re-sent clock-event notification must not grow a local
+// clock event's reverse-edge list without bound. Reverse edges are learned from
+// unauthenticated notifications; duplicates carry no new information and must be deduped.
+TEST_CASE("3.3: a duplicate clock-event notification does not grow referencing_events") {
+  harness::World w;
+  Node& n1 = w.add_node(domain::NodeId(1), NodeConfig{});
+  n1.add_neighbor(domain::NodeId(2));
+  w.set_now(10);
+  n1.create_clock_event();  // C1 of n1
+  const domain::LocalClockEvent c1 = w.store_of(1).clock_event_by_seq(0);
+
+  wire::ClockNotification note;
+  note.chain = 0;
+  note.last_clock_event_hash = bytes32(0x77);     // neighbor 2's clock event X
+  note.neighbor_last_clock_event_hash = c1.hash;  // "X references your C1"
+  const domain::Bytes datagram = wire::encode(domain::NodeId(2), note);
+
+  n1.on_packet_received(datagram);
+  const auto after1 = w.store_of(1).clock_event_by_hash(c1.hash)->referencing_events.size();
+  n1.on_packet_received(datagram);  // exact duplicate
+  const auto after2 = w.store_of(1).clock_event_by_hash(c1.hash)->referencing_events.size();
+
+  CHECK(after1 == 1);
+  CHECK(after2 == 1);  // the duplicate must not append a second identical reverse edge
+}
+
+// 4.2 — a backward wall-clock step (NTP correction, an RTC-less Pi booting near the
+// epoch) must not produce a clock event older than its chain tip, or the proven
+// interval would invert. The timestamp is clamped to a per-chain monotonic floor.
+TEST_CASE("4.2: a backward wall clock does not produce a non-monotonic clock chain") {
+  harness::World w;
+  Node& n = w.add_node(domain::NodeId(1), NodeConfig{});
+  w.set_now(1000);
+  n.create_clock_event();   // C1 ts = 1000
+  w.set_now(500);           // clock jumps backward
+  n.create_clock_event();   // C2 must be clamped to >= C1's timestamp
+  const auto c1 = w.store_of(1).clock_event_by_seq(0);
+  const auto c2 = w.store_of(1).clock_event_by_seq(1);
+  CHECK(c1.timestamp == 1000);
+  CHECK(c2.timestamp >= c1.timestamp);
+}
+
+// 4.3 — validation must reject a chain whose interval is inverted (upper < lower),
+// which a non-monotonic reference clock could otherwise present as a "valid" but
+// meaningless bound. Built with correct hashes/linkage so only the interval is at fault.
+TEST_CASE("4.3: a chain with an inverted interval (upper < lower) is rejected") {
+  domain::ClockEvent lo;
+  lo.creator = domain::NodeId(1);
+  lo.chain = 0;
+  lo.timestamp = 1000;
+  lo.hash = hash::calculate_clock_event_hash(lo);
+
+  domain::Event evt;
+  evt.creator = domain::NodeId(1);
+  evt.referenced_events.push_back(domain::EventReference{domain::NodeId(1), lo.hash});
+  evt.hash = hash::calculate_event_hash(evt);
+
+  domain::ClockEvent hi;
+  hi.creator = domain::NodeId(1);
+  hi.chain = 0;
+  hi.timestamp = 10;  // earlier than lo -> inverted
+  hi.referenced_events.push_back(domain::EventReference{domain::NodeId(1), evt.hash});
+  hi.hash = hash::calculate_clock_event_hash(hi);
+
+  proof::Proof p;
+  p.kind = proof::Kind::bounds;
+  p.reference.node = domain::NodeId(1);
+  p.chain.event = evt;
+  p.chain.lower_bound.push_back(lo);
+  p.chain.upper_bound.push_back(hi);
+
+  harness::NullSigner signer;  // isolate the interval check from signatures
+  CHECK_FALSE(proof::verify(p, signer).valid);
 }
