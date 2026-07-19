@@ -735,7 +735,7 @@
           <h3>What it takes</h3>
           <ul>
             <li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><path d="M5 12h14"/></svg><span>A node needs a bit of bandwidth and a slice of storage — <strong>capped at a budget you pick and flat forever</strong>, so it never outgrows its disk. Like a modest background service.</span></li>
-            <li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><path d="M5 12h14"/></svg><span>Hardware is cheap: a node runs always-on, low-power, on a <strong>~$15 Raspberry Pi Zero</strong> — both its memory and its on-disk history stay bounded, so it runs indefinitely without filling up. <a href="https://github.com/levy/loti/tree/master/doc/embedded.md" target="_blank" rel="noopener">Embedded guide →</a></span></li>
+            <li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><path d="M5 12h14"/></svg><span>Hardware is cheap: a node runs always-on, low-power, on a <strong>~$15 Raspberry Pi Zero</strong> — its memory stays bounded and its clock history is capped to a fixed budget, so a long-lived node keeps a small footprint. <a href="https://github.com/levy/loti/tree/master/doc/embedded.md" target="_blank" rel="noopener">Embedded guide →</a></span></li>
             <li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><path d="M5 12h14"/></svg><span>Proofs pin an event to a <em>window</em> — think under a minute — not an exact instant.</span></li>
             <li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><path d="M5 12h14"/></svg><span>It proves <em>time and order</em>. Pair it with a signature when you also need to prove <em>who</em>.</span></li>
             <li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><path d="M5 12h14"/></svg><span>Like any network, its reach depends on participation — the more nodes, the tighter and more trusted the proofs.</span></li>
@@ -748,7 +748,7 @@
             <li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 12.5l5 5L20 6.5"/></svg><span>Proofs a third party can verify offline — no account, no platform, no trust in you.</span></li>
             <li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 12.5l5 5L20 6.5"/></svg><span>Freedom from fees, gatekeepers, and single points of failure.</span></li>
             <li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 12.5l5 5L20 6.5"/></svg><span>Privacy — publish as much as you like; only fingerprints ever leave your machine.</span></li>
-            <li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 12.5l5 5L20 6.5"/></svg><span>Proofs that last — on a fixed storage budget a node keeps ordering events for centuries; recent ones stay pinned to the second, old ones fade in precision but never in order.</span></li>
+            <li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 12.5l5 5L20 6.5"/></svg><span>Proofs that last — on a fixed storage budget a node's reach stretches back years, and further as you add chains; recent events stay pinned to the second, older ones fade in precision, and any proof it makes is valid forever.</span></li>
           </ul>
         </div>
       </div>
@@ -835,7 +835,7 @@
         </details>
         <details>
           <summary>Won't the storage grow forever?<span class="plus"></span></summary>
-          <p>No. Each node keeps its clock history at several resolutions at once — fine-grained for recent events, progressively coarser for older ones — and trims each down to a fixed size. Total storage is capped at a budget you set, from tens of megabytes on a Raspberry Pi to tens of gigabytes on a server, and stays flat. You never lose the ability to order an old event; only its time window widens gently with age — recent events pinned to the second, a decade-old event to about a minute, with a reach of centuries.</p>
+          <p>No. Each node keeps its clock history at several resolutions at once — fine-grained for recent events, progressively coarser for older ones — and trims each down to a fixed size. The clock-event store is capped at a budget you set, from tens of megabytes on a Raspberry Pi to tens of gigabytes on a server, and stays flat (published-event content is separate and grows with what you publish). Within a node's reach an old event stays orderable — its time window just widens gently with age (recent events pinned to the second, older ones coarser) — and more chains push that reach back years and beyond; a proof, once made, is valid forever.</p>
         </details>
         <details>
           <summary>How precise is a proof?<span class="plus"></span></summary>
