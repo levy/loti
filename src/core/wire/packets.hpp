@@ -3,6 +3,7 @@
 #pragma once
 
 #include <cstdint>
+#include <optional>
 #include <variant>
 #include <vector>
 
@@ -53,5 +54,11 @@ struct Datagram {
 [[nodiscard]] domain::Bytes encode(domain::NodeId sender, const ChainResponse&);
 
 [[nodiscard]] Datagram decode(const domain::Bytes& datagram);
+
+// Cheaply read just the sender NodeId from a datagram header (type byte + sender u64),
+// without decoding the payload. Returns nullopt if the datagram is too short to hold a
+// header. Used by the transport adapter to check a datagram's source against its claimed
+// sender before the full decode.
+[[nodiscard]] std::optional<domain::NodeId> sender_of(const domain::Bytes& datagram);
 
 }  // namespace loti::wire

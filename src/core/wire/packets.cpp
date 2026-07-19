@@ -43,6 +43,14 @@ domain::Bytes encode(domain::NodeId sender, const ChainResponse& m) {
   return w.bytes();
 }
 
+std::optional<domain::NodeId> sender_of(const domain::Bytes& datagram) {
+  // Header = type (1 byte) + sender NodeId (8 bytes, big-endian), matching write_header.
+  if (datagram.size() < 9) return std::nullopt;
+  domain::NodeId id = 0;
+  for (int i = 0; i < 8; ++i) id = (id << 8) | datagram[1 + static_cast<std::size_t>(i)];
+  return id;
+}
+
 Datagram decode(const domain::Bytes& datagram) {
   Reader r(datagram);
   const auto type = static_cast<Type>(r.u8());
