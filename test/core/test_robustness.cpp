@@ -18,6 +18,7 @@
 #include <string>
 
 #include "adapters/os/keystore.hpp"
+#include "adapters/os/store.hpp"
 #include "hash/hashing.hpp"
 #include "harness/world.hpp"
 #include "proof/proof.hpp"
@@ -270,4 +271,26 @@ TEST_CASE("4.3: a chain with an inverted interval (upper < lower) is rejected") 
 
   harness::NullSigner signer;  // isolate the interval check from signatures
   CHECK_FALSE(proof::verify(p, signer).valid);
+}
+
+// 2.3 — a backup that cannot be written must fail loudly, not silently "succeed".
+// FileStore::save previously swallowed every I/O error and returned void, so db-backup
+// reported success even when nothing was written. save() now throws on failure; combined
+// with the daemon's dispatch_guarded (Phase 1.5) that turns db-backup into an ERR reply.
+TEST_CASE("2.3: FileStore::save fails loudly on an unwritable path") {
+  os::FileStore store("/nonexistent-loti-dir-xyztmp/backup.snap");  // parent dir does not exist
+  CHECK_THROWS_AS(store.save(domain::Bytes{1, 2, 3}), std::runtime_error);
+}
+
+TEST_CASE("2.3: FileStore::save + load still round-trips to a writable path") {
+  const std::string path = "loti_test_backup.tmp";
+  ::unlink(path.c_str());
+  os::FileStore store(path);
+  const domain::Bytes blob{0xDE, 0xAD, 0xBE, 0xEF};
+  CHECK_NOTHROW(store.save(blob));
+  const auto back = store.load();
+  REQUIRE(back.has_value());
+  CHECK(*back == blob);
+  ::unlink(path.c_str());
+  ::unlink((path + ".tmp").c_str());
 }

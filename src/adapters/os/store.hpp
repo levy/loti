@@ -13,6 +13,7 @@
 #include <fstream>
 #include <iterator>
 #include <optional>
+#include <stdexcept>
 #include <string>
 #include <utility>
 
@@ -32,14 +33,24 @@ class FileStore {
     return bytes;
   }
 
+  // Write via a temp file + atomic rename. Every step is checked and throws on failure —
+  // a backup that could not be written must NOT look like it succeeded (its caller, the
+  // daemon's db-backup, reports success only if this returns; a throw becomes an ERR reply).
   void save(const domain::Bytes& blob) const {
     const std::string tmp = path_ + ".tmp";
-    {
-      std::ofstream f(tmp, std::ios::binary | std::ios::trunc);
-      f.write(reinterpret_cast<const char*>(blob.data()),
-              static_cast<std::streamsize>(blob.size()));
+    std::ofstream f(tmp, std::ios::binary | std::ios::trunc);
+    if (!f) throw std::runtime_error("cannot open backup file " + tmp);
+    f.write(reinterpret_cast<const char*>(blob.data()),
+            static_cast<std::streamsize>(blob.size()));
+    f.close();  // flush + close; sets failbit on any write/flush error
+    if (!f) {
+      std::remove(tmp.c_str());
+      throw std::runtime_error("cannot write backup file " + tmp);
     }
-    std::rename(tmp.c_str(), path_.c_str());  // atomic replace on POSIX
+    if (std::rename(tmp.c_str(), path_.c_str()) != 0) {  // atomic replace on POSIX
+      std::remove(tmp.c_str());
+      throw std::runtime_error("cannot install backup file " + path_);
+    }
   }
 
   [[nodiscard]] const std::string& path() const { return path_; }
