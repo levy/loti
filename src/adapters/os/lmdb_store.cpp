@@ -573,10 +573,11 @@ void LmdbStore::prune_chain(std::uint32_t chain, std::size_t keep) {
   if (it == chain_seqs_.end() || keep == 0 || it->second.size() <= keep) return;
   MDB_txn* txn = nullptr;
   check(mdb_txn_begin(env_, nullptr, 0, &txn), "txn_begin(prune)");
+  const std::size_t to_prune = it->second.size() - keep;
   try {
-    while (it->second.size() > keep) {
-      const std::uint64_t seq = it->second.front();
-      it->second.pop_front();
+    for (std::size_t i = 0; i < to_prune; ++i) {
+      const std::uint64_t seq = it->second[i];  // read only — the in-RAM tracker is trimmed
+                                                // AFTER a successful commit (exception safety)
       unsigned char sbuf[8];
       put_u64_be(sbuf, seq);
       MDB_val sk{sizeof(sbuf), sbuf};
@@ -601,9 +602,12 @@ void LmdbStore::prune_chain(std::uint32_t chain, std::size_t keep) {
     }
     check(mdb_txn_commit(txn), "txn_commit(prune)");
   } catch (...) {
-    mdb_txn_abort(txn);
+    mdb_txn_abort(txn);  // disk reverts; chain_seqs_ is untouched, so RAM matches the un-pruned disk
     throw;
   }
+  // Commit succeeded — only now trim the in-RAM tracker to match the pruned disk state. If any
+  // delete above had thrown, the txn aborted and this line was skipped, so RAM never gets ahead.
+  it->second.erase(it->second.begin(), it->second.begin() + static_cast<std::ptrdiff_t>(to_prune));
 }
 
 void LmdbStore::seed_chain_tips() {

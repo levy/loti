@@ -506,3 +506,25 @@ TEST_CASE("LmdbStore single-record write grows the map as many times as needed")
   CHECK(store.event_count() == 1);
   CHECK(store.map_size() >= (std::size_t{5} << 20));
 }
+
+// 5.1 — LmdbStore::prune_chain at the real-storage layer (previously untested; ring-prune
+// tests only used the in-memory sim store). Also guards the exception-safety refactor: the
+// in-RAM chain tracker is trimmed only AFTER the delete transaction commits, so it can never
+// get ahead of disk. Here we assert the happy-path contract: prune trims to `keep`, keeps the
+// newest, drops the oldest, and is idempotent (which requires RAM and disk to stay in sync).
+TEST_CASE("LmdbStore::prune_chain trims a chain to keep on real storage and is idempotent") {
+  TempEnv env("prune");
+  LmdbStore store(env.str());
+  for (std::uint8_t i = 1; i <= 10; ++i) store.append_clock_event(make_clock(1, i, i * 10));
+  REQUIRE(store.clock_event_count() == 10);
+
+  store.prune_chain(0, 4);  // keep the newest 4 (tags 7..10)
+  CHECK(store.clock_event_count() == 4);
+  CHECK(store.load_clock_events().size() == 4);
+  CHECK_FALSE(store.clock_event_by_hash(hash_of(6)).has_value());  // an old one was pruned
+  CHECK(store.clock_event_by_hash(hash_of(7)).has_value());        // the newest survive
+  CHECK(store.clock_event_by_hash(hash_of(10)).has_value());
+
+  store.prune_chain(0, 4);  // idempotent — only possible if the RAM tracker matches disk
+  CHECK(store.clock_event_count() == 4);
+}
