@@ -7,6 +7,7 @@
 
 #include <cstddef>
 #include <cstdio>
+#include <ctime>
 #include <string>
 
 #include "domain/types.hpp"
@@ -61,7 +62,15 @@ class LogTelemetry final : public ports::Telemetry {
  private:
   template <class... Args>
   static void log(const char* fmt, Args... args) {
-    std::fprintf(stderr, "[lotid] ");
+    // Prefix each line with a wall-clock timestamp so a long-running daemon's stderr is
+    // diagnosable even when not captured by a timestamping supervisor (journald etc.).
+    timespec ts{};
+    ::clock_gettime(CLOCK_REALTIME, &ts);
+    tm tmv{};
+    ::localtime_r(&ts.tv_sec, &tmv);
+    char when[24];
+    std::strftime(when, sizeof(when), "%Y-%m-%d %H:%M:%S", &tmv);
+    std::fprintf(stderr, "%s.%03ld [lotid] ", when, ts.tv_nsec / 1'000'000);
     std::fprintf(stderr, fmt, args...);
     std::fprintf(stderr, "\n");
   }

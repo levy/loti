@@ -30,8 +30,12 @@ namespace loti::os {
 class UdpTransport final : public ports::Transport {
  public:
   explicit UdpTransport(std::uint16_t port) {
-    fd_ = ::socket(AF_INET, SOCK_DGRAM, 0);
+    fd_ = ::socket(AF_INET6, SOCK_DGRAM, 0);
     if (fd_ < 0) throw std::runtime_error("socket() failed");
+    // Dual-stack: an AF_INET6 socket with IPV6_V6ONLY off accepts BOTH IPv6 and IPv4 peers
+    // (IPv4 arrives as ::ffff:a.b.c.d), so one socket serves IPv4-only, IPv6-only, and mixed nets.
+    int v6only = 0;
+    ::setsockopt(fd_, IPPROTO_IPV6, IPV6_V6ONLY, &v6only, sizeof(v6only));
     int flags = ::fcntl(fd_, F_GETFL, 0);
     ::fcntl(fd_, F_SETFL, flags | O_NONBLOCK);
     // Enlarge the kernel socket buffers (best-effort) so a burst of discovery traffic is less
@@ -40,10 +44,10 @@ class UdpTransport final : public ports::Transport {
     const int bufsize = 1 << 20;  // 1 MiB
     ::setsockopt(fd_, SOL_SOCKET, SO_RCVBUF, &bufsize, sizeof(bufsize));
     ::setsockopt(fd_, SOL_SOCKET, SO_SNDBUF, &bufsize, sizeof(bufsize));
-    sockaddr_in addr{};
-    addr.sin_family = AF_INET;
-    addr.sin_addr.s_addr = htonl(INADDR_ANY);
-    addr.sin_port = htons(port);
+    sockaddr_in6 addr{};
+    addr.sin6_family = AF_INET6;
+    addr.sin6_addr = in6addr_any;
+    addr.sin6_port = htons(port);
     if (::bind(fd_, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) < 0) {
       ::close(fd_);
       throw std::runtime_error("bind() failed on UDP port " + std::to_string(port));
@@ -61,18 +65,28 @@ class UdpTransport final : public ports::Transport {
 
   // The actual bound UDP port (resolves an ephemeral port when constructed with port 0).
   [[nodiscard]] std::uint16_t bound_port() const {
-    sockaddr_in addr{};
+    sockaddr_in6 addr{};
     socklen_t len = sizeof(addr);
     if (::getsockname(fd_, reinterpret_cast<sockaddr*>(&addr), &len) != 0) return 0;
-    return ntohs(addr.sin_port);
+    return ntohs(addr.sin6_port);
   }
 
+  // Register a peer's address. Accepts an IPv6 literal (used as is) or an IPv4 literal
+  // (mapped to ::ffff:a.b.c.d so it works on the dual-stack socket).
   void set_peer(domain::NodeId id, const std::string& ip, std::uint16_t port) {
-    sockaddr_in addr{};
-    addr.sin_family = AF_INET;
-    addr.sin_port = htons(port);
-    if (::inet_pton(AF_INET, ip.c_str(), &addr.sin_addr) != 1)
-      throw std::runtime_error("bad peer address: " + ip);
+    sockaddr_in6 addr{};
+    addr.sin6_family = AF_INET6;
+    addr.sin6_port = htons(port);
+    if (::inet_pton(AF_INET6, ip.c_str(), &addr.sin6_addr) != 1) {
+      in_addr v4{};
+      if (::inet_pton(AF_INET, ip.c_str(), &v4) != 1)
+        throw std::runtime_error("bad peer address: " + ip);
+      unsigned char* b = addr.sin6_addr.s6_addr;  // IPv4 -> IPv4-mapped IPv6
+      std::memset(b, 0, 10);
+      b[10] = 0xff;
+      b[11] = 0xff;
+      std::memcpy(b + 12, &v4, sizeof(v4));
+    }
     peers_[id] = addr;
   }
 
@@ -91,7 +105,7 @@ class UdpTransport final : public ports::Transport {
   domain::Bytes receive() {
     for (;;) {
       domain::Bytes buf(kMaxDatagram);
-      sockaddr_in src{};
+      sockaddr_in6 src{};
       socklen_t srclen = sizeof(src);
       const ssize_t n =
           ::recvfrom(fd_, buf.data(), buf.size(), 0, reinterpret_cast<sockaddr*>(&src), &srclen);
@@ -111,11 +125,12 @@ class UdpTransport final : public ports::Transport {
   // Same host? Compare the address and port a peer was registered with against the datagram's
   // UDP source. NB: assumes the peer sends from its registered (listening) port and is not
   // behind a port-rewriting NAT — see doc note; a per-datagram MAC is the stronger follow-up.
-  static bool same_source(const sockaddr_in& a, const sockaddr_in& b) {
-    return a.sin_addr.s_addr == b.sin_addr.s_addr && a.sin_port == b.sin_port;
+  static bool same_source(const sockaddr_in6& a, const sockaddr_in6& b) {
+    return a.sin6_port == b.sin6_port &&
+           std::memcmp(&a.sin6_addr, &b.sin6_addr, sizeof(in6_addr)) == 0;
   }
   int fd_ = -1;
-  std::map<domain::NodeId, sockaddr_in> peers_;
+  std::map<domain::NodeId, sockaddr_in6> peers_;
 };
 
 }  // namespace loti::os

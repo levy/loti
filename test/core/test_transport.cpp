@@ -51,3 +51,26 @@ TEST_CASE("UdpTransport drops a datagram whose source != the claimed sender's ad
 
   CHECK(delivered == 1);  // the spoofed datagram was dropped; the legit one delivered
 }
+
+// 6.4 — the transport is dual-stack: an IPv6 peer (::1) works end to end, alongside the IPv4
+// (127.0.0.1) peers the other tests use (which now arrive as IPv4-mapped ::ffff:127.0.0.1).
+TEST_CASE("UdpTransport delivers over IPv6 (::1)") {
+  os::UdpTransport receiver(0);
+  const std::uint16_t rport = receiver.bound_port();
+  REQUIRE(rport != 0);
+  const domain::NodeId receiver_id = 2;
+
+  os::UdpTransport peerA(0);
+  const domain::NodeId A = 1;
+  peerA.set_peer(receiver_id, "::1", rport);
+  receiver.set_peer(A, "::1", peerA.bound_port());  // register A's real IPv6 address
+
+  wire::ClockNotification note;
+  note.chain = 0;
+  peerA.send(receiver_id, wire::encode(A, note));
+
+  domain::Bytes got;
+  for (int i = 0; i < 200 && got.empty(); ++i) got = receiver.receive();
+  REQUIRE_FALSE(got.empty());
+  CHECK(wire::sender_of(got).value() == A);
+}
