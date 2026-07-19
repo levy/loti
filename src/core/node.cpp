@@ -36,6 +36,13 @@ Node::Node(NodeId id, NodePorts ports, NodeConfig config)
   // next hop; flood builds the time-dependent stack (neighbor-history → routing table → width
   // cap). All routers hold references to members that already exist.
   if (config_.discovery_routing == DiscoveryRouting::flood) {
+    // Safe-by-default flood: a 0 (unset) cap becomes a bounded default rather than "unlimited",
+    // so enabling flood can never trigger an unbounded network-wide fan-out. An operator who
+    // wants a specific width sets it explicitly (non-zero values are kept). Generous enough not
+    // to change behavior on the small topologies the tests use.
+    if (config_.discovery_fanout == 0) config_.discovery_fanout = 8;
+    if (config_.discovery_hop_limit == 0) config_.discovery_hop_limit = 32;
+    if (config_.discovery_forward_cap == 0) config_.discovery_forward_cap = 8;
     history_router_ = std::make_unique<routing::NeighborHistoryRouter>(id_, store_, neighbors_);
     routing_table_router_ =
         std::make_unique<routing::RoutingTableRouter>(timed_routes_, *history_router_);

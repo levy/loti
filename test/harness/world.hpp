@@ -130,6 +130,9 @@ class World {
     }
   }
 
+  // Datagrams queued in the fake transport but not yet delivered (for asserting fan-out).
+  [[nodiscard]] std::size_t pending() const { return transport_.queue.size(); }
+
   [[nodiscard]] domain::Timestamp now() const noexcept { return now_; }
   void set_now(domain::Timestamp t) noexcept { now_ = t; }
   void advance(domain::Duration d) {

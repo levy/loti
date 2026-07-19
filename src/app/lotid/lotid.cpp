@@ -701,8 +701,21 @@ class Lotid final : public ChainCallback, public BoundsCallback, public OrderCal
     os::write_all(fd, os::format_reply(r.code, r.error, r.fields));
     close_client(fd);
   }
+  // Drop any in-flight discovery/proof still keyed to this fd. Without this, a client that
+  // disconnects mid-discovery leaves a stale entry, and if the OS reuses the fd number for a
+  // new connection, the old discovery's later reply could be misrouted to that unrelated client.
+  void purge_pending_for_fd(int fd) {
+    const auto by_fd = [fd](const auto& kv) { return kv.second == fd; };
+    std::erase_if(pending_bounds_, by_fd);
+    std::erase_if(pending_chain_, by_fd);
+    std::erase_if(pending_order_, by_fd);
+    std::erase_if(pending_proof_, [fd](const auto& kv) { return kv.second.fd == fd; });
+    std::erase_if(order_proofs_, [fd](const OrderProof& o) { return o.fd == fd; });
+  }
+
   void close_client(int fd) {
     if (!client_buf_.count(fd)) return;
+    purge_pending_for_fd(fd);  // a reused fd must never receive a stale discovery's reply
     reactor_.remove_reader(fd);
     ::close(fd);
     client_buf_.erase(fd);

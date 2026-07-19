@@ -294,3 +294,32 @@ TEST_CASE("2.3: FileStore::save + load still round-trips to a writable path") {
   ::unlink(path.c_str());
   ::unlink((path + ".tmp").c_str());
 }
+
+// 3.4 — enabling flood routing must not trigger an unbounded fan-out. With all caps left at
+// their 0 (unset) defaults, the Node applies a safe default fan-out (8); a discovery from a
+// node cross-linked with many neighbors floods to at most that many, not all of them.
+TEST_CASE("3.4: flood routing with default caps bounds the discovery fan-out") {
+  harness::World w;
+  NodeConfig cfg;
+  cfg.discovery_routing = DiscoveryRouting::flood;  // fanout/hop_limit/forward_cap all default (0)
+  Node& center = w.add_node(domain::NodeId(1), cfg);
+
+  std::vector<Node*> all{&center};
+  for (int i = 2; i <= 13; ++i) {  // 12 leaf neighbors around the center
+    Node& leaf = w.add_node(domain::NodeId(i), NodeConfig{});
+    center.add_neighbor(leaf.id());
+    leaf.add_neighbor(center.id());
+    all.push_back(&leaf);
+  }
+  harness::gossip(w, all, 6);  // the center cross-links with every leaf (>8)
+  REQUIRE(w.pending() == 0);   // gossip fully drained
+
+  domain::Event evt;
+  evt.creator = all[1]->id();  // a leaf — so the discovery floods rather than completing locally
+  evt.hash = domain::EventHash(32, 0xAB);
+  harness::RecordingChain cb;
+  center.discover_event_chain(evt, domain::TimeRange::all(), cb);
+
+  // Without the cap this would fan out to all 12 cross-linked neighbors; the default caps it to 8.
+  CHECK(w.pending() == 8);
+}
