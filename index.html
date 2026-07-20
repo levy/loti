@@ -4,9 +4,9 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>LOTI — Prove when it happened</title>
-<meta name="description" content="A peer-to-peer network for provable time. Prove that any document, photo, message, or measurement existed within a narrow window — and which came first — with no central authority, no blockchain, and no fees.">
+<meta name="description" content="A peer-to-peer network for provable time and order. Prove that any document, photo, message, or measurement existed within a narrow window — and prove which of two events came first — with no central authority, no blockchain, and no fees. Precision scales with clock rate and network density, down to sub-second.">
 <meta property="og:title" content="LOTI — Prove when it happened">
-<meta property="og:description" content="Provable time, without a middleman. Get a portable proof anyone can verify offline.">
+<meta property="og:description" content="Provable time and event order, without a middleman. Get a portable proof anyone can verify offline — with precision that scales down to sub-second, unlike a blockchain.">
 <meta property="og:type" content="website">
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ccircle cx='16' cy='16' r='14' fill='%23e0a63a'/%3E%3Cpath d='M9 16.5l4.5 4.5L23 11' fill='none' stroke='%230b1322' stroke-width='3' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
 <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -418,7 +418,7 @@
       <div>
         <p class="eyebrow">Proof of when · peer&#8209;to&#8209;peer · no middleman</p>
         <h1>Prove <em>when</em> it happened.<br>To anyone. Without<br>trusting anyone.</h1>
-        <p class="lead">LOTI weaves every digital event into a shared fabric of time — so you can prove, mathematically, that a document, photo, message, or measurement existed within a narrow window, and which of two events came first.</p>
+        <p class="lead">LOTI weaves every digital event into a shared fabric of time — so you can prove, mathematically, both <em>when</em> a document, photo, message, or measurement existed, to within a narrow window, and <em>which of two events came first</em>. It's not just timestamping; underneath, it's a provable ordering of events.</p>
         <div class="hero-cta">
           <a class="btn btn-primary" href="https://docs.google.com/document/d/1KmdknFYkGlxhLoKOQb9g14LW4Jg7zIReaa_GsB5aJio" target="_blank" rel="noopener">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 5.5A2.5 2.5 0 0 1 6.5 3H18a2 2 0 0 1 2 2v13.5"/><path d="M6.5 21A2.5 2.5 0 0 1 4 18.5v-13"/><path d="M6.5 21H20V5"/><path d="M8 8h8M8 12h6"/></svg>
@@ -491,6 +491,7 @@
         <p class="drop">Instead of one clock everyone must trust, LOTI lets everyone keep time <b>together</b>. Nodes across the network keep a steady heartbeat and constantly nod to their neighbors — weaving a tamper-evident fabric of "this came before that."</p>
         <p>To prove when your event happened, LOTI finds the two heartbeats that bracket it. To fake it, you'd have to unravel the whole fabric — and the mathematics simply won't allow it. You can't forge the past, and you can't pre-compute the future.</p>
         <p>There's no global vote and no winner. Everyone is free to form their own view of the timeline — but nobody can ever prove a <em>contradiction</em>. It's agreement where it counts, freedom everywhere else.</p>
+        <p><b>Order is the bedrock; time is the readout.</b> Before any calendar date enters the picture, the fabric already fixes <em>which event came before which</em> — a tamper-proof <em>happened-before</em> ordering that stands on its own. Attach a clock you trust and that ordering becomes a date you can read; take the clock away and the order still holds. Two events can be conclusively ranked against each other even when neither carries a trusted timestamp. LOTI is an event-ordering network first, and a timestamping one because of it.</p>
       </div>
     </div>
   </section>
@@ -714,6 +715,8 @@
           </thead>
           <tbody>
             <tr><th scope="row">Who you trust</th><td class="col-loti">A reference you choose — or the math</td><td>The authority</td><td>The chain &amp; its validators</td></tr>
+            <tr><th scope="row">Proves order?</th><td class="col-loti">Yes — a native happened-before ordering, clock or no clock</td><td>No — stamps each event alone</td><td>Only within its own global ledger</td></tr>
+            <tr><th scope="row">Time resolution</th><td class="col-loti">Tunable — sub-second if you push the clock and topology</td><td>The authority's clock</td><td>Capped by block time — seconds to minutes</td></tr>
             <tr><th scope="row">Cost per proof</th><td class="col-loti">Effectively free</td><td>Per-stamp fees</td><td>Transaction / gas fees</td></tr>
             <tr><th scope="row">Your content</th><td class="col-loti">Stays private</td><td>Shared with the authority</td><td>Public forever</td></tr>
             <tr><th scope="row">Resilience</th><td class="col-loti">No single point of failure</td><td>Central</td><td>Robust, but heavy</td></tr>
@@ -785,7 +788,7 @@
           </tbody>
         </table>
       </div>
-      <p class="fine reveal">Reach is nearly free — it costs chains, not storage — so almost the whole budget goes to precision. Worst case, an aged event is bracketed to a fraction of its age: <b>~0.09%</b> on a Pi, <b>~0.004%</b> on a phone, <b>~0.00008%</b> on a server. Push the tick faster than one per second and even recent bounds drop below a second.</p>
+      <p class="fine reveal">Reach is nearly free — it costs chains, not storage — so almost the whole budget goes to precision. Worst case, an aged event is bracketed to a fraction of its age: <b>~0.09%</b> on a Pi, <b>~0.004%</b> on a phone, <b>~0.00008%</b> on a server. Push the tick faster than one per second — or lean on a denser, better-connected patch of the network — and even recent bounds drop well below a second, a resolution no block-time-bound chain can reach.</p>
 
       <h3 class="subhead reveal">What it takes to build the graph</h3>
       <div class="grid g-3 reveal">
@@ -883,6 +886,10 @@
           <p>No. There's no global ledger, no coin, and no mining. Everyone keeps their own local timeline and cross-checks their neighbors, which makes LOTI far lighter, private, and free compared with a blockchain.</p>
         </details>
         <details>
+          <summary>Is this just timestamping?<span class="plus"></span></summary>
+          <p>No — timestamping is only half of it. Underneath, LOTI is an event-<em>ordering</em> network: the fabric fixes which event happened before which, as a tamper-proof partial order, whether or not you ever attach a date. Two events can be conclusively ordered against each other even when neither carries a trusted timestamp. Pin that ordering to a reference clock and you get a readable date; leave the clock out and the order still holds. A timestamp, here, is simply ordering measured against a clock you chose.</p>
+        </details>
+        <details>
           <summary>Does it cost money?<span class="plus"></span></summary>
           <p>Publishing an event is effectively free. Running a node costs a bit of bandwidth and a fixed slice of storage — capped at a budget you choose and flat forever. There are no per-proof fees.</p>
         </details>
@@ -892,7 +899,7 @@
         </details>
         <details>
           <summary>How precise is a proof?<span class="plus"></span></summary>
-          <p>It depends on the network. How tight the window is comes down to the heartbeat interval of the nodes on the chain — which might be well under a second, or more than a minute. Faster-ticking nodes give a tighter bracket, slower ones a wider one; as a general rule, expect something on the order of a minute or less, measured against the clock you choose to prove it against. Either way it's a rigorous bound, never a claim of an exact instant.</p>
+          <p>It depends on the network — and precision is a dial, not a fixed floor. How tight the window is comes down to two things you can scale: the heartbeat interval of the nodes on the chain, and the topology around your event — a denser, better-connected, faster-ticking stretch of the network brackets it more tightly. Push the clock faster and gather a few close neighbors and the window drops well below a second; leave it at one slow tick a node and it widens toward a minute. That tunability is something Bitcoin or Ethereum stamping can't match: there, resolution is pinned to the block interval — minutes on Bitcoin, seconds on Ethereum — and can't go finer. Either way, a LOTI proof is a rigorous bound, never a claim of an exact instant.</p>
         </details>
         <details>
           <summary>Is my content made public?<span class="plus"></span></summary>
@@ -928,7 +935,7 @@
           <svg class="seal" viewBox="0 0 32 32" aria-hidden="true"><circle cx="16" cy="16" r="13.5" fill="none" stroke="var(--accent)" stroke-width="2"/><path d="M9.5 16.5l4.4 4.4L22.7 12" fill="none" stroke="var(--accent)" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
           LOTI
         </a>
-        <p>A peer-to-peer network for provable time — the trustless middle ground between a notary and a blockchain.</p>
+        <p>A peer-to-peer network for provable time and order — the trustless middle ground between a notary and a blockchain.</p>
       </div>
       <div class="foot-links">
         <div class="foot-col">
