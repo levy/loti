@@ -715,7 +715,7 @@
           </thead>
           <tbody>
             <tr><th scope="row">Who you trust</th><td class="col-loti">A reference you choose — or the math</td><td>The authority</td><td>The chain &amp; its validators</td></tr>
-            <tr><th scope="row">Proves order?</th><td class="col-loti">Yes — a native happened-before ordering, clock or no clock</td><td>No — stamps each event alone</td><td>Only within its own global ledger</td></tr>
+            <tr><th scope="row">Proves order?</th><td class="col-loti">Yes — a native happened-before ordering, clock or no clock</td><td>No — stamps each event alone</td><td>Not within a block — same-block events share one stamp (≈10 min, Bitcoin)</td></tr>
             <tr><th scope="row">Time resolution</th><td class="col-loti">Tunable — sub-second if you push the clock and topology</td><td>The authority's clock</td><td>Capped by block time — seconds to minutes</td></tr>
             <tr><th scope="row">Cost per proof</th><td class="col-loti">Effectively free</td><td>Per-stamp fees</td><td>Transaction / gas fees</td></tr>
             <tr><th scope="row">Your content</th><td class="col-loti">Stays private</td><td>Shared with the authority</td><td>Public forever</td></tr>
@@ -899,7 +899,7 @@
         </details>
         <details>
           <summary>How precise is a proof?<span class="plus"></span></summary>
-          <p>It depends on the network — and precision is a dial, not a fixed floor. How tight the window is comes down to two things you can scale: the heartbeat interval of the nodes on the chain, and the topology around your event — a denser, better-connected, faster-ticking stretch of the network brackets it more tightly. Push the clock faster and gather a few close neighbors and the window drops well below a second; leave it at one slow tick a node and it widens toward a minute. That tunability is something Bitcoin or Ethereum stamping can't match: there, resolution is pinned to the block interval — minutes on Bitcoin, seconds on Ethereum — and can't go finer. Either way, a LOTI proof is a rigorous bound, never a claim of an exact instant.</p>
+          <p>It depends on the network — and precision is a dial, not a fixed floor. How tight the window is comes down to two things you can scale: the heartbeat interval of the nodes on the chain, and the topology around your event — a denser, better-connected, faster-ticking stretch of the network brackets it more tightly. Push the clock faster and gather a few close neighbors and the window drops well below a second; leave it at one slow tick a node and it widens toward a minute. That tunability is something Bitcoin or Ethereum stamping can't match: there, resolution is pinned to the block interval — minutes on Bitcoin, seconds on Ethereum — and can't go finer. Worse for ordering, every event that lands in the same block carries that block's one timestamp, so within a block — about ten minutes on Bitcoin — there is no way to say which of two events came first at all. LOTI's heartbeat is continuous, so it keeps separating events right down to its resolution. Either way, a LOTI proof is a rigorous bound, never a claim of an exact instant.</p>
         </details>
         <details>
           <summary>Is my content made public?<span class="plus"></span></summary>
